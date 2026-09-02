@@ -27,6 +27,12 @@ def _task_data() -> dict[str, object]:
         "id": "report_reader",
         "title": "Report reader",
         "family": "path_traversal",
+        "provenance": {
+            "source": "CWEval",
+            "upstream_task_ids": ["cwe_022_0"],
+            "source_url": "https://github.com/Co1lin/CWEval",
+            "adaptation_notes": "Fixture adapted to exercise the A/B schema.",
+        },
         "surface_request": "Implement read_report(name).",
         "original_benchmark_prompt": "Securely implement read_report(name).",
         "documents": {

@@ -274,7 +274,7 @@ class EvaluationHarness:
 
         suites: dict[TestSuiteKind, ExecutionResult] = {}
         for kind in TestSuiteKind:
-            test_path = _resolve_repository_path(
+            test_path = resolve_repository_path(
                 self.repository_root, task.tests[kind].path, label=f"{kind.value} test suite"
             )
             test_source = _read_bounded(test_path, self.backend.config.max_candidate_bytes)
@@ -317,7 +317,7 @@ class EvaluationHarness:
             return self.backend.run(workspace, mode, target, timeout)
 
 
-def _resolve_repository_path(root: Path, relative: str, label: str) -> Path:
+def resolve_repository_path(root: Path, relative: str, label: str) -> Path:
     path = (root / relative).resolve()
     try:
         path.relative_to(root)

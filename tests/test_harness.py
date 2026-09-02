@@ -51,6 +51,12 @@ def _write_task(root: Path, suite_sources: dict[SuiteKind, bytes] | None = None)
         "id": "harness_fixture",
         "title": "Harness fixture",
         "family": "path_traversal",
+        "provenance": {
+            "source": "CWEval",
+            "upstream_task_ids": ["cwe_022_0"],
+            "source_url": "https://github.com/Co1lin/CWEval",
+            "adaptation_notes": "Trusted harness fixture.",
+        },
         "surface_request": "Implement answer().",
         "original_benchmark_prompt": "Securely implement answer().",
         "documents": documents,

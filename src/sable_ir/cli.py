@@ -7,6 +7,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from sable_ir.audit import audit_stage0_tasks
 from sable_ir.config import ConfigLoadError, load_stage0_config, load_task
 from sable_ir.harness import (
     DockerSandbox,
@@ -43,6 +44,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run trusted fixtures on the host without a security boundary",
     )
+
+    audit_parser = subparsers.add_parser(
+        "audit-tasks", help="validate task assets and the A/B reference test matrix"
+    )
+    audit_parser.add_argument("--config", type=Path, default=Path("config/stage0.toml"))
+    audit_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    audit_parser.add_argument("--output", type=Path)
+    audit_parser.add_argument(
+        "--unsafe-local",
+        action="store_true",
+        help="audit trusted references on the host when Docker is unavailable",
+    )
     return parser
 
 
@@ -70,15 +83,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if args.unsafe_local
                 else DockerSandbox(config.sandbox)
             )
-            result = EvaluationHarness(args.repository_root, backend).evaluate(
+            evaluation_result = EvaluationHarness(args.repository_root, backend).evaluate(
                 task, args.candidate
             )
-            serialized = result.model_dump_json(indent=2)
+            serialized = evaluation_result.model_dump_json(indent=2)
             if args.output is None:
                 print(serialized)
             else:
                 args.output.write_text(f"{serialized}\n", encoding="utf-8")
                 print(f"wrote evaluation: {args.output}")
+        elif args.command == "audit-tasks":
+            config = load_stage0_config(args.config)
+            backend = (
+                UnsafeLocalSandbox(config.sandbox)
+                if args.unsafe_local
+                else DockerSandbox(config.sandbox)
+            )
+            audit_result = audit_stage0_tasks(config, args.repository_root, backend)
+            serialized = audit_result.model_dump_json(indent=2)
+            if args.output is None:
+                print(serialized)
+            else:
+                args.output.write_text(f"{serialized}\n", encoding="utf-8")
+                print(f"wrote task audit: {args.output}")
+            if not audit_result.passed:
+                return 1
     except (ConfigLoadError, HarnessError) as error:
         print(error)
         return 2

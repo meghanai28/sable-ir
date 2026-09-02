@@ -34,6 +34,18 @@ Evaluate model-generated Python with the Docker sandbox:
 uv run sable-ir evaluate tasks/example.json candidate.py
 ```
 
+Audit the complete Stage 0 corpus, including both reference implementations against the expected
+A/B cross-test matrix:
+
+```bash
+uv run sable-ir audit-tasks
+```
+
+The five task specifications record their CWEval provenance and adaptation notes. Each contains a
+policy-neutral surface request, two length-matched six-clause documents, four independent test
+suites, and policy-A and policy-B reference implementations. The corpus audit also requires the
+applicable clause to occupy positions 1 through 5 exactly once.
+
 Docker execution has networking disabled, a read-only root and bind mount, dropped Linux
 capabilities, `no-new-privileges`, an unprivileged user, a private `tmpfs`, and CPU, memory, PID,
 output, source-size, and wall-time limits. Compilation happens before tests; each of the four suites

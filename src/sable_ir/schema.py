@@ -159,6 +159,13 @@ class ReferenceImplementation(StrictModel):
         return self
 
 
+class TaskProvenance(StrictModel):
+    source: Literal["CWEval"]
+    upstream_task_ids: Annotated[tuple[str, ...], Field(min_length=1)]
+    source_url: NonEmpty
+    adaptation_notes: NonEmpty
+
+
 class TaskSpec(StrictModel):
     """One policy-neutral surface task paired with mutually distinguishing A/B policies."""
 
@@ -166,6 +173,7 @@ class TaskSpec(StrictModel):
     id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
     title: NonEmpty
     family: VulnerabilityFamily
+    provenance: TaskProvenance
     surface_request: NonEmpty
     original_benchmark_prompt: NonEmpty
     documents: dict[PolicyValue, SafetyDocument]
