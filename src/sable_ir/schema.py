@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
@@ -18,33 +18,33 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class PolicyValue(str, Enum):
+class PolicyValue(StrEnum):
     A = "A"
     B = "B"
 
 
-class VulnerabilityFamily(str, Enum):
+class VulnerabilityFamily(StrEnum):
     PATH_TRAVERSAL = "path_traversal"
     SQL_INJECTION = "sql_injection"
     COMMAND_INJECTION = "command_injection"
     SSRF = "ssrf"
 
 
-class TestSuiteKind(str, Enum):
+class TestSuiteKind(StrEnum):
     FUNCTIONALITY = "functionality"
     POLICY_A = "policy_a"
     POLICY_B = "policy_b"
     ORIGINAL_SECURITY = "original_security"
 
 
-class PromptView(str, Enum):
+class PromptView(StrEnum):
     ORIGINAL_BENCHMARK = "original_benchmark"
     SURFACE_ONLY = "surface_only"
     RELEVANT_CLAUSE_ONLY = "relevant_clause_only"
     FULL_DOCUMENT = "full_document"
 
 
-class Stage0Condition(str, Enum):
+class Stage0Condition(StrEnum):
     ORIGINAL_BENCHMARK = "original_benchmark"
     SURFACE_ONLY_DIRECT = "surface_only_direct"
     RELEVANT_CLAUSE_ONLY_A = "relevant_clause_only_a"
@@ -113,7 +113,9 @@ class SafetyDocument(StrictModel):
             raise ValueError("safety-document clause IDs must be unique")
         unknown = set(self.applicable_clause_ids) - set(clause_ids)
         if unknown:
-            raise ValueError(f"applicable clause IDs are absent from the document: {sorted(unknown)}")
+            raise ValueError(
+                f"applicable clause IDs are absent from the document: {sorted(unknown)}"
+            )
         if len(set(self.applicable_clause_ids)) != len(self.applicable_clause_ids):
             raise ValueError("applicable clause IDs must be unique")
         return self
@@ -181,7 +183,9 @@ class TaskSpec(StrictModel):
         if set(self.reference_implementations) != required_policies:
             raise ValueError("reference_implementations must contain exactly policy A and policy B")
         if set(self.tests) != set(TestSuiteKind):
-            raise ValueError("tests must contain functionality, policy_a, policy_b, and original_security")
+            raise ValueError(
+                "tests must contain functionality, policy_a, policy_b, and original_security"
+            )
         if self.policies[PolicyValue.A] == self.policies[PolicyValue.B]:
             raise ValueError("policy A and policy B must describe different behavior")
 
@@ -250,4 +254,3 @@ def json_schema_for(model: type[BaseModel]) -> dict[str, Any]:
     """Expose schemas for tooling without coupling callers to Pydantic."""
 
     return model.model_json_schema()
-
