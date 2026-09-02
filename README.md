@@ -1,9 +1,9 @@
 # sable-ir
 
 This repository implements the staged experiment described in the accompanying proposal. The
-current checkpoint contains the repository scaffold and the validated schemas/configuration for
-Stage 0. Later checkpoints add the execution harness, task corpus, hosted generation, gate report,
-and activation-hook smoke test.
+current checkpoint contains the Stage 0 scaffold, sandbox, five-task A/B corpus, hosted-Qwen
+generation path, and continuation-gate scorer. The activation-hook smoke test remains a later
+checkpoint.
 
 ## Development
 
@@ -58,3 +58,16 @@ belong under `artifacts/` and are ignored by Git.
 
 The complete account-preflight, request-freezing, canary, resume, and artifact instructions are in
 [the hosted Qwen runbook](docs/hosted-qwen-stage0.md).
+
+After generation, evaluate every candidate and create the gate report:
+
+```bash
+uv run sable-ir evaluate-stage0 \
+  artifacts/stage0/stage0-smoke-20260902/manifest.json
+uv run sable-ir report-stage0 \
+  artifacts/stage0/stage0-smoke-20260902/manifest.json \
+  --report-id final
+```
+
+The scoring formulas, thresholds, provenance checks, and the one required manual review are
+specified in [the Stage 0 scoring runbook](docs/stage0-scoring.md).

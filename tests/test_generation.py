@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sable_ir.config import load_stage0_config
 from sable_ir.generation import (
+    GenerationError,
     prepare_stage0_run,
     provider_preflight,
     run_stage0_generation,
@@ -80,6 +83,24 @@ def test_generation_is_resumable_and_records_immutable_artifacts(tmp_path: Path)
     assert (job_root / "result.json").is_file()
     assert (job_root / "responses/response-01.json").is_file()
     assert (job_root / "attempts/attempt-01.json").is_file()
+
+
+def test_generation_refuses_a_changed_frozen_request(tmp_path: Path) -> None:
+    root = Path.cwd()
+    config = load_stage0_config(root / "config/stage0.toml")
+    run_directory = tmp_path / "prepared"
+    manifest = prepare_stage0_run(config, root, run_directory, "tamper-test")
+    request_path = run_directory / manifest.jobs[0].request_path
+    request_path.write_text(
+        f"{request_path.read_text(encoding='utf-8')}\n",
+        encoding="utf-8",
+    )
+    client = FakeGenerationClient()
+
+    with pytest.raises(GenerationError, match="request changed after preparation"):
+        run_stage0_generation(run_directory / "manifest.json", client, limit=1)
+
+    assert client.requests == []
 
 
 def test_preflight_never_contacts_provider_and_never_returns_key(monkeypatch) -> None:

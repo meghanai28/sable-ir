@@ -9,10 +9,10 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from sable_ir.config import load_task
 from sable_ir.prompts import assigned_policy, build_task_prompt, build_wire_prompt, prompt_sha256
@@ -21,9 +21,12 @@ from sable_ir.schema import (
     STAGE0_CONDITION_SPECS,
     AlibabaQwenConfig,
     PolicyValue,
+    SandboxConfig,
     Stage0Condition,
     Stage0Config,
+    Stage0Thresholds,
     StrictModel,
+    TestSuiteKind,
 )
 
 
@@ -42,17 +45,30 @@ class GenerationStatus(StrEnum):
 
 
 class GenerationJob(StrictModel):
-    job_id: str
+    job_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,159}$")
     task_id: str
     task_path: str
     task_sha256: str
+    test_sha256s: dict[TestSuiteKind, str]
     condition: Stage0Condition
     assigned_policy: PolicyValue | None
     sample_index: int = Field(ge=0)
     seed: int = Field(ge=0, le=2**31 - 1)
     thinking: bool
     request_path: str
+    request_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     result_path: str
+
+    @model_validator(mode="after")
+    def require_safe_artifact_paths(self) -> GenerationJob:
+        for label, value in (
+            ("request_path", self.request_path),
+            ("result_path", self.result_path),
+        ):
+            path = PurePosixPath(value)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"{label} must be a safe run-relative path")
+        return self
 
 
 class GenerationManifest(StrictModel):
@@ -61,6 +77,8 @@ class GenerationManifest(StrictModel):
     created_at: str
     config_sha256: str
     provider: AlibabaQwenConfig
+    sandbox: SandboxConfig
+    thresholds: Stage0Thresholds
     jobs: tuple[GenerationJob, ...]
 
 
@@ -189,6 +207,10 @@ def prepare_stage0_run(
         task_bytes = task_path.read_bytes()
         task_hash = hashlib.sha256(task_bytes).hexdigest()
         task = load_task(task_path)
+        test_hashes = {
+            kind: hashlib.sha256((root / suite.path).read_bytes()).hexdigest()
+            for kind, suite in task.tests.items()
+        }
         for condition in config.conditions:
             spec = STAGE0_CONDITION_SPECS[condition]
             for sample_index in range(config.samples_per_condition):
@@ -218,19 +240,23 @@ def prepare_stage0_run(
                     model_request=model_request,
                 )
                 request_path = f"{job_root}/request.json"
-                _write_json_new(run_directory / request_path, request_artifact)
+                request_destination = run_directory / request_path
+                _write_json_new(request_destination, request_artifact)
+                request_hash = hashlib.sha256(request_destination.read_bytes()).hexdigest()
                 jobs.append(
                     GenerationJob(
                         job_id=job_id,
                         task_id=task.id,
                         task_path=task_relative,
                         task_sha256=task_hash,
+                        test_sha256s=test_hashes,
                         condition=condition,
                         assigned_policy=assigned_policy(condition),
                         sample_index=sample_index,
                         seed=seed,
                         thinking=spec.thinking,
                         request_path=request_path,
+                        request_sha256=request_hash,
                         result_path=f"{job_root}/result.json",
                     )
                 )
@@ -241,6 +267,8 @@ def prepare_stage0_run(
         created_at=_now(),
         config_sha256=hashlib.sha256(config_json.encode()).hexdigest(),
         provider=config.hosted_qwen,
+        sandbox=config.sandbox,
+        thresholds=config.thresholds,
         jobs=tuple(jobs),
     )
     _write_json_new(run_directory / "manifest.json", manifest)
@@ -270,10 +298,20 @@ def run_stage0_generation(
 
     for job in selected:
         result_path = run_directory / job.result_path
+        request_path = run_directory / job.request_path
+        try:
+            request_bytes = request_path.read_bytes()
+        except OSError as error:
+            raise GenerationError(
+                f"could not read request artifact {request_path}: {error}"
+            ) from error
+        if hashlib.sha256(request_bytes).hexdigest() != job.request_sha256:
+            raise GenerationError(f"request changed after preparation: {job.request_path}")
+        request_artifact = _load_request(request_path)
+        _validate_request_metadata(request_artifact, job, manifest)
         if result_path.exists():
             skipped += 1
             continue
-        request_artifact = _load_request(run_directory / job.request_path)
         attempt = _next_attempt(run_directory, job)
         response: ProviderResponse | None = None
         while attempt <= manifest.provider.max_attempts:
@@ -445,6 +483,45 @@ def _load_request(path: Path) -> RequestArtifact:
         return RequestArtifact.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError) as error:
         raise GenerationError(f"could not load request artifact {path}: {error}") from error
+
+
+def _validate_request_metadata(
+    request: RequestArtifact,
+    job: GenerationJob,
+    manifest: GenerationManifest,
+) -> None:
+    observed = (
+        request.task_id,
+        request.task_path,
+        request.task_sha256,
+        request.condition,
+        request.assigned_policy,
+        request.sample_index,
+        request.model_request.job_id,
+        request.model_request.model,
+        request.model_request.enable_thinking,
+        request.model_request.seed,
+        request.model_request.temperature,
+        request.model_request.top_p,
+        request.model_request.max_tokens,
+    )
+    expected = (
+        job.task_id,
+        job.task_path,
+        job.task_sha256,
+        job.condition,
+        job.assigned_policy,
+        job.sample_index,
+        job.job_id,
+        manifest.provider.model,
+        job.thinking,
+        job.seed,
+        manifest.provider.temperature,
+        manifest.provider.top_p,
+        manifest.provider.max_tokens,
+    )
+    if observed != expected:
+        raise GenerationError(f"request metadata mismatch for {job.job_id}")
 
 
 def _write_json_new(path: Path, value: StrictModel) -> None:

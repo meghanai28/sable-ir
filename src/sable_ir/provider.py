@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from typing import Any, Protocol
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from sable_ir.schema import AlibabaQwenConfig, StrictModel
 
@@ -29,6 +30,13 @@ class ModelRequest(StrictModel):
     temperature: float = Field(ge=0, lt=2)
     top_p: float = Field(gt=0, le=1)
     max_tokens: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def require_matching_prompt_hash(self) -> ModelRequest:
+        observed = hashlib.sha256(self.prompt.encode("utf-8")).hexdigest()
+        if self.prompt_sha256 != observed:
+            raise ValueError("prompt_sha256 does not match prompt")
+        return self
 
 
 class TokenUsage(StrictModel):

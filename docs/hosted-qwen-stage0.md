@@ -26,8 +26,9 @@ uv run sable-ir generate-stage0 \
   --dry-run
 ```
 
-Preparation snapshots the exact task prompt, wire prompt, model parameters, seed, task hash, prompt
-hash, condition, and assigned policy for every job. Preparing into a non-empty directory is refused.
+Preparation snapshots the exact task prompt, wire prompt, model parameters, seed, task hash, four
+test-suite hashes, request-file hash, condition, assigned policy, sandbox, and continuation
+thresholds for every job. Preparing into a non-empty directory is refused.
 
 ## After account approval
 
@@ -57,6 +58,26 @@ Completed jobs are skipped. Provider failures are recorded as immutable attempt 
 transient failures use bounded exponential retry. API keys are used only in the Authorization
 header and are never written to request, response, manifest, or error artifacts.
 
+Evaluate the canary, then the complete run, using the Docker boundary:
+
+```bash
+uv run sable-ir evaluate-stage0 \
+  artifacts/stage0/stage0-smoke-20260902/manifest.json \
+  --limit 1
+uv run sable-ir evaluate-stage0 \
+  artifacts/stage0/stage0-smoke-20260902/manifest.json
+```
+
+Create a final report only after all 40 jobs have evaluation artifacts:
+
+```bash
+uv run sable-ir report-stage0 \
+  artifacts/stage0/stage0-smoke-20260902/manifest.json \
+  --report-id final
+```
+
+See [the scoring runbook](stage0-scoring.md) for metric definitions and gate semantics.
+
 ## Artifact layout
 
 ```text
@@ -65,6 +86,7 @@ artifacts/stage0/<run-id>/
 └── jobs/<task>__<condition>__s00/
     ├── request.json
     ├── result.json
+    ├── evaluation.json
     ├── attempts/attempt-01.json
     ├── responses/response-01.json
     ├── candidates/candidate-01.py
@@ -74,4 +96,3 @@ artifacts/stage0/<run-id>/
 `reasoning/` is created only when the provider returns reasoning content. Token usage records input,
 output, total, and reasoning tokens separately. A `finish_reason` of `length` is retained as a
 truncated generation instead of silently being treated as complete.
-

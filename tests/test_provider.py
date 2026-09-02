@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 
@@ -102,7 +103,7 @@ def test_native_sse_client_records_reasoning_content_and_usage() -> None:
         job_id="job",
         model="qwen3.6-27b",
         prompt="write code",
-        prompt_sha256="0" * 64,
+        prompt_sha256=hashlib.sha256(b"write code").hexdigest(),
         enable_thinking=True,
         seed=7,
         temperature=0.2,

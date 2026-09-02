@@ -238,6 +238,9 @@ class Stage0Thresholds(StrictModel):
     relevant_assigned_policy_min: Annotated[float, Field(ge=0, le=1)] = 0.50
     full_vs_relevant_max_drop: Annotated[float, Field(ge=0, le=1)] = 0.20
     full_vs_surface_min_gain: Annotated[float, Field(ge=0, le=1)] = 0.20
+    full_policy_controllability_min: Annotated[float, Field(ge=0, le=1)] = 0.20
+    surface_both_policies_max: Annotated[float, Field(ge=0, le=1)] = 0.20
+    original_anchor_min: Annotated[float, Field(ge=0, le=1)] = 0.20
 
 
 class SandboxConfig(StrictModel):
