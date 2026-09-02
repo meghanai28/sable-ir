@@ -11,7 +11,7 @@ from sable_ir.generation import (
     provider_preflight,
     run_stage0_generation,
 )
-from sable_ir.provider import ModelRequest, ProviderResponse, TokenUsage
+from sable_ir.provider import ModelRequest, ProviderError, ProviderResponse, TokenUsage
 from sable_ir.schema import Stage0Condition
 
 
@@ -23,6 +23,7 @@ class FakeGenerationClient:
         self.requests.append(request)
         return ProviderResponse(
             request_id="mock-request",
+            model=request.model,
             content="def generated():\n    return True\n",
             reasoning_content="mock reasoning" if request.enable_thinking else "",
             finish_reason="stop",
@@ -34,6 +35,16 @@ class FakeGenerationClient:
             ),
             raw_events=({"request_id": "mock-request", "output": {}},),
         )
+
+
+class FailingGenerationClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, request: ModelRequest) -> ProviderResponse:
+        del request
+        self.calls += 1
+        raise ProviderError("simulated provider failure", retryable=True)
 
 
 def test_prepare_freezes_all_forty_stage0_requests(tmp_path: Path) -> None:
@@ -60,16 +71,16 @@ def test_prepare_freezes_all_forty_stage0_requests(tmp_path: Path) -> None:
     } == {4}
     jobs = {job.condition: job for job in manifest.jobs if job.task_id == "path_symlink_report"}
     assert (
-        jobs[Stage0Condition.RELEVANT_CLAUSE_ONLY_A].seed
-        == jobs[Stage0Condition.RELEVANT_CLAUSE_ONLY_B].seed
+        jobs[Stage0Condition.RELEVANT_CLAUSE_ONLY_A].pair_seed
+        == jobs[Stage0Condition.RELEVANT_CLAUSE_ONLY_B].pair_seed
     )
     assert (
-        jobs[Stage0Condition.FULL_DOCUMENT_A].seed
-        == jobs[Stage0Condition.FULL_DOCUMENT_B].seed
+        jobs[Stage0Condition.FULL_DOCUMENT_A].pair_seed
+        == jobs[Stage0Condition.FULL_DOCUMENT_B].pair_seed
     )
     assert (
-        jobs[Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A].seed
-        == jobs[Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_B].seed
+        jobs[Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A].pair_seed
+        == jobs[Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_B].pair_seed
     )
 
 
@@ -131,13 +142,35 @@ def test_generation_can_target_a_native_thinking_canary(tmp_path: Path) -> None:
     assert len(client.requests) == 1
     assert client.requests[0].job_id == target.job_id
     assert client.requests[0].enable_thinking
+    assert client.requests[0].max_completion_tokens == 16_384
+
+
+def test_provider_failure_trips_circuit_breaker_before_later_jobs(tmp_path: Path) -> None:
+    root = Path.cwd()
+    config = load_stage0_config(root / "config/stage0.toml")
+    run_directory = tmp_path / "prepared"
+    prepare_stage0_run(config, root, run_directory, "circuit-breaker-test")
+    client = FailingGenerationClient()
+
+    summary = run_stage0_generation(run_directory / "manifest.json", client)
+
+    assert client.calls == 1
+    assert summary.failed == 1
+    assert summary.pending == 39
+    failed_job = run_directory / "jobs/path_symlink_report__original_benchmark__s00"
+    assert (failed_job / "attempts/attempt-01.json").is_file()
+    assert not (failed_job / "result.json").exists()
+
+    with pytest.raises(GenerationError, match="already used its single provider attempt"):
+        run_stage0_generation(run_directory / "manifest.json", client)
+    assert client.calls == 1
 
 
 def test_preflight_never_contacts_provider_and_never_returns_key(monkeypatch) -> None:
     config = load_stage0_config(Path("config/stage0.toml"))
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-test-secret")
 
-    result = provider_preflight(config.hosted_qwen)
+    result = provider_preflight(config.hosted_kimi)
 
     assert result.ready_for_requests
     assert "sk-test-secret" not in result.model_dump_json()

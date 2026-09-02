@@ -6,7 +6,6 @@ import hashlib
 import os
 import re
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -16,10 +15,10 @@ from pydantic import Field, ValidationError, model_validator
 
 from sable_ir.config import load_task
 from sable_ir.prompts import assigned_policy, build_task_prompt, build_wire_prompt, prompt_sha256
-from sable_ir.provider import DashScopeClient, ModelRequest, ProviderError, ProviderResponse
+from sable_ir.provider import KimiClient, ModelRequest, ProviderError, ProviderResponse
 from sable_ir.schema import (
     STAGE0_CONDITION_SPECS,
-    AlibabaQwenConfig,
+    KimiConfig,
     PolicyValue,
     SandboxConfig,
     Stage0Condition,
@@ -53,7 +52,7 @@ class GenerationJob(StrictModel):
     condition: Stage0Condition
     assigned_policy: PolicyValue | None
     sample_index: int = Field(ge=0)
-    seed: int = Field(ge=0, le=2**31 - 1)
+    pair_seed: int = Field(ge=0, le=2**31 - 1)
     thinking: bool
     request_path: str
     request_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -72,11 +71,11 @@ class GenerationJob(StrictModel):
 
 
 class GenerationManifest(StrictModel):
-    schema_version: int = 2
+    schema_version: int = 3
     run_id: str
     created_at: str
     config_sha256: str
-    provider: AlibabaQwenConfig
+    provider: KimiConfig
     sandbox: SandboxConfig
     thresholds: Stage0Thresholds
     jobs: tuple[GenerationJob, ...]
@@ -107,13 +106,13 @@ class AttemptRecord(StrictModel):
 
 
 class GenerationRecord(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     job_id: str
     task_id: str
     condition: Stage0Condition
     assigned_policy: PolicyValue | None
     sample_index: int
-    seed: int
+    pair_seed: int
     model: str
     thinking: bool
     status: GenerationStatus
@@ -155,15 +154,15 @@ class ProviderPreflight(StrictModel):
     note: str
 
 
-def provider_preflight(config: AlibabaQwenConfig) -> ProviderPreflight:
+def provider_preflight(config: KimiConfig) -> ProviderPreflight:
     value = os.environ.get(config.api_key_env, "")
     present = bool(value.strip())
     looks_valid = present and value.startswith("sk-") and len(value) > 8
     ready = present and looks_valid
     note = (
-        "Credential is present; this check does not contact Alibaba or verify account approval."
+        "Credential is present; this check does not contact Kimi or verify account access."
         if ready
-        else f"Set {config.api_key_env} after Alibaba Model Studio access is approved."
+        else f"Set a newly rotated {config.api_key_env} in the current shell."
     )
     return ProviderPreflight(
         provider=config.provider,
@@ -177,11 +176,11 @@ def provider_preflight(config: AlibabaQwenConfig) -> ProviderPreflight:
     )
 
 
-def client_from_environment(config: AlibabaQwenConfig) -> DashScopeClient:
+def client_from_environment(config: KimiConfig) -> KimiClient:
     preflight = provider_preflight(config)
     if not preflight.ready_for_requests:
         raise GenerationError(preflight.note)
-    return DashScopeClient(config, os.environ[config.api_key_env])
+    return KimiClient(config, os.environ[config.api_key_env])
 
 
 def prepare_stage0_run(
@@ -217,18 +216,21 @@ def prepare_stage0_run(
             for sample_index in range(config.samples_per_condition):
                 job_id = f"{task.id}__{condition.value}__s{sample_index:02d}"
                 job_root = f"jobs/{job_id}"
-                seed = _job_seed(config.seed, task.id, condition, sample_index)
+                pair_seed = _pair_seed(config.seed, task.id, condition, sample_index)
                 wire_prompt = build_wire_prompt(task, condition)
+                max_completion_tokens = (
+                    config.hosted_kimi.thinking_max_completion_tokens
+                    if spec.thinking
+                    else config.hosted_kimi.max_completion_tokens
+                )
                 model_request = ModelRequest(
                     job_id=job_id,
-                    model=config.hosted_qwen.model,
+                    model=config.hosted_kimi.model,
                     prompt=wire_prompt,
                     prompt_sha256=prompt_sha256(wire_prompt),
                     enable_thinking=spec.thinking,
-                    seed=seed,
-                    temperature=config.hosted_qwen.temperature,
-                    top_p=config.hosted_qwen.top_p,
-                    max_tokens=config.hosted_qwen.max_tokens,
+                    pair_seed=pair_seed,
+                    max_completion_tokens=max_completion_tokens,
                 )
                 request_artifact = RequestArtifact(
                     task_id=task.id,
@@ -254,7 +256,7 @@ def prepare_stage0_run(
                         condition=condition,
                         assigned_policy=assigned_policy(condition),
                         sample_index=sample_index,
-                        seed=seed,
+                        pair_seed=pair_seed,
                         thinking=spec.thinking,
                         request_path=request_path,
                         request_sha256=request_hash,
@@ -267,7 +269,7 @@ def prepare_stage0_run(
         run_id=run_id,
         created_at=_now(),
         config_sha256=hashlib.sha256(config_json.encode()).hexdigest(),
-        provider=config.hosted_qwen,
+        provider=config.hosted_kimi,
         sandbox=config.sandbox,
         thresholds=config.thresholds,
         jobs=tuple(jobs),
@@ -289,7 +291,6 @@ def run_stage0_generation(
     *,
     limit: int | None = None,
     job_id: str | None = None,
-    sleep: Callable[[float], None] = time.sleep,
 ) -> RunSummary:
     manifest = load_manifest(manifest_path)
     run_directory = manifest_path.resolve().parent
@@ -315,34 +316,16 @@ def run_stage0_generation(
             skipped += 1
             continue
         attempt = _next_attempt(run_directory, job)
-        response: ProviderResponse | None = None
-        while attempt <= manifest.provider.max_attempts:
-            started_at = _now()
-            started = time.monotonic()
-            try:
-                response = client.generate(request_artifact.model_request)
-            except ProviderError as error:
-                _write_json_new(
-                    _attempt_path(run_directory, job, attempt),
-                    AttemptRecord(
-                        attempt=attempt,
-                        started_at=started_at,
-                        finished_at=_now(),
-                        latency_seconds=time.monotonic() - started,
-                        succeeded=False,
-                        retryable=error.retryable,
-                        error=str(error),
-                    ),
-                )
-                if not error.retryable or attempt >= manifest.provider.max_attempts:
-                    break
-                delay = manifest.provider.retry_initial_seconds * (2 ** (attempt - 1))
-                sleep(min(delay, 60.0))
-                attempt += 1
-                continue
-
-            raw_path = _response_path(run_directory, job, attempt)
-            _write_json_new(raw_path, response)
+        if attempt > manifest.provider.max_attempts:
+            raise GenerationError(
+                f"{job.job_id} already used its single provider attempt; prepare a new run "
+                "only after inspecting the recorded failure"
+            )
+        started_at = _now()
+        started = time.monotonic()
+        try:
+            response = client.generate(request_artifact.model_request)
+        except ProviderError as error:
             _write_json_new(
                 _attempt_path(run_directory, job, attempt),
                 AttemptRecord(
@@ -350,15 +333,31 @@ def run_stage0_generation(
                     started_at=started_at,
                     finished_at=_now(),
                     latency_seconds=time.monotonic() - started,
-                    succeeded=True,
-                    provider_request_id=response.request_id,
+                    succeeded=False,
+                    retryable=error.retryable,
+                    error=str(error),
                 ),
             )
-            break
-
-        if response is None:
             failed += 1
-            continue
+            # Circuit breaker: never spend on later jobs after any provider failure.
+            break
+        if response.model != manifest.provider.model:
+            raise GenerationError(
+                f"provider returned {response.model}, expected {manifest.provider.model}"
+            )
+        raw_path = _response_path(run_directory, job, attempt)
+        _write_json_new(raw_path, response)
+        _write_json_new(
+            _attempt_path(run_directory, job, attempt),
+            AttemptRecord(
+                attempt=attempt,
+                started_at=started_at,
+                finished_at=_now(),
+                latency_seconds=time.monotonic() - started,
+                succeeded=True,
+                provider_request_id=response.request_id,
+            ),
+        )
         try:
             candidate, extraction = extract_python_source(response.content)
             status = (
@@ -395,7 +394,7 @@ def run_stage0_generation(
             condition=job.condition,
             assigned_policy=job.assigned_policy,
             sample_index=job.sample_index,
-            seed=job.seed,
+            pair_seed=job.pair_seed,
             model=manifest.provider.model,
             thinking=job.thinking,
             status=status,
@@ -470,7 +469,7 @@ def extract_python_source(content: str) -> tuple[str, str]:
     return f"{stripped}\n", "raw_text"
 
 
-def _job_seed(
+def _pair_seed(
     base_seed: int, task_id: str, condition: Stage0Condition, sample_index: int
 ) -> int:
     pair_key = {
@@ -526,10 +525,8 @@ def _validate_request_metadata(
         request.model_request.job_id,
         request.model_request.model,
         request.model_request.enable_thinking,
-        request.model_request.seed,
-        request.model_request.temperature,
-        request.model_request.top_p,
-        request.model_request.max_tokens,
+        request.model_request.pair_seed,
+        request.model_request.max_completion_tokens,
     )
     expected = (
         job.task_id,
@@ -541,10 +538,12 @@ def _validate_request_metadata(
         job.job_id,
         manifest.provider.model,
         job.thinking,
-        job.seed,
-        manifest.provider.temperature,
-        manifest.provider.top_p,
-        manifest.provider.max_tokens,
+        job.pair_seed,
+        (
+            manifest.provider.thinking_max_completion_tokens
+            if job.thinking
+            else manifest.provider.max_completion_tokens
+        ),
     )
     if observed != expected:
         raise GenerationError(f"request metadata mismatch for {job.job_id}")

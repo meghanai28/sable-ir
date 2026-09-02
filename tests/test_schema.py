@@ -96,10 +96,12 @@ def test_checked_in_config_has_complete_stage0_design() -> None:
 
     assert len(config.task_paths) == 5
     assert set(config.conditions) == set(Stage0Condition)
-    assert config.hosted_qwen.provider == "alibaba_model_studio"
-    assert config.hosted_qwen.transport == "dashscope_native_sse"
-    assert config.hosted_qwen.model == "qwen3.6-27b"
-    assert config.hosted_qwen.api_key_env == "DASHSCOPE_API_KEY"
+    assert config.hosted_kimi.provider == "moonshot_ai"
+    assert config.hosted_kimi.transport == "openai_chat_completions_sse"
+    assert config.hosted_kimi.model == "kimi-k2.6"
+    assert config.hosted_kimi.base_url == "https://api.moonshot.ai/v1"
+    assert config.hosted_kimi.api_key_env == "MOONSHOT_API_KEY"
+    assert config.hosted_kimi.max_attempts == 1
 
 
 def test_valid_task_pair_exposes_applicable_clause() -> None:

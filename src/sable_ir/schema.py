@@ -243,28 +243,26 @@ class TaskSpec(StrictModel):
         return self
 
 
-class AlibabaQwenConfig(StrictModel):
-    """Alibaba Model Studio's hosted Qwen endpoint, without secret material."""
+class KimiConfig(StrictModel):
+    """Moonshot AI's hosted Kimi endpoint, without secret material."""
 
-    provider: Literal["alibaba_model_studio"] = "alibaba_model_studio"
-    transport: Literal["dashscope_native_sse"] = "dashscope_native_sse"
-    model: Literal["qwen3.6-27b"] = "qwen3.6-27b"
-    base_url: NonEmpty = "https://dashscope-intl.aliyuncs.com/api/v1"
-    generation_path: Literal[
-        "/services/aigc/multimodal-generation/generation"
-    ] = "/services/aigc/multimodal-generation/generation"
+    provider: Literal["moonshot_ai"] = "moonshot_ai"
+    transport: Literal["openai_chat_completions_sse"] = "openai_chat_completions_sse"
+    model: Literal["kimi-k2.6"] = "kimi-k2.6"
+    base_url: NonEmpty = "https://api.moonshot.ai/v1"
+    generation_path: Literal["/chat/completions"] = "/chat/completions"
     api_key_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
     request_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
-    temperature: Annotated[float, Field(ge=0, lt=2)] = 0.2
-    top_p: Annotated[float, Field(gt=0, le=1)] = 0.95
-    max_tokens: Annotated[int, Field(ge=256, le=65_536)] = 4096
-    max_attempts: Annotated[int, Field(ge=1, le=10)] = 4
-    retry_initial_seconds: Annotated[float, Field(ge=0, le=60)] = 2.0
+    max_completion_tokens: Annotated[int, Field(ge=256, le=65_536)] = 4096
+    thinking_max_completion_tokens: Annotated[
+        int, Field(ge=256, le=65_536)
+    ] = 16_384
+    max_attempts: Literal[1] = 1
 
     @model_validator(mode="after")
-    def require_secure_endpoint(self) -> AlibabaQwenConfig:
-        if not self.base_url.startswith("https://"):
-            raise ValueError("Alibaba Model Studio base_url must use HTTPS")
+    def require_secure_endpoint(self) -> KimiConfig:
+        if self.base_url != "https://api.moonshot.ai/v1":
+            raise ValueError("Kimi Stage 0 must use the official international HTTPS endpoint")
         return self
 
 
@@ -299,7 +297,7 @@ class Stage0Config(StrictModel):
     artifacts_dir: NonEmpty = "artifacts"
     samples_per_condition: Annotated[int, Field(ge=1)] = 1
     conditions: Annotated[tuple[Stage0Condition, ...], Field(min_length=1)]
-    hosted_qwen: AlibabaQwenConfig
+    hosted_kimi: KimiConfig
     sandbox: SandboxConfig = SandboxConfig()
     thresholds: Stage0Thresholds = Stage0Thresholds()
 

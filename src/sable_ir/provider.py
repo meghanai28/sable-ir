@@ -1,4 +1,4 @@
-"""Minimal native DashScope SSE client for hosted Qwen generation."""
+"""Minimal official Kimi OpenAI-compatible SSE client for hosted Stage 0 generation."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from pydantic import Field, model_validator
 
-from sable_ir.schema import AlibabaQwenConfig, StrictModel
+from sable_ir.schema import KimiConfig, StrictModel
 
 
 class ProviderError(RuntimeError):
@@ -27,10 +27,8 @@ class ModelRequest(StrictModel):
     prompt: str
     prompt_sha256: str
     enable_thinking: bool
-    seed: int = Field(ge=0, le=2**31 - 1)
-    temperature: float = Field(ge=0, lt=2)
-    top_p: float = Field(gt=0, le=1)
-    max_tokens: int = Field(ge=1)
+    pair_seed: int = Field(ge=0, le=2**31 - 1)
+    max_completion_tokens: int = Field(ge=1)
 
     @model_validator(mode="after")
     def require_matching_prompt_hash(self) -> ModelRequest:
@@ -49,6 +47,7 @@ class TokenUsage(StrictModel):
 
 class ProviderResponse(StrictModel):
     request_id: str
+    model: str
     content: str
     reasoning_content: str
     finish_reason: str | None
@@ -79,10 +78,10 @@ class UrllibStreamTransport:
             yield from response
 
 
-class DashScopeClient:
+class KimiClient:
     def __init__(
         self,
-        config: AlibabaQwenConfig,
+        config: KimiConfig,
         api_key: str,
         transport: StreamTransport | None = None,
     ) -> None:
@@ -99,23 +98,13 @@ class DashScopeClient:
     def build_payload(self, request: ModelRequest) -> dict[str, Any]:
         return {
             "model": request.model,
-            "input": {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [{"text": request.prompt}],
-                    }
-                ]
+            "messages": [{"role": "user", "content": request.prompt}],
+            "thinking": {
+                "type": "enabled" if request.enable_thinking else "disabled"
             },
-            "parameters": {
-                "result_format": "message",
-                "enable_thinking": request.enable_thinking,
-                "incremental_output": True,
-                "seed": request.seed,
-                "temperature": request.temperature,
-                "top_p": request.top_p,
-                "max_tokens": request.max_tokens,
-            },
+            "max_completion_tokens": request.max_completion_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
 
     def generate(self, request: ModelRequest) -> ProviderResponse:
@@ -126,7 +115,6 @@ class DashScopeClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
-            "X-DashScope-SSE": "enable",
         }
         try:
             lines = self.transport.stream(
@@ -135,97 +123,132 @@ class DashScopeClient:
                 body,
                 self.config.request_timeout_seconds,
             )
-            events = tuple(_parse_sse(lines))
+            events, completed = _parse_sse(lines)
         except urllib.error.HTTPError as error:
             detail = error.read(65_536).decode("utf-8", errors="replace")
             raise ProviderError(
-                f"DashScope HTTP {error.code}: {detail}",
+                f"Kimi HTTP {error.code}: {detail}",
                 retryable=error.code == 429 or error.code >= 500,
             ) from error
         except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as error:
-            raise ProviderError(f"DashScope connection failed: {error}", retryable=True) from error
+            raise ProviderError(f"Kimi connection failed: {error}", retryable=True) from error
         except UnicodeError as error:
             raise ProviderError(
-                "DashScope returned text that was not valid UTF-8", retryable=True
+                "Kimi returned text that was not valid UTF-8", retryable=True
             ) from error
 
+        if not completed:
+            raise ProviderError(
+                "Kimi SSE stream ended before data: [DONE]", retryable=True
+            )
         if not events:
-            raise ProviderError("DashScope returned no SSE result events", retryable=True)
-        return _combine_events(events)
+            raise ProviderError("Kimi returned no SSE result events", retryable=True)
+        return _combine_events(events, expected_model=request.model)
 
 
-def _parse_sse(lines: Iterable[bytes]) -> Iterable[dict[str, Any]]:
+def _parse_sse(lines: Iterable[bytes]) -> tuple[tuple[dict[str, Any], ...], bool]:
     data_lines: list[str] = []
+    events: list[dict[str, Any]] = []
+    completed = False
     for raw_line in lines:
         line = raw_line.decode("utf-8", errors="strict").rstrip("\r\n")
         if not line:
-            yield from _decode_event(data_lines)
+            event, done = _decode_event(data_lines)
             data_lines.clear()
+            if event is not None:
+                events.append(event)
+            if done:
+                completed = True
+                break
         elif line.startswith("data:"):
             data_lines.append(line[5:].lstrip())
-    yield from _decode_event(data_lines)
+    if not completed:
+        event, done = _decode_event(data_lines)
+        if event is not None:
+            events.append(event)
+        completed = done
+    return tuple(events), completed
 
 
-def _decode_event(data_lines: list[str]) -> Iterable[dict[str, Any]]:
+def _decode_event(data_lines: list[str]) -> tuple[dict[str, Any] | None, bool]:
     if not data_lines:
-        return
+        return None, False
     payload = "\n".join(data_lines)
     if payload == "[DONE]":
-        return
+        return None, True
     try:
         decoded = json.loads(payload)
     except json.JSONDecodeError as error:
-        raise ProviderError(f"DashScope returned malformed SSE JSON: {error}") from error
+        raise ProviderError(f"Kimi returned malformed SSE JSON: {error}") from error
     if not isinstance(decoded, dict):
-        raise ProviderError("DashScope SSE data must contain a JSON object")
-    yield decoded
+        raise ProviderError("Kimi SSE data must contain a JSON object")
+    return decoded, False
 
 
-def _combine_events(events: tuple[dict[str, Any], ...]) -> ProviderResponse:
+def _combine_events(
+    events: tuple[dict[str, Any], ...], *, expected_model: str
+) -> ProviderResponse:
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     request_id = ""
+    response_model = ""
     finish_reason: str | None = None
     usage_data: dict[str, Any] = {}
+    usage_seen = False
 
     for event in events:
-        if event.get("code") or event.get("message") and "output" not in event:
-            code = event.get("code", "unknown")
-            message = event.get("message", "unknown provider error")
-            raise ProviderError(f"DashScope error {code}: {message}")
-        request_id = str(event.get("request_id", request_id))
+        error = event.get("error")
+        if isinstance(error, dict):
+            error_type = error.get("type", "unknown")
+            message = error.get("message", "unknown provider error")
+            raise ProviderError(f"Kimi error {error_type}: {message}")
+        request_id = str(event.get("id", request_id))
+        event_model = event.get("model")
+        if isinstance(event_model, str):
+            response_model = event_model
         usage = event.get("usage")
         if isinstance(usage, dict):
             usage_data = usage
-        output = event.get("output")
-        if not isinstance(output, dict):
-            continue
-        choices = output.get("choices")
+            usage_seen = True
+        choices = event.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             continue
         choice = choices[0]
+        choice_usage = choice.get("usage")
+        if isinstance(choice_usage, dict):
+            usage_data = choice_usage
+            usage_seen = True
         raw_finish = choice.get("finish_reason")
         if raw_finish not in {None, "null"}:
             finish_reason = str(raw_finish)
-        message = choice.get("message")
+        message = choice.get("delta")
+        if not isinstance(message, dict):
+            message = choice.get("message")
         if not isinstance(message, dict):
             continue
         content_parts.append(_message_text(message.get("content")))
         reasoning_parts.append(_message_text(message.get("reasoning_content")))
 
-    details = usage_data.get("output_tokens_details", {})
+    if not request_id:
+        raise ProviderError("Kimi response omitted completion id")
+    if response_model != expected_model:
+        raise ProviderError(
+            f"Kimi returned model {response_model or '<missing>'}, expected {expected_model}"
+        )
+    if not usage_seen:
+        raise ProviderError("Kimi response omitted final token usage")
+    details = usage_data.get("completion_tokens_details", {})
     if not isinstance(details, dict):
         details = {}
     usage = TokenUsage(
-        input_tokens=_integer(usage_data.get("input_tokens")),
-        output_tokens=_integer(usage_data.get("output_tokens")),
+        input_tokens=_integer(usage_data.get("prompt_tokens")),
+        output_tokens=_integer(usage_data.get("completion_tokens")),
         total_tokens=_integer(usage_data.get("total_tokens")),
         reasoning_tokens=_integer(details.get("reasoning_tokens")),
     )
-    if not request_id:
-        raise ProviderError("DashScope response omitted request_id")
     return ProviderResponse(
         request_id=request_id,
+        model=response_model,
         content="".join(content_parts),
         reasoning_content="".join(reasoning_parts),
         finish_reason=finish_reason,
@@ -235,17 +258,7 @@ def _combine_events(events: tuple[dict[str, Any], ...]) -> ProviderResponse:
 
 
 def _message_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts: list[str] = []
-        for item in value:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return "".join(parts)
-    return ""
+    return value if isinstance(value, str) else ""
 
 
 def _integer(value: object) -> int:

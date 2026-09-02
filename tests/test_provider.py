@@ -6,13 +6,13 @@ from collections.abc import Iterable
 
 import pytest
 
-from sable_ir.provider import DashScopeClient, ModelRequest, ProviderError
-from sable_ir.schema import AlibabaQwenConfig
+from sable_ir.provider import KimiClient, ModelRequest, ProviderError
+from sable_ir.schema import KimiConfig
 
 
 class FakeStreamTransport:
-    def __init__(self, lines: list[bytes]) -> None:
-        self.lines = lines
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
         self.url = ""
         self.headers: dict[str, str] = {}
         self.body = b""
@@ -25,125 +25,163 @@ class FakeStreamTransport:
         self.headers = headers
         self.body = body
         self.timeout = timeout
-        return (
-            line
-            for event in self.lines
-            for line in event.splitlines(keepends=True)
-        )
+        return (line for chunk in self.chunks for line in chunk.splitlines(keepends=True))
 
 
 def _event(payload: dict[str, object]) -> bytes:
-    return f"data:{json.dumps(payload)}\n\n".encode()
+    return f"data: {json.dumps(payload)}\n\n".encode()
 
 
-def test_native_sse_client_records_reasoning_content_and_usage() -> None:
-    lines = [
-        _event(
-            {
-                "request_id": "request-123",
-                "output": {
-                    "choices": [
-                        {
-                            "message": {
-                                "role": "assistant",
-                                "content": [],
-                                "reasoning_content": "consider ",
-                            },
-                            "finish_reason": "null",
-                        }
-                    ]
-                },
-                "usage": {"input_tokens": 20, "output_tokens": 2, "total_tokens": 22},
-            }
-        ),
-        _event(
-            {
-                "request_id": "request-123",
-                "output": {
-                    "choices": [
-                        {
-                            "message": {
-                                "role": "assistant",
-                                "content": [{"text": "def answer():\n"}],
-                                "reasoning_content": "",
-                            },
-                            "finish_reason": "null",
-                        }
-                    ]
-                },
-                "usage": {"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
-            }
-        ),
-        _event(
-            {
-                "request_id": "request-123",
-                "output": {
-                    "choices": [
-                        {
-                            "message": {
-                                "role": "assistant",
-                                "content": [{"text": "    return 42\n"}],
-                                "reasoning_content": "",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ]
-                },
-                "usage": {
-                    "input_tokens": 20,
-                    "output_tokens": 10,
-                    "total_tokens": 30,
-                    "output_tokens_details": {"reasoning_tokens": 2},
-                },
-            }
-        ),
-    ]
-    transport = FakeStreamTransport(lines)
-    config = AlibabaQwenConfig(api_key_env="DASHSCOPE_API_KEY")
-    client = DashScopeClient(config, "sk-test-secret", transport)
-    request = ModelRequest(
+def _done() -> bytes:
+    return b"data: [DONE]\n\n"
+
+
+def _request(*, thinking: bool = True) -> ModelRequest:
+    return ModelRequest(
         job_id="job",
-        model="qwen3.6-27b",
+        model="kimi-k2.6",
         prompt="write code",
         prompt_sha256=hashlib.sha256(b"write code").hexdigest(),
-        enable_thinking=True,
-        seed=7,
-        temperature=0.2,
-        top_p=0.95,
-        max_tokens=4096,
+        enable_thinking=thinking,
+        pair_seed=7,
+        max_completion_tokens=16_384 if thinking else 4096,
     )
 
-    response = client.generate(request)
 
+def test_kimi_sse_client_records_reasoning_content_usage_and_safe_payload() -> None:
+    chunks = [
+        _event(
+            {
+                "id": "completion-123",
+                "model": "kimi-k2.6",
+                "choices": [
+                    {
+                        "delta": {"reasoning_content": "consider ", "content": ""},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        _event(
+            {
+                "id": "completion-123",
+                "model": "kimi-k2.6",
+                "choices": [
+                    {
+                        "delta": {"content": "def answer():\n    return 42\n"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        ),
+        _event(
+            {
+                "id": "completion-123",
+                "model": "kimi-k2.6",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 10,
+                    "total_tokens": 30,
+                    "completion_tokens_details": {"reasoning_tokens": 2},
+                },
+            }
+        ),
+        _done(),
+    ]
+    transport = FakeStreamTransport(chunks)
+    config = KimiConfig(api_key_env="MOONSHOT_API_KEY")
+    client = KimiClient(config, "sk-test-secret", transport)
+
+    response = client.generate(_request())
+
+    assert response.model == "kimi-k2.6"
     assert response.content == "def answer():\n    return 42\n"
     assert response.reasoning_content == "consider "
     assert response.finish_reason == "stop"
     assert response.usage.reasoning_tokens == 2
-    assert transport.url.endswith("/services/aigc/multimodal-generation/generation")
-    assert transport.headers["X-DashScope-SSE"] == "enable"
+    assert transport.url == "https://api.moonshot.ai/v1/chat/completions"
+    assert "Authorization" in transport.headers
     payload = json.loads(transport.body)
-    assert payload["parameters"]["enable_thinking"] is True
-    assert payload["parameters"]["incremental_output"] is True
-    assert payload["input"]["messages"][0]["content"] == [{"text": "write code"}]
+    assert payload == {
+        "model": "kimi-k2.6",
+        "messages": [{"role": "user", "content": "write code"}],
+        "thinking": {"type": "enabled"},
+        "max_completion_tokens": 16_384,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    assert "temperature" not in payload
+    assert "top_p" not in payload
+    assert "seed" not in payload
+
+
+def test_nonthinking_payload_explicitly_disables_thinking() -> None:
+    client = KimiClient(KimiConfig(api_key_env="MOONSHOT_API_KEY"), "sk-test-secret")
+
+    payload = client.build_payload(_request(thinking=False))
+
+    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["max_completion_tokens"] == 4096
+
+
+def test_incomplete_sse_stream_is_retryable_but_not_accepted() -> None:
+    transport = FakeStreamTransport(
+        [
+            _event(
+                {
+                    "id": "completion-123",
+                    "model": "kimi-k2.6",
+                    "choices": [
+                        {"delta": {"content": "partial"}, "finish_reason": "stop"}
+                    ],
+                }
+            )
+        ]
+    )
+    client = KimiClient(
+        KimiConfig(api_key_env="MOONSHOT_API_KEY"), "sk-test-secret", transport
+    )
+
+    with pytest.raises(ProviderError, match=r"data: \[DONE\]") as captured:
+        client.generate(_request(thinking=False))
+
+    assert captured.value.retryable
+
+
+def test_wrong_returned_model_is_rejected() -> None:
+    transport = FakeStreamTransport(
+        [
+            _event(
+                {
+                    "id": "completion-123",
+                    "model": "another-model",
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            ),
+            _done(),
+        ]
+    )
+    client = KimiClient(
+        KimiConfig(api_key_env="MOONSHOT_API_KEY"), "sk-test-secret", transport
+    )
+
+    with pytest.raises(ProviderError, match="expected kimi-k2.6"):
+        client.generate(_request(thinking=False))
 
 
 def test_invalid_sse_utf8_is_a_retryable_provider_error() -> None:
-    transport = FakeStreamTransport([b"data:\xff\n\n"])
-    config = AlibabaQwenConfig(api_key_env="DASHSCOPE_API_KEY")
-    client = DashScopeClient(config, "sk-test-secret", transport)
-    request = ModelRequest(
-        job_id="job",
-        model="qwen3.6-27b",
-        prompt="write code",
-        prompt_sha256=hashlib.sha256(b"write code").hexdigest(),
-        enable_thinking=False,
-        seed=7,
-        temperature=0.2,
-        top_p=0.95,
-        max_tokens=4096,
+    transport = FakeStreamTransport([b"data: \xff\n\n"])
+    client = KimiClient(
+        KimiConfig(api_key_env="MOONSHOT_API_KEY"), "sk-test-secret", transport
     )
 
     with pytest.raises(ProviderError, match="valid UTF-8") as captured:
-        client.generate(request)
+        client.generate(_request(thinking=False))
 
     assert captured.value.retryable

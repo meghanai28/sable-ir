@@ -17,11 +17,16 @@ stretch goal are outside this checkpoint.
 | Unmodified CWEval anchor | Implemented after sweep | Exact upstream code prompts are hash-checked and pinned to CWEval revision `e9a2a124c8c53679b6d8d27adfd2f6c40e7576d7`; faithful functionality/security test ports run separately from adapted A/B suites. |
 | No assigned-value leakage from the surface request | Implemented with automated and prior human audit | Only the applicable document clause changes across A/B prompt pairs; labels and gold clause IDs are not sent. |
 | Eight outputs per task | Implemented | The frozen matrix has 40 jobs across all eight required conditions. |
-| Native-thinking ceiling | Implemented | Only the two native-thinking A/B conditions set `enable_thinking=true`; reasoning and token usage are preserved separately. |
+| Native-thinking ceiling | Implemented | Only the two native-thinking A/B conditions send `thinking.type=enabled`; reasoning and token usage are preserved separately. |
 | Functionality, A, B, and security execution | Implemented | Adapted direct conditions run four fresh suites. Upstream anchor jobs run functionality/security and mark A/B not applicable. |
 | Sandboxed generated-code execution | Implemented | Docker is the default, with no network, read-only mounts/root, dropped capabilities, resource limits, timeouts, and fresh state. |
 | Continuation rules are not statistical claims | Implemented | Reports identify them as five-task engineering gates and never emit confidence claims. |
-| Frozen prompts and decision rules | Implemented | Exact requests, tasks, test suites, model settings, seeds, sandbox settings, and thresholds are SHA-256-bound into immutable artifacts. |
+| Frozen prompts and decision rules | Implemented | Exact requests, tasks, test suites, model settings, internal pair IDs, sandbox settings, and thresholds are SHA-256-bound into immutable artifacts. |
+
+Hosted Kimi does not document a provider-side seed parameter. The frozen `pair_seed` is therefore
+only an A/B pairing identifier and is never sent to the API. Hosted A/B jobs are request-paired,
+not deterministic seed-matched; mechanistic work must first reproduce the phenomenon on the local
+open-weight model, where actual seed control can be applied.
 
 ## Continuation-rule interpretation
 
@@ -52,10 +57,11 @@ the result `invalid_task_or_tests`. G1b separately requires 40% full-document fu
 ## Credential-day sequence
 
 1. Start Docker and run `uv run sable-ir audit-tasks` without `--unsafe-local`.
-2. Export a Singapore-region `DASHSCOPE_API_KEY` and run `uv run sable-ir qwen-preflight`.
-3. Run the targeted non-thinking upstream-anchor canary from the hosted-Qwen runbook.
+2. Revoke any credential disclosed outside the shell, export a replacement `MOONSHOT_API_KEY`, and
+   run `uv run sable-ir kimi-preflight`.
+3. Run the targeted non-thinking upstream-anchor canary from the hosted-Kimi runbook.
 4. Run the targeted native-thinking canary and confirm nonzero reasoning content/usage.
 5. Evaluate both canaries in Docker and inspect their immutable artifacts.
-6. Resume the remaining jobs and evaluate all 40.
+6. Unlock the remaining jobs with the exact run-ID confirmation, then evaluate all 40.
 7. Manually audit document applicability and distractor irrelevance, then record both results in a
    new final report ID.

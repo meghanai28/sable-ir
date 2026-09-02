@@ -37,9 +37,9 @@ class ReferenceGenerationClient:
         self.source = source
 
     def generate(self, request: ModelRequest) -> ProviderResponse:
-        del request
         return ProviderResponse(
             request_id="reference-fixture",
+            model=request.model,
             content=self.source,
             reasoning_content="",
             finish_reason="stop",

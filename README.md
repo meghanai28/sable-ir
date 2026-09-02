@@ -1,7 +1,7 @@
 # sable-ir
 
 This repository implements the staged experiment described in the accompanying proposal. The
-current checkpoint contains the Stage 0 scaffold, sandbox, five-task A/B corpus, hosted-Qwen
+current checkpoint contains the Stage 0 scaffold, sandbox, five-task A/B corpus, hosted-Kimi
 generation path, and continuation-gate scorer. The activation-hook smoke test remains a later
 checkpoint.
 
@@ -55,12 +55,12 @@ runs in a fresh container. Adapted jobs run all four suites, while exact upstrea
 functionality and original-security suites only. The `--unsafe-local` option is only for trusted
 development fixtures and never activates automatically.
 
-Stage 0 is pinned to Alibaba Cloud Model Studio's hosted `qwen3.6-27b` through the native DashScope
-endpoint. Configuration stores environment-variable **names**, never API keys. Runtime artifacts
-belong under `artifacts/` and are ignored by Git.
+Stage 0 is pinned to Moonshot AI's hosted `kimi-k2.6` through its international
+OpenAI-compatible Chat Completions endpoint. Configuration stores environment-variable **names**,
+never API keys. Runtime artifacts belong under `artifacts/` and are ignored by Git.
 
 The complete account-preflight, request-freezing, canary, resume, and artifact instructions are in
-[the hosted Qwen runbook](docs/hosted-qwen-stage0.md).
+[the hosted Kimi runbook](docs/hosted-kimi-stage0.md).
 
 The proposal-to-implementation trace and audited scoring decisions are recorded in
 [the Stage 0 compliance sweep](docs/stage0-compliance.md).

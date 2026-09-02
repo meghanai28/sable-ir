@@ -13,6 +13,7 @@ from sable_ir.audit import audit_stage0_tasks
 from sable_ir.config import ConfigLoadError, load_stage0_config, load_task
 from sable_ir.generation import (
     GenerationError,
+    GenerationManifest,
     client_from_environment,
     load_manifest,
     prepare_stage0_run,
@@ -26,7 +27,7 @@ from sable_ir.harness import (
     HarnessError,
     UnsafeLocalSandbox,
 )
-from sable_ir.schema import Stage0Config, TaskSpec, json_schema_for
+from sable_ir.schema import Stage0Condition, Stage0Config, TaskSpec, json_schema_for
 from sable_ir.scoring import (
     OverallRecommendation,
     ScoringError,
@@ -77,12 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     preflight_parser = subparsers.add_parser(
-        "qwen-preflight", help="check local hosted-Qwen configuration without an API call"
+        "kimi-preflight", help="check local hosted-Kimi configuration without an API call"
     )
     preflight_parser.add_argument("--config", type=Path, default=Path("config/stage0.toml"))
 
     prepare_parser = subparsers.add_parser(
-        "prepare-stage0", help="freeze the Stage 0 request matrix without calling Qwen"
+        "prepare-stage0", help="freeze the Stage 0 request matrix without calling Kimi"
     )
     prepare_parser.add_argument("--run-id", required=True)
     prepare_parser.add_argument("--config", type=Path, default=Path("config/stage0.toml"))
@@ -90,12 +91,19 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--run-directory", type=Path)
 
     generate_parser = subparsers.add_parser(
-        "generate-stage0", help="execute or inspect a prepared, resumable Qwen run"
+        "generate-stage0", help="execute or inspect a prepared, resumable Kimi run"
     )
     generate_parser.add_argument("manifest", type=Path)
     generation_selection = generate_parser.add_mutually_exclusive_group()
-    generation_selection.add_argument("--limit", type=int)
     generation_selection.add_argument("--job-id")
+    generation_selection.add_argument(
+        "--all", action="store_true", help="select the full run after both canaries are audited"
+    )
+    generate_parser.add_argument(
+        "--confirm-full-run",
+        metavar="RUN_ID",
+        help="required with --all for live generation; must exactly match the manifest run ID",
+    )
     generate_parser.add_argument(
         "--dry-run", action="store_true", help="show run status without credentials or API calls"
     )
@@ -149,7 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config = load_stage0_config(args.path)
             print(
                 f"valid Stage 0 config: {len(config.task_paths)} tasks, "
-                f"{len(config.conditions)} conditions, model {config.hosted_qwen.model}"
+                f"{len(config.conditions)} conditions, model {config.hosted_kimi.model}"
             )
         elif args.command == "validate-task":
             for path in args.paths:
@@ -191,9 +199,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"wrote task audit: {args.output}")
             if not audit_result.passed:
                 return 1
-        elif args.command == "qwen-preflight":
+        elif args.command == "kimi-preflight":
             config = load_stage0_config(args.config)
-            preflight = provider_preflight(config.hosted_qwen)
+            preflight = provider_preflight(config.hosted_kimi)
             print(preflight.model_dump_json(indent=2))
             if not preflight.ready_for_requests:
                 return 1
@@ -218,7 +226,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 selected = select_manifest_jobs(
                     manifest,
-                    limit=args.limit,
                     job_id=args.job_id,
                 )
                 print(
@@ -226,11 +233,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{completed} complete, {len(selected)} selected; no API calls made"
                 )
             else:
+                if args.job_id is None and not args.all:
+                    raise GenerationError(
+                        "live generation requires one explicit --job-id; use --all only after "
+                        "auditing both canaries"
+                    )
+                if args.all and args.confirm_full_run != manifest.run_id:
+                    raise GenerationError(
+                        "--all requires --confirm-full-run with the exact manifest run ID"
+                    )
+                if args.all:
+                    _require_canary_artifacts(args.manifest, manifest)
                 client = client_from_environment(manifest.provider)
                 generation_summary = run_stage0_generation(
                     args.manifest,
                     client,
-                    limit=args.limit,
                     job_id=args.job_id,
                 )
                 print(generation_summary.model_dump_json(indent=2))
@@ -290,3 +307,40 @@ def _audit_choice(value: str | None) -> bool | None:
     if value is None:
         return None
     return value == "passed"
+
+
+def _require_canary_artifacts(
+    manifest_path: Path, manifest: GenerationManifest
+) -> None:
+    """Refuse a paid full run until both representative canaries were evaluated."""
+    first_task_id = manifest.jobs[0].task_id
+    required_conditions = (
+        Stage0Condition.ORIGINAL_BENCHMARK,
+        Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A,
+    )
+    run_directory = manifest_path.resolve().parent
+    missing: list[str] = []
+    for condition in required_conditions:
+        matching = [
+            job
+            for job in manifest.jobs
+            if job.task_id == first_task_id
+            and job.condition is condition
+            and job.sample_index == 0
+        ]
+        if len(matching) != 1:
+            raise GenerationError(
+                f"manifest must contain one {condition.value} canary for {first_task_id}"
+            )
+        job = matching[0]
+        for artifact in (
+            run_directory / job.result_path,
+            run_directory / "jobs" / job.job_id / "evaluation.json",
+        ):
+            if not artifact.is_file():
+                missing.append(str(artifact.relative_to(run_directory)))
+    if missing:
+        raise GenerationError(
+            "full generation is locked until both canaries have result.json and "
+            f"evaluation.json artifacts; missing: {', '.join(missing)}"
+        )

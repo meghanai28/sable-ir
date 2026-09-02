@@ -758,7 +758,7 @@ def _build_gates(
         _minimum_gate(
             "G5",
             "Joint functional exact A-only to B-only switch across all completed "
-            "full-document pairs",
+            "request-paired full-document pairs",
             derived.full_policy_controllability,
             thresholds.full_policy_controllability_min,
         ),
@@ -882,19 +882,19 @@ def _validate_manifest_pairing(manifest: GenerationManifest) -> None:
             Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_B,
         ),
     ):
-        seeds_a = {
-            (job.task_id, job.sample_index): job.seed
+        pair_ids_a = {
+            (job.task_id, job.sample_index): job.pair_seed
             for job in manifest.jobs
             if job.condition is condition_a
         }
-        seeds_b = {
-            (job.task_id, job.sample_index): job.seed
+        pair_ids_b = {
+            (job.task_id, job.sample_index): job.pair_seed
             for job in manifest.jobs
             if job.condition is condition_b
         }
-        if seeds_a != seeds_b:
+        if pair_ids_a != pair_ids_b:
             raise ScoringError(
-                "manifest does not contain seed-matched "
+                "manifest does not contain request-paired "
                 f"{condition_a.value}/{condition_b.value} pairs"
             )
 
@@ -949,7 +949,7 @@ def _validate_generation_metadata(
         generation.condition,
         generation.assigned_policy,
         generation.sample_index,
-        generation.seed,
+        generation.pair_seed,
         generation.model,
         generation.thinking,
     )
@@ -959,7 +959,7 @@ def _validate_generation_metadata(
         job.condition,
         job.assigned_policy,
         job.sample_index,
-        job.seed,
+        job.pair_seed,
         manifest.provider.model,
         job.thinking,
     )
@@ -999,10 +999,8 @@ def _validate_request_artifact(
         request.model_request.job_id,
         request.model_request.model,
         request.model_request.enable_thinking,
-        request.model_request.seed,
-        request.model_request.temperature,
-        request.model_request.top_p,
-        request.model_request.max_tokens,
+        request.model_request.pair_seed,
+        request.model_request.max_completion_tokens,
         request.model_request.prompt_sha256,
     )
     expected = (
@@ -1015,10 +1013,12 @@ def _validate_request_artifact(
         job.job_id,
         manifest.provider.model,
         job.thinking,
-        job.seed,
-        manifest.provider.temperature,
-        manifest.provider.top_p,
-        manifest.provider.max_tokens,
+        job.pair_seed,
+        (
+            manifest.provider.thinking_max_completion_tokens
+            if job.thinking
+            else manifest.provider.max_completion_tokens
+        ),
         generation.prompt_sha256,
     )
     if observed != expected:
@@ -1046,6 +1046,7 @@ def _validate_response_artifacts(
     }
     if (
         response.request_id != generation.provider_request_id
+        or response.model != generation.model
         or response.finish_reason != generation.finish_reason
         or expected_usage != generation.usage
         or hashlib.sha256(response.content.encode()).hexdigest()
