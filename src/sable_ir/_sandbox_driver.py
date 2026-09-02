@@ -18,28 +18,37 @@ def compile_candidate(path: Path) -> int:
     try:
         source = path.read_bytes()
         compile(source, str(path), "exec")
-    except (OSError, SyntaxError):
+    except SyntaxError:
         traceback.print_exc()
         return 1
+    except OSError:
+        traceback.print_exc()
+        return 2
     return 0
 
 
 def run_suite(candidate_dir: Path, suite_path: Path) -> int:
     sys.path.insert(0, str(candidate_dir))
     os.chdir(os.environ.get("SABLE_IR_RUN_TMP", "/tmp"))
+    spec = importlib.util.spec_from_file_location("sable_ir_test_suite", suite_path)
+    if spec is None or spec.loader is None:
+        print(f"could not load test suite {suite_path}", file=sys.stderr)
+        return 2
     try:
-        spec = importlib.util.spec_from_file_location("sable_ir_test_suite", suite_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"could not load test suite {suite_path}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         suite = unittest.defaultTestLoader.loadTestsFromModule(module)
-        if suite.countTestCases() == 0:
-            raise RuntimeError(f"test suite {suite_path} contains no unittest test cases")
-        result = unittest.TextTestRunner(verbosity=2).run(suite)
-    except BaseException:  # The sandbox must turn all candidate/test failures into an exit code.
+    except BaseException:  # Candidate import and test failures are model outcomes.
         traceback.print_exc()
         return 1
+    if suite.countTestCases() == 0:
+        print(f"test suite {suite_path} contains no unittest test cases", file=sys.stderr)
+        return 2
+    try:
+        result = unittest.TextTestRunner(verbosity=2).run(suite)
+    except BaseException:  # The trusted evaluator itself could not complete.
+        traceback.print_exc()
+        return 2
     return 0 if result.wasSuccessful() else 1
 
 

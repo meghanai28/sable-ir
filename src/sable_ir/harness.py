@@ -19,14 +19,24 @@ from typing import BinaryIO, cast
 
 from pydantic import Field
 
-from sable_ir.schema import SandboxConfig, StrictModel, TaskSpec, TestSuiteKind
+from sable_ir.schema import (
+    SandboxConfig,
+    StrictModel,
+    TaskSpec,
+    TestSuiteKind,
+    TestSuiteRef,
+)
 
 
 class HarnessError(RuntimeError):
     """The harness input or execution environment is invalid."""
 
 
-class HarnessUnavailable(HarnessError):
+class HarnessInfrastructureError(HarnessError):
+    """A retryable sandbox or evaluator infrastructure failure occurred."""
+
+
+class HarnessUnavailable(HarnessInfrastructureError):
     """The selected sandbox backend is not available."""
 
 
@@ -73,17 +83,24 @@ class SandboxBackend(ABC):
     def run(self, workspace: Path, mode: str, target: str, timeout: float) -> ExecutionResult:
         command, cleanup_name = self.command(workspace, mode, target)
         started = time.monotonic()
-        process = subprocess.Popen(
-            command,
-            cwd=workspace,
-            env=self.environment(workspace),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=workspace,
+                env=self.environment(workspace),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise HarnessInfrastructureError(
+                f"could not launch sandbox process: {error}"
+            ) from error
         if process.stdout is None or process.stderr is None:
-            raise HarnessError("sandbox process was created without output pipes")
+            raise HarnessInfrastructureError(
+                "sandbox process was created without output pipes"
+            )
         stdout_capture = _BoundedCapture(
             cast(BinaryIO, process.stdout), self.config.max_output_bytes
         )
@@ -107,13 +124,19 @@ class SandboxBackend(ABC):
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
         if stdout_thread.is_alive() or stderr_thread.is_alive():
-            raise HarnessError("sandbox output pipes did not close after process termination")
+            raise HarnessInfrastructureError(
+                "sandbox output pipes did not close after process termination"
+            )
         duration = time.monotonic() - started
         stdout = stdout_capture.text()
         stderr = stderr_capture.text()
         if cleanup_name is not None and not timed_out and process.returncode in {125, 126, 127}:
             raise HarnessUnavailable(
                 f"container runtime failed with exit code {process.returncode}: {stderr.strip()}"
+            )
+        if not timed_out and process.returncode == 2:
+            raise HarnessInfrastructureError(
+                f"sandbox evaluator failed: {stderr.strip() or 'no diagnostic output'}"
             )
         if timed_out:
             status = RunStatus.TIMED_OUT
@@ -149,13 +172,16 @@ class DockerSandbox(SandboxBackend):
                 "Docker is required for untrusted execution; install/start Docker or use "
                 "--unsafe-local only for trusted development fixtures"
             )
-        check = subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
+        try:
+            check = subprocess.run(
+                ["docker", "info", "--format", "{{.ServerVersion}}"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise HarnessUnavailable(f"could not query Docker daemon: {error}") from error
         if check.returncode != 0:
             raise HarnessUnavailable(f"Docker daemon is unavailable: {check.stderr.strip()}")
 
@@ -247,7 +273,12 @@ class EvaluationHarness:
         self.repository_root = repository_root.resolve()
         self.backend = backend
 
-    def evaluate(self, task: TaskSpec, candidate_path: Path) -> EvaluationResult:
+    def evaluate(
+        self,
+        task: TaskSpec,
+        candidate_path: Path,
+        suites: dict[TestSuiteKind, TestSuiteRef] | None = None,
+    ) -> EvaluationResult:
         self.backend.ensure_available()
         candidate = _read_bounded(candidate_path, self.backend.config.max_candidate_bytes)
         candidate_hash = hashlib.sha256(candidate).hexdigest()
@@ -272,13 +303,24 @@ class EvaluationHarness:
                 suites={kind: skipped for kind in TestSuiteKind},
             )
 
-        suites: dict[TestSuiteKind, ExecutionResult] = {}
+        suite_refs = task.tests if suites is None else suites
+        suite_results: dict[TestSuiteKind, ExecutionResult] = {}
         for kind in TestSuiteKind:
+            if kind not in suite_refs:
+                suite_results[kind] = ExecutionResult(
+                    status=RunStatus.SKIPPED,
+                    exit_code=None,
+                    duration_seconds=0,
+                    stderr="suite is not applicable to this condition",
+                )
+                continue
             test_path = resolve_repository_path(
-                self.repository_root, task.tests[kind].path, label=f"{kind.value} test suite"
+                self.repository_root,
+                suite_refs[kind].path,
+                label=f"{kind.value} test suite",
             )
             test_source = _read_bounded(test_path, self.backend.config.max_candidate_bytes)
-            suites[kind] = self._execute(
+            suite_results[kind] = self._execute(
                 candidate,
                 mode="test",
                 timeout=self.backend.config.suite_timeout_seconds,
@@ -289,7 +331,7 @@ class EvaluationHarness:
             candidate_sha256=candidate_hash,
             backend=self.backend.name,
             compile=compile_result,
-            suites=suites,
+            suites=suite_results,
         )
 
     def _execute(
@@ -300,7 +342,7 @@ class EvaluationHarness:
         test_source: bytes | None = None,
     ) -> ExecutionResult:
         with tempfile.TemporaryDirectory(prefix="sable-ir-") as temp_dir:
-            workspace = Path(temp_dir)
+            workspace = Path(temp_dir).resolve()
             (workspace / "tmp").mkdir(mode=0o700)
             (workspace / "solution.py").write_bytes(candidate)
             shutil.copyfile(

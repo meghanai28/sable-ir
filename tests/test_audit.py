@@ -14,3 +14,8 @@ def test_checked_in_stage0_corpus_is_mutually_distinguishing() -> None:
     assert audit.passed, audit.model_dump_json(indent=2)
     assert set(audit.applicable_positions) == {1, 2, 3, 4, 5}
     assert all(task.passed for task in audit.tasks)
+    assert all(
+        task.original_reference.suite_statuses["functionality"].value == "passed"
+        and task.original_reference.suite_statuses["original_security"].value == "passed"
+        for task in audit.tasks
+    )

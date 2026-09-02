@@ -4,7 +4,9 @@ import hashlib
 import json
 from collections.abc import Iterable
 
-from sable_ir.provider import DashScopeClient, ModelRequest
+import pytest
+
+from sable_ir.provider import DashScopeClient, ModelRequest, ProviderError
 from sable_ir.schema import AlibabaQwenConfig
 
 
@@ -123,3 +125,25 @@ def test_native_sse_client_records_reasoning_content_and_usage() -> None:
     assert payload["parameters"]["enable_thinking"] is True
     assert payload["parameters"]["incremental_output"] is True
     assert payload["input"]["messages"][0]["content"] == [{"text": "write code"}]
+
+
+def test_invalid_sse_utf8_is_a_retryable_provider_error() -> None:
+    transport = FakeStreamTransport([b"data:\xff\n\n"])
+    config = AlibabaQwenConfig(api_key_env="DASHSCOPE_API_KEY")
+    client = DashScopeClient(config, "sk-test-secret", transport)
+    request = ModelRequest(
+        job_id="job",
+        model="qwen3.6-27b",
+        prompt="write code",
+        prompt_sha256=hashlib.sha256(b"write code").hexdigest(),
+        enable_thinking=False,
+        seed=7,
+        temperature=0.2,
+        top_p=0.95,
+        max_tokens=4096,
+    )
+
+    with pytest.raises(ProviderError, match="valid UTF-8") as captured:
+        client.generate(request)
+
+    assert captured.value.retryable

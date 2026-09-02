@@ -48,6 +48,16 @@ def test_prepare_freezes_all_forty_stage0_requests(tmp_path: Path) -> None:
     assert {job.condition for job in manifest.jobs} == set(Stage0Condition)
     assert all((run_directory / job.request_path).is_file() for job in manifest.jobs)
     assert (run_directory / "manifest.json").is_file()
+    assert {
+        len(job.test_sha256s)
+        for job in manifest.jobs
+        if job.condition is Stage0Condition.ORIGINAL_BENCHMARK
+    } == {2}
+    assert {
+        len(job.test_sha256s)
+        for job in manifest.jobs
+        if job.condition is not Stage0Condition.ORIGINAL_BENCHMARK
+    } == {4}
     jobs = {job.condition: job for job in manifest.jobs if job.task_id == "path_symlink_report"}
     assert (
         jobs[Stage0Condition.RELEVANT_CLAUSE_ONLY_A].seed
@@ -101,6 +111,26 @@ def test_generation_refuses_a_changed_frozen_request(tmp_path: Path) -> None:
         run_stage0_generation(run_directory / "manifest.json", client, limit=1)
 
     assert client.requests == []
+
+
+def test_generation_can_target_a_native_thinking_canary(tmp_path: Path) -> None:
+    root = Path.cwd()
+    config = load_stage0_config(root / "config/stage0.toml")
+    run_directory = tmp_path / "prepared"
+    manifest = prepare_stage0_run(config, root, run_directory, "target-test")
+    target = next(job for job in manifest.jobs if job.thinking)
+    client = FakeGenerationClient()
+
+    summary = run_stage0_generation(
+        run_directory / "manifest.json",
+        client,
+        job_id=target.job_id,
+    )
+
+    assert summary.generated == 1
+    assert len(client.requests) == 1
+    assert client.requests[0].job_id == target.job_id
+    assert client.requests[0].enable_thinking
 
 
 def test_preflight_never_contacts_provider_and_never_returns_key(monkeypatch) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from sable_ir.generation import (
     prepare_stage0_run,
     provider_preflight,
     run_stage0_generation,
+    select_manifest_jobs,
 )
 from sable_ir.harness import (
     DockerSandbox,
@@ -28,6 +30,7 @@ from sable_ir.schema import Stage0Config, TaskSpec, json_schema_for
 from sable_ir.scoring import (
     OverallRecommendation,
     ScoringError,
+    build_dataset_audit_review,
     build_stage0_report,
     evaluate_generated_candidates,
     write_stage0_report,
@@ -90,7 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
         "generate-stage0", help="execute or inspect a prepared, resumable Qwen run"
     )
     generate_parser.add_argument("manifest", type=Path)
-    generate_parser.add_argument("--limit", type=int)
+    generation_selection = generate_parser.add_mutually_exclusive_group()
+    generation_selection.add_argument("--limit", type=int)
+    generation_selection.add_argument("--job-id")
     generate_parser.add_argument(
         "--dry-run", action="store_true", help="show run status without credentials or API calls"
     )
@@ -100,7 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     score_parser.add_argument("manifest", type=Path)
     score_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
-    score_parser.add_argument("--limit", type=int)
+    score_selection = score_parser.add_mutually_exclusive_group()
+    score_selection.add_argument("--limit", type=int)
+    score_selection.add_argument("--job-id")
     score_parser.add_argument(
         "--unsafe-local",
         action="store_true",
@@ -117,6 +124,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write a clearly marked partial report before every job is evaluated",
     )
+    report_parser.add_argument(
+        "--dataset-audit-reviewer",
+        help="name recorded with a completed manual safety-document audit",
+    )
+    report_parser.add_argument(
+        "--applicable-clause-audit",
+        choices=("passed", "failed"),
+        help="manual result: every document has one unambiguous applicable clause",
+    )
+    report_parser.add_argument(
+        "--distractor-audit",
+        choices=("passed", "failed"),
+        help="manual result: every distractor clause is genuinely irrelevant",
+    )
+    report_parser.add_argument("--dataset-audit-notes")
     return parser
 
 
@@ -189,30 +211,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "generate-stage0":
             manifest = load_manifest(args.manifest)
-            if args.limit is not None and args.limit < 1:
-                raise GenerationError("--limit must be at least 1")
             if args.dry_run:
                 run_directory = args.manifest.resolve().parent
                 completed = sum(
                     (run_directory / job.result_path).exists() for job in manifest.jobs
                 )
-                selected = len(manifest.jobs) if args.limit is None else min(
-                    args.limit, len(manifest.jobs)
+                selected = select_manifest_jobs(
+                    manifest,
+                    limit=args.limit,
+                    job_id=args.job_id,
                 )
                 print(
                     f"dry run: {manifest.run_id}, {len(manifest.jobs)} total jobs, "
-                    f"{completed} complete, {selected} selected; no API calls made"
+                    f"{completed} complete, {len(selected)} selected; no API calls made"
                 )
             else:
                 client = client_from_environment(manifest.provider)
                 generation_summary = run_stage0_generation(
-                    args.manifest, client, limit=args.limit
+                    args.manifest,
+                    client,
+                    limit=args.limit,
+                    job_id=args.job_id,
                 )
                 print(generation_summary.model_dump_json(indent=2))
         elif args.command == "evaluate-stage0":
             manifest = load_manifest(args.manifest)
-            if args.limit is not None and args.limit < 1:
-                raise ScoringError("--limit must be at least 1")
             backend = (
                 UnsafeLocalSandbox(manifest.sandbox)
                 if args.unsafe_local
@@ -223,12 +246,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.repository_root,
                 backend,
                 limit=args.limit,
+                job_id=args.job_id,
             )
             print(evaluation_summary.model_dump_json(indent=2))
         elif args.command == "report-stage0":
             if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", args.report_id):
                 raise ScoringError("--report-id must be 1-80 safe filename characters")
-            report = build_stage0_report(args.manifest)
+            dataset_audit = build_dataset_audit_review(
+                reviewer=args.dataset_audit_reviewer,
+                unambiguous_applicable_clauses=_audit_choice(
+                    args.applicable_clause_audit
+                ),
+                distractors_genuinely_irrelevant=_audit_choice(args.distractor_audit),
+                notes=args.dataset_audit_notes,
+            )
+            report = build_stage0_report(args.manifest, dataset_audit)
             if not report.complete and not args.allow_incomplete:
                 raise ScoringError(
                     f"report is incomplete ({report.scored_jobs}/{report.expected_jobs}); "
@@ -244,10 +276,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if report.recommendation in {
                 OverallRecommendation.INCOMPLETE,
+                OverallRecommendation.INVALID_TASK_OR_TESTS,
                 OverallRecommendation.STOP_OR_PIVOT,
             }:
                 return 1
     except (ConfigLoadError, GenerationError, HarnessError, ScoringError) as error:
-        print(error)
+        print(error, file=sys.stderr)
         return 2
     return 0
+
+
+def _audit_choice(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    return value == "passed"

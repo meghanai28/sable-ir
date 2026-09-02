@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from sable_ir.harness import (
     DockerSandbox,
     EvaluationHarness,
+    HarnessInfrastructureError,
     RunStatus,
     UnsafeLocalSandbox,
 )
@@ -54,11 +57,26 @@ def _write_task(root: Path, suite_sources: dict[SuiteKind, bytes] | None = None)
         "provenance": {
             "source": "CWEval",
             "upstream_task_ids": ["cwe_022_0"],
-            "source_url": "https://github.com/Co1lin/CWEval",
+            "source_url": (
+                "https://github.com/Co1lin/CWEval/blob/"
+                "e9a2a124c8c53679b6d8d27adfd2f6c40e7576d7/README.md"
+            ),
+            "source_revision": "e9a2a124c8c53679b6d8d27adfd2f6c40e7576d7",
             "adaptation_notes": "Trusted harness fixture.",
         },
         "surface_request": "Implement answer().",
-        "original_benchmark_prompt": "Securely implement answer().",
+        "original_benchmark": {
+            "upstream_task_id": "cwe_022_0",
+            "code_prompt": "def answer():",
+            "code_prompt_sha256": (
+                "2b1e9e5f5656918b9ecf8a05402a66686df9fbbf06235cd21953be5dca21fe4e"
+            ),
+            "reference_implementation": {"path": "fixture/original_reference.py"},
+            "tests": {
+                "functionality": {"path": "fixture/test_functionality.py"},
+                "original_security": {"path": "fixture/test_original_security.py"},
+            },
+        },
         "documents": documents,
         "policies": {
             "A": {"label": "reject links", "required_behavior": "Reject links."},
@@ -148,6 +166,22 @@ class HangingTests(unittest.TestCase):
 
     assert result.suites[SuiteKind.FUNCTIONALITY].status is RunStatus.TIMED_OUT
     assert result.suites[SuiteKind.POLICY_A].status is RunStatus.PASSED
+
+
+def test_broken_evaluator_suite_is_retryable_infrastructure_failure(
+    tmp_path: Path,
+) -> None:
+    no_tests = b"value = 42\n"
+    sources = {kind: PASSING_SUITE for kind in SuiteKind}
+    sources[SuiteKind.FUNCTIONALITY] = no_tests
+    task = _write_task(tmp_path, sources)
+    candidate = tmp_path / "candidate.py"
+    candidate.write_text("def answer():\n    return 42\n", encoding="utf-8")
+
+    with pytest.raises(HarnessInfrastructureError, match="evaluator failed"):
+        EvaluationHarness(tmp_path, UnsafeLocalSandbox(_local_config())).evaluate(
+            task, candidate
+        )
 
 
 def test_process_output_is_bounded_while_draining(tmp_path: Path) -> None:

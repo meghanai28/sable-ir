@@ -72,7 +72,7 @@ class GenerationJob(StrictModel):
 
 
 class GenerationManifest(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     run_id: str
     created_at: str
     config_sha256: str
@@ -128,6 +128,7 @@ class GenerationRecord(StrictModel):
     usage: dict[str, int]
     successful_attempt: int
     raw_response_path: str
+    raw_response_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     candidate_path: str | None
     reasoning_path: str | None
 
@@ -207,12 +208,12 @@ def prepare_stage0_run(
         task_bytes = task_path.read_bytes()
         task_hash = hashlib.sha256(task_bytes).hexdigest()
         task = load_task(task_path)
-        test_hashes = {
-            kind: hashlib.sha256((root / suite.path).read_bytes()).hexdigest()
-            for kind, suite in task.tests.items()
-        }
         for condition in config.conditions:
             spec = STAGE0_CONDITION_SPECS[condition]
+            test_hashes = {
+                kind: hashlib.sha256((root / suite.path).read_bytes()).hexdigest()
+                for kind, suite in task.test_suites_for(condition).items()
+            }
             for sample_index in range(config.samples_per_condition):
                 job_id = f"{task.id}__{condition.value}__s{sample_index:02d}"
                 job_root = f"jobs/{job_id}"
@@ -287,11 +288,12 @@ def run_stage0_generation(
     client: GenerationClient,
     *,
     limit: int | None = None,
+    job_id: str | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> RunSummary:
     manifest = load_manifest(manifest_path)
     run_directory = manifest_path.resolve().parent
-    selected = list(manifest.jobs if limit is None else manifest.jobs[:limit])
+    selected = select_manifest_jobs(manifest, limit=limit, job_id=job_id)
     counters = {status.value: 0 for status in GenerationStatus}
     failed = 0
     skipped = 0
@@ -384,6 +386,9 @@ def run_stage0_generation(
             )
             _write_text_new(run_directory / reasoning_relative, response.reasoning_content)
         raw_relative = _response_path(Path("."), job, attempt).as_posix()
+        raw_response_hash = hashlib.sha256(
+            (run_directory / raw_relative).read_bytes()
+        ).hexdigest()
         record = GenerationRecord(
             job_id=job.job_id,
             task_id=job.task_id,
@@ -410,6 +415,7 @@ def run_stage0_generation(
             },
             successful_attempt=attempt,
             raw_response_path=raw_relative,
+            raw_response_sha256=raw_response_hash,
             candidate_path=candidate_relative,
             reasoning_path=reasoning_relative,
         )
@@ -427,6 +433,26 @@ def run_stage0_generation(
         skipped_complete=skipped,
         pending=len(manifest.jobs) - completed,
     )
+
+
+def select_manifest_jobs(
+    manifest: GenerationManifest,
+    *,
+    limit: int | None = None,
+    job_id: str | None = None,
+) -> list[GenerationJob]:
+    if limit is not None and job_id is not None:
+        raise GenerationError("--limit and --job-id cannot be used together")
+    if limit is not None:
+        if limit < 1:
+            raise GenerationError("--limit must be at least 1")
+        return list(manifest.jobs[:limit])
+    if job_id is not None:
+        selected = [job for job in manifest.jobs if job.job_id == job_id]
+        if not selected:
+            raise GenerationError(f"manifest does not contain job: {job_id}")
+        return selected
+    return list(manifest.jobs)
 
 
 def extract_python_source(content: str) -> tuple[str, str]:

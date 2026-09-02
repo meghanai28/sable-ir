@@ -28,10 +28,17 @@ class ReferenceAudit(StrictModel):
     suite_statuses: dict[TestSuiteKind, RunStatus]
 
 
+class OriginalReferenceAudit(StrictModel):
+    upstream_task_id: str
+    compile_status: RunStatus
+    suite_statuses: dict[TestSuiteKind, RunStatus]
+
+
 class TaskAudit(StrictModel):
     task_id: str
     applicable_position: int
     approximate_document_tokens: dict[PolicyValue, int]
+    original_reference: OriginalReferenceAudit
     references: dict[PolicyValue, ReferenceAudit]
     passed: bool
     failures: tuple[str, ...]
@@ -94,7 +101,9 @@ def _audit_task(task: TaskSpec, root: Path, harness: EvaluationHarness) -> TaskA
     if relevant_a == relevant_b:
         failures.append("the applicable clause must change between policy A and policy B")
 
-    prompt_text = f"{task.surface_request}\n{task.original_benchmark_prompt}".casefold()
+    prompt_text = task.surface_request.casefold()
+    if relevant_a.casefold() in prompt_text or relevant_b.casefold() in prompt_text:
+        failures.append("surface prompt contains an applicable policy clause")
     for policy in PolicyValue:
         label = task.policies[policy].label.casefold()
         behavior = task.policies[policy].required_behavior.casefold()
@@ -134,15 +143,54 @@ def _audit_task(task: TaskSpec, root: Path, harness: EvaluationHarness) -> TaskA
                     f"expected {expected_status.value}"
                 )
 
+    original_reference_path = resolve_repository_path(
+        root,
+        task.original_benchmark.reference_implementation.path,
+        label="original benchmark reference implementation",
+    )
+    original_result = harness.evaluate(
+        task,
+        original_reference_path,
+        task.original_benchmark.tests,
+    )
+    original_reference = OriginalReferenceAudit(
+        upstream_task_id=task.original_benchmark.upstream_task_id,
+        compile_status=original_result.compile.status,
+        suite_statuses={kind: suite.status for kind, suite in original_result.suites.items()},
+    )
+    original_expected = {
+        TestSuiteKind.FUNCTIONALITY: RunStatus.PASSED,
+        TestSuiteKind.POLICY_A: RunStatus.SKIPPED,
+        TestSuiteKind.POLICY_B: RunStatus.SKIPPED,
+        TestSuiteKind.ORIGINAL_SECURITY: RunStatus.PASSED,
+    }
+    if original_result.compile.status is not RunStatus.PASSED:
+        failures.append("original benchmark reference does not compile")
+    for suite_kind, expected_status in original_expected.items():
+        actual = original_result.suites[suite_kind].status
+        if actual is not expected_status:
+            failures.append(
+                f"original benchmark reference: {suite_kind.value} was {actual.value}, "
+                f"expected {expected_status.value}"
+            )
+
     token_counts = {
         PolicyValue.A: _approximate_tokens(document_a),
         PolicyValue.B: _approximate_tokens(document_b),
     }
+    for policy, token_count in token_counts.items():
+        if not 150 <= token_count <= 250:
+            failures.append(
+                f"policy {policy.value} document is outside the 150-250 approximate-token target"
+            )
+    if abs(token_counts[PolicyValue.A] - token_counts[PolicyValue.B]) > 25:
+        failures.append("A/B document lengths differ by more than 25 approximate tokens")
     position = ids_a.index(document_a.applicable_clause_ids[0]) + 1
     return TaskAudit(
         task_id=task.id,
         applicable_position=position,
         approximate_document_tokens=token_counts,
+        original_reference=original_reference,
         references=references,
         passed=not failures,
         failures=tuple(failures),

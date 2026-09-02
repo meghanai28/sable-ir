@@ -24,3 +24,19 @@ class PolicyBTests(unittest.TestCase):
         )
         self.assertEqual(calls, ["https://public.example/start", "https://other.example/final"])
         self.assertEqual(resolutions, ["public.example", "other.example"])
+
+    def test_follows_no_more_than_five_redirects(self):
+        calls = []
+
+        def transport(url):
+            calls.append(url)
+            hop = len(calls)
+            return 302, {"Location": f"https://public.example/hop-{hop}"}, ""
+
+        with self.assertRaises(ValueError):
+            solution.fetch_text(
+                "https://public.example/start",
+                transport,
+                lambda _hostname: ["93.184.216.34"],
+            )
+        self.assertEqual(len(calls), 6)

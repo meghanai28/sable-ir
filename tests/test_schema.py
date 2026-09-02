@@ -30,11 +30,26 @@ def _task_data() -> dict[str, object]:
         "provenance": {
             "source": "CWEval",
             "upstream_task_ids": ["cwe_022_0"],
-            "source_url": "https://github.com/Co1lin/CWEval",
+            "source_url": (
+                "https://github.com/Co1lin/CWEval/blob/"
+                "e9a2a124c8c53679b6d8d27adfd2f6c40e7576d7/README.md"
+            ),
+            "source_revision": "e9a2a124c8c53679b6d8d27adfd2f6c40e7576d7",
             "adaptation_notes": "Fixture adapted to exercise the A/B schema.",
         },
         "surface_request": "Implement read_report(name).",
-        "original_benchmark_prompt": "Securely implement read_report(name).",
+        "original_benchmark": {
+            "upstream_task_id": "cwe_022_0",
+            "code_prompt": "def read_report(name):",
+            "code_prompt_sha256": (
+                "6765e887f44e8e74ceaeac027c315110837601e9fb04819fe931085009c12e60"
+            ),
+            "reference_implementation": {"path": "tasks/report/original_reference.py"},
+            "tests": {
+                "functionality": {"path": "tasks/report/tests/test_original_functionality.py"},
+                "original_security": {"path": "tasks/report/tests/test_original_security.py"},
+            },
+        },
         "documents": {
             "A": {
                 "clauses": [
@@ -106,6 +121,16 @@ def test_document_rejects_unknown_applicable_clause() -> None:
 
     with pytest.raises(ValidationError, match="absent from the document"):
         SafetyDocument(clauses=clauses, applicable_clause_ids=("missing",))
+
+
+def test_stage0_document_requires_exactly_one_applicable_clause() -> None:
+    clauses = tuple(SafetyClause(id=f"clause_{index}", text="Policy") for index in range(5))
+
+    with pytest.raises(ValidationError, match="at most 1 item"):
+        SafetyDocument(
+            clauses=clauses,
+            applicable_clause_ids=("clause_0", "clause_1"),
+        )
 
 
 def test_paths_cannot_escape_repository() -> None:

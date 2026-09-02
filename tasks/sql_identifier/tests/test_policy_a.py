@@ -7,6 +7,17 @@ import solution
 
 
 class PolicyATests(unittest.TestCase):
+    def test_allows_every_table_in_the_fixed_allowlist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "app.db"
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE orders (item TEXT)")
+                connection.execute("INSERT INTO orders VALUES ('book')")
+            self.assertEqual(
+                solution.fetch_rows(str(database), "orders", 10),
+                [("book",)],
+            )
+
     def test_rejects_existing_table_outside_fixed_allowlist(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "app.db"

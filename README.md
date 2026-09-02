@@ -41,16 +41,19 @@ A/B cross-test matrix:
 uv run sable-ir audit-tasks
 ```
 
-The five task specifications record their CWEval provenance and adaptation notes. Each contains a
-policy-neutral surface request, two length-matched six-clause documents, four independent test
-suites, and policy-A and policy-B reference implementations. The corpus audit also requires the
-applicable clause to occupy positions 1 through 5 exactly once.
+The five task specifications record revision-pinned CWEval provenance and adaptation notes. Each
+contains an exact upstream benchmark anchor, a policy-neutral adapted surface request, two
+length-matched six-clause documents, independent executable suites, and policy-A and policy-B
+reference implementations. The corpus audit also requires the applicable clause to occupy
+positions 1 through 5 exactly once and documents to stay within the 150–250 approximate-token
+target.
 
 Docker execution has networking disabled, a read-only root and bind mount, dropped Linux
 capabilities, `no-new-privileges`, an unprivileged user, a private `tmpfs`, and CPU, memory, PID,
-output, source-size, and wall-time limits. Compilation happens before tests; each of the four suites
-runs in a fresh container. The `--unsafe-local` option is only for trusted development fixtures and
-never activates automatically.
+output, source-size, and wall-time limits. Compilation happens before tests; each applicable suite
+runs in a fresh container. Adapted jobs run all four suites, while exact upstream-anchor jobs run
+functionality and original-security suites only. The `--unsafe-local` option is only for trusted
+development fixtures and never activates automatically.
 
 Stage 0 is pinned to Alibaba Cloud Model Studio's hosted `qwen3.6-27b` through the native DashScope
 endpoint. Configuration stores environment-variable **names**, never API keys. Runtime artifacts
@@ -58,6 +61,9 @@ belong under `artifacts/` and are ignored by Git.
 
 The complete account-preflight, request-freezing, canary, resume, and artifact instructions are in
 [the hosted Qwen runbook](docs/hosted-qwen-stage0.md).
+
+The proposal-to-implementation trace and audited scoring decisions are recorded in
+[the Stage 0 compliance sweep](docs/stage0-compliance.md).
 
 After generation, evaluate every candidate and create the gate report:
 
@@ -69,5 +75,8 @@ uv run sable-ir report-stage0 \
   --report-id final
 ```
 
-The scoring formulas, thresholds, provenance checks, and the one required manual review are
+That report leaves the semantic dataset audit pending. Add the explicit reviewer and two audit
+results from the scoring runbook to permit a `continue_to_stage1` recommendation.
+
+The scoring formulas, thresholds, provenance checks, dataset audit, and final-state precedence are
 specified in [the Stage 0 scoring runbook](docs/stage0-scoring.md).

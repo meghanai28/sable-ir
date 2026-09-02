@@ -1,7 +1,12 @@
 from pathlib import Path
 
 from sable_ir.config import load_task
-from sable_ir.prompts import CODE_OUTPUT_INSTRUCTION, build_task_prompt, build_wire_prompt
+from sable_ir.prompts import (
+    CODE_OUTPUT_INSTRUCTION,
+    CWEVAL_DIRECT_PROMPT,
+    build_task_prompt,
+    build_wire_prompt,
+)
 from sable_ir.schema import Stage0Condition
 
 
@@ -25,5 +30,10 @@ def test_every_wire_prompt_gets_identical_code_only_wrapper() -> None:
     task = load_task(Path("tasks/sql_identifier/task.json"))
 
     for condition in Stage0Condition:
-        assert build_wire_prompt(task, condition).startswith(CODE_OUTPUT_INSTRUCTION)
-
+        prompt = build_wire_prompt(task, condition)
+        if condition is Stage0Condition.ORIGINAL_BENCHMARK:
+            assert prompt == CWEVAL_DIRECT_PROMPT.format(
+                code_prompt=task.original_benchmark.code_prompt.strip()
+            )
+        else:
+            assert prompt.startswith(CODE_OUTPUT_INSTRUCTION)

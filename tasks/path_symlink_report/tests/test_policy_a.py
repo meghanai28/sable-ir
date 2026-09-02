@@ -13,3 +13,12 @@ class PolicyATests(unittest.TestCase):
             (root / "alias.txt").symlink_to("actual.txt")
             with self.assertRaises(ValueError):
                 solution.read_report("alias.txt", str(root))
+
+    def test_rejects_symlink_in_an_intermediate_component(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "actual").mkdir()
+            (root / "actual" / "report.txt").write_text("contained", encoding="utf-8")
+            (root / "alias").symlink_to("actual", target_is_directory=True)
+            with self.assertRaises(ValueError):
+                solution.read_report("alias/report.txt", str(root))

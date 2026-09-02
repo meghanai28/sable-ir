@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -141,8 +142,12 @@ class DashScopeClient:
                 f"DashScope HTTP {error.code}: {detail}",
                 retryable=error.code == 429 or error.code >= 500,
             ) from error
-        except (urllib.error.URLError, TimeoutError) as error:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as error:
             raise ProviderError(f"DashScope connection failed: {error}", retryable=True) from error
+        except UnicodeError as error:
+            raise ProviderError(
+                "DashScope returned text that was not valid UTF-8", retryable=True
+            ) from error
 
         if not events:
             raise ProviderError("DashScope returned no SSE result events", retryable=True)
