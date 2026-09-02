@@ -212,11 +212,25 @@ class AlibabaQwenConfig(StrictModel):
     """Alibaba Model Studio's hosted Qwen endpoint, without secret material."""
 
     provider: Literal["alibaba_model_studio"] = "alibaba_model_studio"
-    transport: Literal["dashscope_native"] = "dashscope_native"
+    transport: Literal["dashscope_native_sse"] = "dashscope_native_sse"
     model: Literal["qwen3.6-27b"] = "qwen3.6-27b"
     base_url: NonEmpty = "https://dashscope-intl.aliyuncs.com/api/v1"
+    generation_path: Literal[
+        "/services/aigc/multimodal-generation/generation"
+    ] = "/services/aigc/multimodal-generation/generation"
     api_key_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
     request_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
+    temperature: Annotated[float, Field(ge=0, lt=2)] = 0.2
+    top_p: Annotated[float, Field(gt=0, le=1)] = 0.95
+    max_tokens: Annotated[int, Field(ge=256, le=65_536)] = 4096
+    max_attempts: Annotated[int, Field(ge=1, le=10)] = 4
+    retry_initial_seconds: Annotated[float, Field(ge=0, le=60)] = 2.0
+
+    @model_validator(mode="after")
+    def require_secure_endpoint(self) -> AlibabaQwenConfig:
+        if not self.base_url.startswith("https://"):
+            raise ValueError("Alibaba Model Studio base_url must use HTTPS")
+        return self
 
 
 class Stage0Thresholds(StrictModel):

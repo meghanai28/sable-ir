@@ -82,7 +82,7 @@ def test_checked_in_config_has_complete_stage0_design() -> None:
     assert len(config.task_paths) == 5
     assert set(config.conditions) == set(Stage0Condition)
     assert config.hosted_qwen.provider == "alibaba_model_studio"
-    assert config.hosted_qwen.transport == "dashscope_native"
+    assert config.hosted_qwen.transport == "dashscope_native_sse"
     assert config.hosted_qwen.model == "qwen3.6-27b"
     assert config.hosted_qwen.api_key_env == "DASHSCOPE_API_KEY"
 

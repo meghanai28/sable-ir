@@ -9,6 +9,14 @@ from pathlib import Path
 
 from sable_ir.audit import audit_stage0_tasks
 from sable_ir.config import ConfigLoadError, load_stage0_config, load_task
+from sable_ir.generation import (
+    GenerationError,
+    client_from_environment,
+    load_manifest,
+    prepare_stage0_run,
+    provider_preflight,
+    run_stage0_generation,
+)
 from sable_ir.harness import (
     DockerSandbox,
     EvaluationHarness,
@@ -55,6 +63,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--unsafe-local",
         action="store_true",
         help="audit trusted references on the host when Docker is unavailable",
+    )
+
+    preflight_parser = subparsers.add_parser(
+        "qwen-preflight", help="check local hosted-Qwen configuration without an API call"
+    )
+    preflight_parser.add_argument("--config", type=Path, default=Path("config/stage0.toml"))
+
+    prepare_parser = subparsers.add_parser(
+        "prepare-stage0", help="freeze the Stage 0 request matrix without calling Qwen"
+    )
+    prepare_parser.add_argument("--run-id", required=True)
+    prepare_parser.add_argument("--config", type=Path, default=Path("config/stage0.toml"))
+    prepare_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    prepare_parser.add_argument("--run-directory", type=Path)
+
+    generate_parser = subparsers.add_parser(
+        "generate-stage0", help="execute or inspect a prepared, resumable Qwen run"
+    )
+    generate_parser.add_argument("manifest", type=Path)
+    generate_parser.add_argument("--limit", type=int)
+    generate_parser.add_argument(
+        "--dry-run", action="store_true", help="show run status without credentials or API calls"
     )
     return parser
 
@@ -108,7 +138,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"wrote task audit: {args.output}")
             if not audit_result.passed:
                 return 1
-    except (ConfigLoadError, HarnessError) as error:
+        elif args.command == "qwen-preflight":
+            config = load_stage0_config(args.config)
+            preflight = provider_preflight(config.hosted_qwen)
+            print(preflight.model_dump_json(indent=2))
+            if not preflight.ready_for_requests:
+                return 1
+        elif args.command == "prepare-stage0":
+            config = load_stage0_config(args.config)
+            run_directory = args.run_directory or (
+                args.repository_root / config.artifacts_dir / "stage0" / args.run_id
+            )
+            manifest = prepare_stage0_run(
+                config, args.repository_root, run_directory, args.run_id
+            )
+            print(
+                f"prepared {len(manifest.jobs)} immutable requests at "
+                f"{run_directory.resolve()}"
+            )
+        elif args.command == "generate-stage0":
+            manifest = load_manifest(args.manifest)
+            if args.limit is not None and args.limit < 1:
+                raise GenerationError("--limit must be at least 1")
+            if args.dry_run:
+                run_directory = args.manifest.resolve().parent
+                completed = sum(
+                    (run_directory / job.result_path).exists() for job in manifest.jobs
+                )
+                selected = len(manifest.jobs) if args.limit is None else min(
+                    args.limit, len(manifest.jobs)
+                )
+                print(
+                    f"dry run: {manifest.run_id}, {len(manifest.jobs)} total jobs, "
+                    f"{completed} complete, {selected} selected; no API calls made"
+                )
+            else:
+                client = client_from_environment(manifest.provider)
+                summary = run_stage0_generation(args.manifest, client, limit=args.limit)
+                print(summary.model_dump_json(indent=2))
+    except (ConfigLoadError, GenerationError, HarnessError) as error:
         print(error)
         return 2
     return 0

@@ -55,3 +55,6 @@ never activates automatically.
 Stage 0 is pinned to Alibaba Cloud Model Studio's hosted `qwen3.6-27b` through the native DashScope
 endpoint. Configuration stores environment-variable **names**, never API keys. Runtime artifacts
 belong under `artifacts/` and are ignored by Git.
+
+The complete account-preflight, request-freezing, canary, resume, and artifact instructions are in
+[the hosted Qwen runbook](docs/hosted-qwen-stage0.md).
