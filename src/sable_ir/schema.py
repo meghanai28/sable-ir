@@ -200,11 +200,13 @@ class TaskSpec(StrictModel):
         return self
 
 
-class HostedModelConfig(StrictModel):
-    """OpenAI-compatible hosted endpoint settings without secret material."""
+class AlibabaQwenConfig(StrictModel):
+    """Alibaba Model Studio's hosted Qwen endpoint, without secret material."""
 
-    model: NonEmpty
-    base_url: NonEmpty
+    provider: Literal["alibaba_model_studio"] = "alibaba_model_studio"
+    transport: Literal["dashscope_native"] = "dashscope_native"
+    model: Literal["qwen3.6-27b"] = "qwen3.6-27b"
+    base_url: NonEmpty = "https://dashscope-intl.aliyuncs.com/api/v1"
     api_key_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
     request_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
 
@@ -216,6 +218,20 @@ class Stage0Thresholds(StrictModel):
     full_vs_surface_min_gain: Annotated[float, Field(ge=0, le=1)] = 0.20
 
 
+class SandboxConfig(StrictModel):
+    """Resource bounds for untrusted candidate execution."""
+
+    backend: Literal["docker"] = "docker"
+    image: NonEmpty = "python:3.12.11-slim-bookworm"
+    compile_timeout_seconds: Annotated[float, Field(gt=0)] = 5.0
+    suite_timeout_seconds: Annotated[float, Field(gt=0)] = 10.0
+    memory: Annotated[str, Field(pattern=r"^[1-9][0-9]*[mMgG]$")] = "256m"
+    cpus: Annotated[float, Field(gt=0, le=2)] = 1.0
+    pids_limit: Annotated[int, Field(ge=16, le=256)] = 64
+    max_output_bytes: Annotated[int, Field(ge=1024, le=1_048_576)] = 65_536
+    max_candidate_bytes: Annotated[int, Field(ge=1024, le=1_048_576)] = 262_144
+
+
 class Stage0Config(StrictModel):
     schema_version: SchemaVersion = 1
     seed: int = 0
@@ -223,7 +239,8 @@ class Stage0Config(StrictModel):
     artifacts_dir: NonEmpty = "artifacts"
     samples_per_condition: Annotated[int, Field(ge=1)] = 1
     conditions: Annotated[tuple[Stage0Condition, ...], Field(min_length=1)]
-    renderer: HostedModelConfig
+    hosted_qwen: AlibabaQwenConfig
+    sandbox: SandboxConfig = SandboxConfig()
     thresholds: Stage0Thresholds = Stage0Thresholds()
 
     @model_validator(mode="after")

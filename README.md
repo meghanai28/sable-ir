@@ -28,6 +28,18 @@ Validate one or more task JSON files (added in the task-corpus checkpoint):
 uv run sable-ir validate-task tasks/example.json
 ```
 
-Configuration stores environment-variable **names**, never API keys. Runtime artifacts belong under
-`artifacts/` and are ignored by Git.
+Evaluate model-generated Python with the Docker sandbox:
 
+```bash
+uv run sable-ir evaluate tasks/example.json candidate.py
+```
+
+Docker execution has networking disabled, a read-only root and bind mount, dropped Linux
+capabilities, `no-new-privileges`, an unprivileged user, a private `tmpfs`, and CPU, memory, PID,
+output, source-size, and wall-time limits. Compilation happens before tests; each of the four suites
+runs in a fresh container. The `--unsafe-local` option is only for trusted development fixtures and
+never activates automatically.
+
+Stage 0 is pinned to Alibaba Cloud Model Studio's hosted `qwen3.6-27b` through the native DashScope
+endpoint. Configuration stores environment-variable **names**, never API keys. Runtime artifacts
+belong under `artifacts/` and are ignored by Git.
