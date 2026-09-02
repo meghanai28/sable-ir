@@ -21,12 +21,14 @@ stretch goal are outside this checkpoint.
 | Functionality, A, B, and security execution | Implemented | Adapted direct conditions run four fresh suites. Upstream anchor jobs run functionality/security and mark A/B not applicable. |
 | Sandboxed generated-code execution | Implemented | Docker is the default, with no network, read-only mounts/root, dropped capabilities, resource limits, timeouts, and fresh state. |
 | Continuation rules are not statistical claims | Implemented | Reports identify them as five-task engineering gates and never emit confidence claims. |
-| Frozen prompts and decision rules | Implemented | Exact requests, tasks, test suites, model settings, internal pair IDs, sandbox settings, and thresholds are SHA-256-bound into immutable artifacts. |
+| Frozen prompts and decision rules | Implemented | Exact requests, upstream revisions/task IDs/prompt hashes, test-suite hashes, harness versions, model settings, internal pair IDs, sandbox settings, and thresholds are bound into immutable artifacts. |
 
-Hosted Kimi does not document a provider-side seed parameter. The frozen `pair_seed` is therefore
-only an A/B pairing identifier and is never sent to the API. Hosted A/B jobs are request-paired,
-not deterministic seed-matched; mechanistic work must first reproduce the phenomenon on the local
-open-weight model, where actual seed control can be applied.
+Hosted Kimi does not document a provider-side seed parameter. Original-anchor and surface jobs
+therefore record `pair_id: null`; each relevant-only, full-document, or native-thinking A/B pair
+receives its own explicit non-seed `pair_id`. Every job records `provider_seed_supported: false`
+and `provider_seed_sent: null`. Hosted A/B jobs are request-paired, not deterministic seed-matched;
+mechanistic work must first reproduce the phenomenon on the local open-weight model, where actual
+seed control can be applied.
 
 ## Continuation-rule interpretation
 

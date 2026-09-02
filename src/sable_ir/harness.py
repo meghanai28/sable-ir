@@ -184,6 +184,33 @@ class DockerSandbox(SandboxBackend):
             raise HarnessUnavailable(f"could not query Docker daemon: {error}") from error
         if check.returncode != 0:
             raise HarnessUnavailable(f"Docker daemon is unavailable: {check.stderr.strip()}")
+        try:
+            image_check = subprocess.run(
+                [
+                    "docker",
+                    "image",
+                    "inspect",
+                    "--format",
+                    "{{.Os}}/{{.Architecture}}",
+                    self.config.image,
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise HarnessUnavailable(f"could not inspect Docker sandbox image: {error}") from error
+        if image_check.returncode != 0:
+            raise HarnessUnavailable(
+                f"Docker sandbox image is not installed; run: docker pull {self.config.image}"
+            )
+        if image_check.stdout.strip() != self.config.platform:
+            raise HarnessUnavailable(
+                f"Docker sandbox image platform is {image_check.stdout.strip()}, expected "
+                f"{self.config.platform}"
+            )
 
     def command(self, workspace: Path, mode: str, target: str) -> tuple[list[str], str]:
         name = f"sable-ir-{uuid.uuid4().hex}"
@@ -192,6 +219,8 @@ class DockerSandbox(SandboxBackend):
             "docker",
             "run",
             "--rm",
+            "--pull=never",
+            f"--platform={self.config.platform}",
             "--name",
             name,
             "--network=none",

@@ -13,6 +13,7 @@ from sable_ir.harness import (
     resolve_repository_path,
 )
 from sable_ir.schema import (
+    EVALUATION_HARNESS_VERSION,
     PolicyValue,
     SafetyDocument,
     Stage0Config,
@@ -45,6 +46,7 @@ class TaskAudit(StrictModel):
 
 
 class CorpusAudit(StrictModel):
+    harness_version: str = EVALUATION_HARNESS_VERSION
     backend: str
     tasks: tuple[TaskAudit, ...]
     applicable_positions: tuple[int, ...]

@@ -65,6 +65,10 @@ The complete account-preflight, request-freezing, canary, resume, and artifact i
 The proposal-to-implementation trace and audited scoring decisions are recorded in
 [the Stage 0 compliance sweep](docs/stage0-compliance.md).
 
+Hosted Kimi results establish only the Stage 0 behavioral phenomenon. Before activation probing
+or causal intervention, that phenomenon must be reproduced on the selected local open-weight
+model; mechanistic claims apply only to that local model, not to hosted Kimi.
+
 After generation, evaluate every candidate and create the gate report:
 
 ```bash

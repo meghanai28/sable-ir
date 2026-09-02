@@ -215,6 +215,8 @@ def test_docker_command_contains_required_security_boundaries(tmp_path: Path) ->
     )
 
     assert container_name.startswith("sable-ir-")
+    assert "--pull=never" in command
+    assert "--platform=linux/arm64" in command
     assert "--network=none" in command
     assert "--read-only" in command
     assert "--cap-drop=ALL" in command

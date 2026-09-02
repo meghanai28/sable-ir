@@ -18,6 +18,19 @@ uv run sable-ir validate-config config/stage0.toml
 uv run sable-ir kimi-preflight
 ```
 
+Install the pinned sandbox image separately so image-download time can never be mistaken for a
+candidate timeout:
+
+```bash
+docker pull 'python@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7'
+```
+
+Production evaluation uses `--pull=never` and fails as retryable infrastructure setup if that
+exact image is absent. The source tag was `python:3.12.11-slim-bookworm`; execution uses its
+immutable repository digest directly because Docker Desktop's local store resolves `python@digest`
+but not the redundant `python:tag@digest` spelling. The manifest also pins `platform: linux/arm64`;
+this digest is the resolved ARM64 image used on the experiment machine.
+
 Freeze all 40 requests without credentials or API calls:
 
 ```bash
@@ -27,14 +40,21 @@ uv run sable-ir generate-stage0 \
   --dry-run
 ```
 
-Preparation snapshots the exact task and wire prompts, model settings, internal `pair_seed`, task
-hash, applicable test-suite hashes, request-file hash, condition, assigned policy, sandbox, and
-continuation thresholds. Adapted jobs bind all four suites; upstream anchors bind functionality
-and original-security suites. Preparing into a non-empty directory is refused.
+Preparation snapshots the exact task and wire prompts, model settings, explicit pairing metadata,
+task hash, upstream revision/task/prompt hash, applicable test-suite hashes, generation/evaluation
+harness versions, request-file hash, condition, assigned policy, sandbox, and continuation
+thresholds. Adapted jobs bind all four suites; upstream anchors bind functionality and
+original-security suites. Preparing into a non-empty directory is refused.
 
-`pair_seed` is a stable request-pair identifier, not a provider parameter. The Kimi request does
-not contain `seed`, `temperature`, or `top_p`. Non-thinking requests are capped at 4,096 completion
-tokens; thinking requests are capped at 16,384 total completion/reasoning tokens.
+Original-anchor and surface-only jobs record `pair_id: null`. A/B jobs record a stable
+`<task>__<condition-pair>__pair_<sample>` identifier, so relevant-only, full-document, and
+native-thinking comparisons are three distinct pairs. Every job records
+`provider_seed_supported: false` and `provider_seed_sent: null`; these metadata fields are not sent
+to Kimi. The provider request does not contain `seed`, `temperature`, or `top_p`. Non-thinking
+requests are capped at 4,096 completion tokens; thinking requests are capped at 16,384 total
+completion/reasoning tokens.
+The client also closes a response after 300 seconds, 8 MiB, or 100,000 SSE events, whichever
+limit is reached first; an individual blocked socket read times out after 120 seconds.
 
 ## Credential and two-canary sequence
 
@@ -85,9 +105,10 @@ uv run sable-ir generate-stage0 \
 
 Completed jobs are skipped. Each job is allowed one provider attempt across the lifetime of the
 frozen run; there are no automatic retries. Any provider error, timeout, invalid UTF-8, incomplete
-SSE stream, missing usage, or model mismatch stops the invocation before a later job can be sent.
-Prepare a new run only after inspecting a failed attempt artifact. The API key is used only in the
-Authorization header and is never written to request, response, manifest, or error artifacts.
+SSE stream, response-limit breach, missing usage, or model mismatch stops the invocation before a
+later job can be sent. Prepare a new run only after inspecting a failed attempt artifact. The API
+key is used only in the Authorization header and is never written to request, response, manifest,
+or error artifacts.
 
 ## Evaluation and report
 

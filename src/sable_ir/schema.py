@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SchemaVersion = Literal[1]
 NonEmpty = Annotated[str, Field(min_length=1)]
+GENERATION_HARNESS_VERSION = "stage0-kimi-generation-v2"
+EVALUATION_HARNESS_VERSION = "stage0-evaluation-v2"
 
 
 class StrictModel(BaseModel):
@@ -253,6 +255,9 @@ class KimiConfig(StrictModel):
     generation_path: Literal["/chat/completions"] = "/chat/completions"
     api_key_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
     request_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
+    max_stream_seconds: Annotated[float, Field(ge=30, le=600)] = 300.0
+    max_response_bytes: Annotated[int, Field(ge=65_536, le=16_777_216)] = 8_388_608
+    max_sse_events: Annotated[int, Field(ge=1, le=1_000_000)] = 100_000
     max_completion_tokens: Annotated[int, Field(ge=256, le=65_536)] = 4096
     thinking_max_completion_tokens: Annotated[
         int, Field(ge=256, le=65_536)
@@ -281,6 +286,7 @@ class SandboxConfig(StrictModel):
 
     backend: Literal["docker"] = "docker"
     image: NonEmpty = "python:3.12.11-slim-bookworm"
+    platform: Literal["linux/arm64"] = "linux/arm64"
     compile_timeout_seconds: Annotated[float, Field(gt=0)] = 5.0
     suite_timeout_seconds: Annotated[float, Field(gt=0)] = 10.0
     memory: Annotated[str, Field(pattern=r"^[1-9][0-9]*[mMgG]$")] = "256m"
@@ -292,7 +298,6 @@ class SandboxConfig(StrictModel):
 
 class Stage0Config(StrictModel):
     schema_version: SchemaVersion = 1
-    seed: int = 0
     task_paths: Annotated[tuple[str, ...], Field(min_length=1)]
     artifacts_dir: NonEmpty = "artifacts"
     samples_per_condition: Annotated[int, Field(ge=1)] = 1

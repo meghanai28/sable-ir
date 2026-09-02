@@ -102,6 +102,8 @@ def test_checked_in_config_has_complete_stage0_design() -> None:
     assert config.hosted_kimi.base_url == "https://api.moonshot.ai/v1"
     assert config.hosted_kimi.api_key_env == "MOONSHOT_API_KEY"
     assert config.hosted_kimi.max_attempts == 1
+    assert config.sandbox.platform == "linux/arm64"
+    assert "@sha256:" in config.sandbox.image
 
 
 def test_valid_task_pair_exposes_applicable_clause() -> None:

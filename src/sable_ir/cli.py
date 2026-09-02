@@ -89,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--config", type=Path, default=Path("config/stage0.toml"))
     prepare_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
     prepare_parser.add_argument("--run-directory", type=Path)
+    prepare_parser.add_argument(
+        "--migrated-from-manifest-sha256",
+        help="record the prior manifest hash for a metadata-only artifact migration",
+    )
 
     generate_parser = subparsers.add_parser(
         "generate-stage0", help="execute or inspect a prepared, resumable Kimi run"
@@ -211,7 +215,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.repository_root / config.artifacts_dir / "stage0" / args.run_id
             )
             manifest = prepare_stage0_run(
-                config, args.repository_root, run_directory, args.run_id
+                config,
+                args.repository_root,
+                run_directory,
+                args.run_id,
+                args.migrated_from_manifest_sha256,
             )
             print(
                 f"prepared {len(manifest.jobs)} immutable requests at "

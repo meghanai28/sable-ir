@@ -9,7 +9,7 @@ import time
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import Field, ValidationError, model_validator
 
@@ -48,12 +48,23 @@ class GenerationJob(StrictModel):
     task_id: str
     task_path: str
     task_sha256: str
+    upstream_source_revision: str = Field(pattern=r"^[a-f0-9]{40}$")
+    upstream_task_id: str
+    upstream_prompt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     test_sha256s: dict[TestSuiteKind, str]
     condition: Stage0Condition
     assigned_policy: PolicyValue | None
     sample_index: int = Field(ge=0)
-    pair_seed: int = Field(ge=0, le=2**31 - 1)
-    thinking: bool
+    pair_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[a-z][a-z0-9_]*__(?:relevant_clause_only|full_document|"
+            r"native_thinking_full_document)__pair_[0-9]{2}$"
+        ),
+    )
+    provider_seed_supported: Literal[False] = False
+    provider_seed_sent: None = None
+    thinking_requested: Literal["enabled", "disabled"]
     request_path: str
     request_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     result_path: str
@@ -67,13 +78,27 @@ class GenerationJob(StrictModel):
             path = PurePosixPath(value)
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError(f"{label} must be a safe run-relative path")
+        if self.pair_id != _pair_id(self.task_id, self.condition, self.sample_index):
+            raise ValueError("pair_id does not identify the exact A/B condition pair")
+        expected_thinking = (
+            "enabled" if STAGE0_CONDITION_SPECS[self.condition].thinking else "disabled"
+        )
+        if self.thinking_requested != expected_thinking:
+            raise ValueError("thinking_requested does not match the Stage 0 condition")
         return self
 
 
 class GenerationManifest(StrictModel):
-    schema_version: int = 3
+    schema_version: int = 6
     run_id: str
     created_at: str
+    generation_harness_version: Literal["stage0-kimi-generation-v2"] = (
+        "stage0-kimi-generation-v2"
+    )
+    evaluation_harness_version: Literal["stage0-evaluation-v2"] = "stage0-evaluation-v2"
+    migrated_from_manifest_sha256: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{64}$"
+    )
     config_sha256: str
     provider: KimiConfig
     sandbox: SandboxConfig
@@ -86,6 +111,9 @@ class RequestArtifact(StrictModel):
     task_id: str
     task_path: str
     task_sha256: str
+    upstream_source_revision: str
+    upstream_task_id: str
+    upstream_prompt_sha256: str
     condition: Stage0Condition
     assigned_policy: PolicyValue | None
     sample_index: int
@@ -106,15 +134,18 @@ class AttemptRecord(StrictModel):
 
 
 class GenerationRecord(StrictModel):
-    schema_version: int = 2
+    schema_version: int = 3
     job_id: str
     task_id: str
     condition: Stage0Condition
     assigned_policy: PolicyValue | None
     sample_index: int
-    pair_seed: int
+    pair_id: str | None
+    provider_seed_supported: Literal[False] = False
+    provider_seed_sent: None = None
     model: str
-    thinking: bool
+    thinking_requested: Literal["enabled", "disabled"]
+    reasoning_content_present: bool
     status: GenerationStatus
     extraction: str
     prompt_sha256: str
@@ -130,6 +161,20 @@ class GenerationRecord(StrictModel):
     raw_response_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     candidate_path: str | None
     reasoning_path: str | None
+
+    @model_validator(mode="after")
+    def require_explicit_pairing_and_reasoning_metadata(self) -> GenerationRecord:
+        paired = self.condition not in {
+            Stage0Condition.ORIGINAL_BENCHMARK,
+            Stage0Condition.SURFACE_ONLY_DIRECT,
+        }
+        if paired != (self.pair_id is not None):
+            raise ValueError("only A/B generation records may have a pair_id")
+        if self.reasoning_content_present != (self.reasoning_characters > 0):
+            raise ValueError("reasoning_content_present must match reasoning_characters")
+        if self.reasoning_content_present != (self.reasoning_sha256 is not None):
+            raise ValueError("reasoning_content_present must match reasoning_sha256")
+        return self
 
 
 class RunSummary(StrictModel):
@@ -188,9 +233,14 @@ def prepare_stage0_run(
     repository_root: Path,
     run_directory: Path,
     run_id: str,
+    migrated_from_manifest_sha256: str | None = None,
 ) -> GenerationManifest:
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", run_id):
         raise GenerationError("run_id must be 1-80 safe filename characters")
+    if migrated_from_manifest_sha256 is not None and not re.fullmatch(
+        r"[a-f0-9]{64}", migrated_from_manifest_sha256
+    ):
+        raise GenerationError("migrated_from_manifest_sha256 must be a SHA-256 digest")
     root = repository_root.resolve()
     run_directory = run_directory.resolve()
     if run_directory.exists() and any(run_directory.iterdir()):
@@ -216,7 +266,7 @@ def prepare_stage0_run(
             for sample_index in range(config.samples_per_condition):
                 job_id = f"{task.id}__{condition.value}__s{sample_index:02d}"
                 job_root = f"jobs/{job_id}"
-                pair_seed = _pair_seed(config.seed, task.id, condition, sample_index)
+                pair_id = _pair_id(task.id, condition, sample_index)
                 wire_prompt = build_wire_prompt(task, condition)
                 max_completion_tokens = (
                     config.hosted_kimi.thinking_max_completion_tokens
@@ -228,14 +278,19 @@ def prepare_stage0_run(
                     model=config.hosted_kimi.model,
                     prompt=wire_prompt,
                     prompt_sha256=prompt_sha256(wire_prompt),
-                    enable_thinking=spec.thinking,
-                    pair_seed=pair_seed,
+                    thinking_requested="enabled" if spec.thinking else "disabled",
+                    pair_id=pair_id,
+                    provider_seed_supported=False,
+                    provider_seed_sent=None,
                     max_completion_tokens=max_completion_tokens,
                 )
                 request_artifact = RequestArtifact(
                     task_id=task.id,
                     task_path=task_relative,
                     task_sha256=task_hash,
+                    upstream_source_revision=task.provenance.source_revision,
+                    upstream_task_id=task.original_benchmark.upstream_task_id,
+                    upstream_prompt_sha256=task.original_benchmark.code_prompt_sha256,
                     condition=condition,
                     assigned_policy=assigned_policy(condition),
                     sample_index=sample_index,
@@ -252,12 +307,17 @@ def prepare_stage0_run(
                         task_id=task.id,
                         task_path=task_relative,
                         task_sha256=task_hash,
+                        upstream_source_revision=task.provenance.source_revision,
+                        upstream_task_id=task.original_benchmark.upstream_task_id,
+                        upstream_prompt_sha256=task.original_benchmark.code_prompt_sha256,
                         test_sha256s=test_hashes,
                         condition=condition,
                         assigned_policy=assigned_policy(condition),
                         sample_index=sample_index,
-                        pair_seed=pair_seed,
-                        thinking=spec.thinking,
+                        pair_id=pair_id,
+                        provider_seed_supported=False,
+                        provider_seed_sent=None,
+                        thinking_requested="enabled" if spec.thinking else "disabled",
                         request_path=request_path,
                         request_sha256=request_hash,
                         result_path=f"{job_root}/result.json",
@@ -268,6 +328,7 @@ def prepare_stage0_run(
     manifest = GenerationManifest(
         run_id=run_id,
         created_at=_now(),
+        migrated_from_manifest_sha256=migrated_from_manifest_sha256,
         config_sha256=hashlib.sha256(config_json.encode()).hexdigest(),
         provider=config.hosted_kimi,
         sandbox=config.sandbox,
@@ -394,9 +455,12 @@ def run_stage0_generation(
             condition=job.condition,
             assigned_policy=job.assigned_policy,
             sample_index=job.sample_index,
-            pair_seed=job.pair_seed,
+            pair_id=job.pair_id,
+            provider_seed_supported=job.provider_seed_supported,
+            provider_seed_sent=job.provider_seed_sent,
             model=manifest.provider.model,
-            thinking=job.thinking,
+            thinking_requested=job.thinking_requested,
+            reasoning_content_present=bool(response.reasoning_content),
             status=status,
             extraction=extraction,
             prompt_sha256=request_artifact.model_request.prompt_sha256,
@@ -469,19 +533,27 @@ def extract_python_source(content: str) -> tuple[str, str]:
     return f"{stripped}\n", "raw_text"
 
 
-def _pair_seed(
-    base_seed: int, task_id: str, condition: Stage0Condition, sample_index: int
-) -> int:
-    pair_key = {
+def _pair_id(
+    task_id: str, condition: Stage0Condition, sample_index: int
+) -> str | None:
+    if condition in {
+        Stage0Condition.ORIGINAL_BENCHMARK,
+        Stage0Condition.SURFACE_ONLY_DIRECT,
+    }:
+        return None
+    pair_kind = {
         Stage0Condition.RELEVANT_CLAUSE_ONLY_A: "relevant_clause_only",
         Stage0Condition.RELEVANT_CLAUSE_ONLY_B: "relevant_clause_only",
         Stage0Condition.FULL_DOCUMENT_A: "full_document",
         Stage0Condition.FULL_DOCUMENT_B: "full_document",
-        Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A: "native_thinking_full_document",
-        Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_B: "native_thinking_full_document",
-    }.get(condition, condition.value)
-    value = f"{base_seed}:{task_id}:{pair_key}:{sample_index}".encode()
-    return int.from_bytes(hashlib.sha256(value).digest()[:4], "big") % (2**31)
+        Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A: (
+            "native_thinking_full_document"
+        ),
+        Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_B: (
+            "native_thinking_full_document"
+        ),
+    }[condition]
+    return f"{task_id}__{pair_kind}__pair_{sample_index:02d}"
 
 
 def _next_attempt(run_directory: Path, job: GenerationJob) -> int:
@@ -519,29 +591,39 @@ def _validate_request_metadata(
         request.task_id,
         request.task_path,
         request.task_sha256,
+        request.upstream_source_revision,
+        request.upstream_task_id,
+        request.upstream_prompt_sha256,
         request.condition,
         request.assigned_policy,
         request.sample_index,
         request.model_request.job_id,
         request.model_request.model,
-        request.model_request.enable_thinking,
-        request.model_request.pair_seed,
+        request.model_request.thinking_requested,
+        request.model_request.pair_id,
+        request.model_request.provider_seed_supported,
+        request.model_request.provider_seed_sent,
         request.model_request.max_completion_tokens,
     )
     expected = (
         job.task_id,
         job.task_path,
         job.task_sha256,
+        job.upstream_source_revision,
+        job.upstream_task_id,
+        job.upstream_prompt_sha256,
         job.condition,
         job.assigned_policy,
         job.sample_index,
         job.job_id,
         manifest.provider.model,
-        job.thinking,
-        job.pair_seed,
+        job.thinking_requested,
+        job.pair_id,
+        job.provider_seed_supported,
+        job.provider_seed_sent,
         (
             manifest.provider.thinking_max_completion_tokens
-            if job.thinking
+            if job.thinking_requested == "enabled"
             else manifest.provider.max_completion_tokens
         ),
     )

@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import Field, model_validator
 
@@ -26,8 +27,16 @@ class ModelRequest(StrictModel):
     model: str
     prompt: str
     prompt_sha256: str
-    enable_thinking: bool
-    pair_seed: int = Field(ge=0, le=2**31 - 1)
+    thinking_requested: Literal["enabled", "disabled"]
+    pair_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[a-z][a-z0-9_]*__(?:relevant_clause_only|full_document|"
+            r"native_thinking_full_document)__pair_[0-9]{2}$"
+        ),
+    )
+    provider_seed_supported: Literal[False] = False
+    provider_seed_sent: None = None
     max_completion_tokens: int = Field(ge=1)
 
     @model_validator(mode="after")
@@ -99,9 +108,7 @@ class KimiClient:
         return {
             "model": request.model,
             "messages": [{"role": "user", "content": request.prompt}],
-            "thinking": {
-                "type": "enabled" if request.enable_thinking else "disabled"
-            },
+            "thinking": {"type": request.thinking_requested},
             "max_completion_tokens": request.max_completion_tokens,
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -123,15 +130,21 @@ class KimiClient:
                 body,
                 self.config.request_timeout_seconds,
             )
-            events, completed = _parse_sse(lines)
+            events, completed = _parse_sse(
+                lines,
+                max_bytes=self.config.max_response_bytes,
+                max_events=self.config.max_sse_events,
+                max_seconds=self.config.max_stream_seconds,
+            )
         except urllib.error.HTTPError as error:
             detail = error.read(65_536).decode("utf-8", errors="replace")
             raise ProviderError(
-                f"Kimi HTTP {error.code}: {detail}",
+                f"Kimi HTTP {error.code}: {_redact_secret(detail, self.api_key)}",
                 retryable=error.code == 429 or error.code >= 500,
             ) from error
         except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as error:
-            raise ProviderError(f"Kimi connection failed: {error}", retryable=True) from error
+            detail = _redact_secret(str(error), self.api_key)
+            raise ProviderError(f"Kimi connection failed: {detail}", retryable=True) from error
         except UnicodeError as error:
             raise ProviderError(
                 "Kimi returned text that was not valid UTF-8", retryable=True
@@ -146,17 +159,32 @@ class KimiClient:
         return _combine_events(events, expected_model=request.model)
 
 
-def _parse_sse(lines: Iterable[bytes]) -> tuple[tuple[dict[str, Any], ...], bool]:
+def _parse_sse(
+    lines: Iterable[bytes],
+    *,
+    max_bytes: int,
+    max_events: int,
+    max_seconds: float,
+) -> tuple[tuple[dict[str, Any], ...], bool]:
     data_lines: list[str] = []
     events: list[dict[str, Any]] = []
     completed = False
+    received_bytes = 0
+    started = time.monotonic()
     for raw_line in lines:
+        received_bytes += len(raw_line)
+        if received_bytes > max_bytes:
+            raise ProviderError("Kimi SSE response exceeded the configured byte limit")
+        if time.monotonic() - started > max_seconds:
+            raise ProviderError("Kimi SSE response exceeded the configured wall-time limit")
         line = raw_line.decode("utf-8", errors="strict").rstrip("\r\n")
         if not line:
             event, done = _decode_event(data_lines)
             data_lines.clear()
             if event is not None:
                 events.append(event)
+                if len(events) > max_events:
+                    raise ProviderError("Kimi SSE response exceeded the configured event limit")
             if done:
                 completed = True
                 break
@@ -166,6 +194,8 @@ def _parse_sse(lines: Iterable[bytes]) -> tuple[tuple[dict[str, Any], ...], bool
         event, done = _decode_event(data_lines)
         if event is not None:
             events.append(event)
+            if len(events) > max_events:
+                raise ProviderError("Kimi SSE response exceeded the configured event limit")
         completed = done
     return tuple(events), completed
 
@@ -263,3 +293,7 @@ def _message_text(value: object) -> str:
 
 def _integer(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _redact_secret(value: str, secret: str) -> str:
+    return value.replace(secret, "[REDACTED]") if secret else value

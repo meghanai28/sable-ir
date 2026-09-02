@@ -28,6 +28,14 @@ class FakeStreamTransport:
         return (line for chunk in self.chunks for line in chunk.splitlines(keepends=True))
 
 
+class FailingStreamTransport(FakeStreamTransport):
+    def stream(
+        self, url: str, headers: dict[str, str], body: bytes, timeout: float
+    ) -> Iterable[bytes]:
+        del url, headers, body, timeout
+        raise OSError("transport accidentally included sk-test-secret")
+
+
 def _event(payload: dict[str, object]) -> bytes:
     return f"data: {json.dumps(payload)}\n\n".encode()
 
@@ -42,8 +50,10 @@ def _request(*, thinking: bool = True) -> ModelRequest:
         model="kimi-k2.6",
         prompt="write code",
         prompt_sha256=hashlib.sha256(b"write code").hexdigest(),
-        enable_thinking=thinking,
-        pair_seed=7,
+        thinking_requested="enabled" if thinking else "disabled",
+        pair_id="example__full_document__pair_00",
+        provider_seed_supported=False,
+        provider_seed_sent=None,
         max_completion_tokens=16_384 if thinking else 4096,
     )
 
@@ -78,13 +88,18 @@ def test_kimi_sse_client_records_reasoning_content_usage_and_safe_payload() -> N
             {
                 "id": "completion-123",
                 "model": "kimi-k2.6",
-                "choices": [],
-                "usage": {
-                    "prompt_tokens": 20,
-                    "completion_tokens": 10,
-                    "total_tokens": 30,
-                    "completion_tokens_details": {"reasoning_tokens": 2},
-                },
+                "choices": [
+                    {
+                        "delta": {},
+                        "finish_reason": "stop",
+                        "usage": {
+                            "prompt_tokens": 20,
+                            "completion_tokens": 10,
+                            "total_tokens": 30,
+                            "completion_tokens_details": {"reasoning_tokens": 2},
+                        },
+                    }
+                ],
             }
         ),
         _done(),
@@ -185,3 +200,45 @@ def test_invalid_sse_utf8_is_a_retryable_provider_error() -> None:
         client.generate(_request(thinking=False))
 
     assert captured.value.retryable
+
+
+def test_sse_event_limit_closes_a_runaway_stream() -> None:
+    transport = FakeStreamTransport(
+        [
+            _event({"id": "completion-123", "model": "kimi-k2.6", "choices": []}),
+            _event({"id": "completion-123", "model": "kimi-k2.6", "choices": []}),
+        ]
+    )
+    config = KimiConfig(api_key_env="MOONSHOT_API_KEY", max_sse_events=1)
+    client = KimiClient(config, "sk-test-secret", transport)
+
+    with pytest.raises(ProviderError, match="configured event limit"):
+        client.generate(_request(thinking=False))
+
+
+def test_sse_wall_time_limit_closes_a_runaway_stream(monkeypatch) -> None:
+    transport = FakeStreamTransport(
+        [_event({"id": "completion-123", "model": "kimi-k2.6", "choices": []})]
+    )
+    clock = iter((0.0, 301.0))
+    monkeypatch.setattr("sable_ir.provider.time.monotonic", lambda: next(clock))
+    client = KimiClient(
+        KimiConfig(api_key_env="MOONSHOT_API_KEY"), "sk-test-secret", transport
+    )
+
+    with pytest.raises(ProviderError, match="configured wall-time limit"):
+        client.generate(_request(thinking=False))
+
+
+def test_transport_errors_redact_the_api_key() -> None:
+    client = KimiClient(
+        KimiConfig(api_key_env="MOONSHOT_API_KEY"),
+        "sk-test-secret",
+        FailingStreamTransport([]),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        client.generate(_request(thinking=False))
+
+    assert "sk-test-secret" not in str(captured.value)
+    assert "[REDACTED]" in str(captured.value)

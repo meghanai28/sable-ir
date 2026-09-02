@@ -26,6 +26,7 @@ from sable_ir.generation import (
 from sable_ir.harness import EvaluationHarness, EvaluationResult, RunStatus, SandboxBackend
 from sable_ir.provider import ProviderResponse
 from sable_ir.schema import (
+    EVALUATION_HARNESS_VERSION,
     PolicyValue,
     Stage0Condition,
     StrictModel,
@@ -39,6 +40,7 @@ class ScoringError(RuntimeError):
 
 class EvaluationArtifact(StrictModel):
     schema_version: int = 1
+    harness_version: str = EVALUATION_HARNESS_VERSION
     job_id: str
     manifest_sha256: str
     generation_result_sha256: str
@@ -620,6 +622,7 @@ def _load_outcome(
     expected_hash = hashlib.sha256(generation_bytes).hexdigest()
     if (
         artifact.job_id != job.job_id
+        or artifact.harness_version != manifest.evaluation_harness_version
         or artifact.manifest_sha256 != manifest_sha256
         or artifact.generation_result_sha256 != expected_hash
     ):
@@ -883,20 +886,27 @@ def _validate_manifest_pairing(manifest: GenerationManifest) -> None:
         ),
     ):
         pair_ids_a = {
-            (job.task_id, job.sample_index): job.pair_seed
+            (job.task_id, job.sample_index): job.pair_id
             for job in manifest.jobs
             if job.condition is condition_a
         }
         pair_ids_b = {
-            (job.task_id, job.sample_index): job.pair_seed
+            (job.task_id, job.sample_index): job.pair_id
             for job in manifest.jobs
             if job.condition is condition_b
         }
-        if pair_ids_a != pair_ids_b:
+        if pair_ids_a != pair_ids_b or any(value is None for value in pair_ids_a.values()):
             raise ScoringError(
                 "manifest does not contain request-paired "
                 f"{condition_a.value}/{condition_b.value} pairs"
             )
+    if any(
+        job.pair_id is not None
+        for job in manifest.jobs
+        if job.condition
+        in {Stage0Condition.ORIGINAL_BENCHMARK, Stage0Condition.SURFACE_ONLY_DIRECT}
+    ):
+        raise ScoringError("unpaired anchor/surface jobs must have pair_id null")
 
 
 def _rate(values: Iterable[object]) -> float | None:
@@ -949,9 +959,11 @@ def _validate_generation_metadata(
         generation.condition,
         generation.assigned_policy,
         generation.sample_index,
-        generation.pair_seed,
+        generation.pair_id,
+        generation.provider_seed_supported,
+        generation.provider_seed_sent,
         generation.model,
-        generation.thinking,
+        generation.thinking_requested,
     )
     expected = (
         job.job_id,
@@ -959,9 +971,11 @@ def _validate_generation_metadata(
         job.condition,
         job.assigned_policy,
         job.sample_index,
-        job.pair_seed,
+        job.pair_id,
+        job.provider_seed_supported,
+        job.provider_seed_sent,
         manifest.provider.model,
-        job.thinking,
+        job.thinking_requested,
     )
     if observed != expected:
         raise ScoringError(f"generation metadata mismatch for {job.job_id}")
@@ -993,13 +1007,18 @@ def _validate_request_artifact(
         request.task_id,
         request.task_path,
         request.task_sha256,
+        request.upstream_source_revision,
+        request.upstream_task_id,
+        request.upstream_prompt_sha256,
         request.condition,
         request.assigned_policy,
         request.sample_index,
         request.model_request.job_id,
         request.model_request.model,
-        request.model_request.enable_thinking,
-        request.model_request.pair_seed,
+        request.model_request.thinking_requested,
+        request.model_request.pair_id,
+        request.model_request.provider_seed_supported,
+        request.model_request.provider_seed_sent,
         request.model_request.max_completion_tokens,
         request.model_request.prompt_sha256,
     )
@@ -1007,16 +1026,21 @@ def _validate_request_artifact(
         job.task_id,
         job.task_path,
         job.task_sha256,
+        job.upstream_source_revision,
+        job.upstream_task_id,
+        job.upstream_prompt_sha256,
         job.condition,
         job.assigned_policy,
         job.sample_index,
         job.job_id,
         manifest.provider.model,
-        job.thinking,
-        job.pair_seed,
+        job.thinking_requested,
+        job.pair_id,
+        job.provider_seed_supported,
+        job.provider_seed_sent,
         (
             manifest.provider.thinking_max_completion_tokens
-            if job.thinking
+            if job.thinking_requested == "enabled"
             else manifest.provider.max_completion_tokens
         ),
         generation.prompt_sha256,
@@ -1063,6 +1087,8 @@ def _validate_response_artifacts(
         raise ScoringError(f"finish status mismatch for {job.job_id}")
 
     reasoning = response.reasoning_content
+    if bool(reasoning) != generation.reasoning_content_present:
+        raise ScoringError(f"reasoning presence mismatch for {job.job_id}")
     if len(reasoning) != generation.reasoning_characters:
         raise ScoringError(f"reasoning length mismatch for {job.job_id}")
     if reasoning:
