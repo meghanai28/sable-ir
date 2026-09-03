@@ -18,6 +18,7 @@ stretch goal are outside this checkpoint.
 | No assigned-value leakage from the surface request | Implemented with automated and prior human audit | Only the applicable document clause changes across A/B prompt pairs; labels and gold clause IDs are not sent. |
 | Eight outputs per task | Implemented | The frozen matrix has 40 jobs across all eight required conditions. |
 | Native-thinking ceiling | Implemented | Only the two native-thinking A/B conditions send `thinking.type=enabled`; reasoning and token usage are preserved separately. |
+| Provider rate-limit recovery | Implemented | Request starts are spaced by 25 seconds. A retryable 429 requires a new lineage-linked manifest, a preserved prior-attempt hash, a 65-second cooldown, and one explicit manual retry authorization; automatic retries remain disabled. |
 | Functionality, A, B, and security execution | Implemented | Adapted direct conditions run four fresh suites. Upstream anchor jobs run functionality/security and mark A/B not applicable. |
 | Sandboxed generated-code execution | Implemented | Docker is the default, with no network, read-only mounts/root, dropped capabilities, resource limits, timeouts, and fresh state. |
 | Continuation rules are not statistical claims | Implemented | Reports identify them as five-task engineering gates and never emit confidence claims. |

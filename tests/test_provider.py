@@ -54,7 +54,7 @@ def _request(*, thinking: bool = True) -> ModelRequest:
         pair_id="example__full_document__pair_00",
         provider_seed_supported=False,
         provider_seed_sent=None,
-        max_completion_tokens=16_384 if thinking else 4096,
+        max_completion_tokens=32_768 if thinking else 4096,
     )
 
 
@@ -122,7 +122,7 @@ def test_kimi_sse_client_records_reasoning_content_usage_and_safe_payload() -> N
         "model": "kimi-k2.6",
         "messages": [{"role": "user", "content": "write code"}],
         "thinking": {"type": "enabled"},
-        "max_completion_tokens": 16_384,
+        "max_completion_tokens": 32_768,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
@@ -220,7 +220,7 @@ def test_sse_wall_time_limit_closes_a_runaway_stream(monkeypatch) -> None:
     transport = FakeStreamTransport(
         [_event({"id": "completion-123", "model": "kimi-k2.6", "choices": []})]
     )
-    clock = iter((0.0, 301.0))
+    clock = iter((0.0, 601.0))
     monkeypatch.setattr("sable_ir.provider.time.monotonic", lambda: next(clock))
     client = KimiClient(
         KimiConfig(api_key_env="MOONSHOT_API_KEY"), "sk-test-secret", transport

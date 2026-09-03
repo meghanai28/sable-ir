@@ -51,10 +51,12 @@ Original-anchor and surface-only jobs record `pair_id: null`. A/B jobs record a 
 native-thinking comparisons are three distinct pairs. Every job records
 `provider_seed_supported: false` and `provider_seed_sent: null`; these metadata fields are not sent
 to Kimi. The provider request does not contain `seed`, `temperature`, or `top_p`. Non-thinking
-requests are capped at 4,096 completion tokens; thinking requests are capped at 16,384 total
+requests are capped at 4,096 completion tokens; thinking requests are capped at 32,768 total
 completion/reasoning tokens.
-The client also closes a response after 300 seconds, 8 MiB, or 100,000 SSE events, whichever
-limit is reached first; an individual blocked socket read times out after 120 seconds.
+The client also closes a response after 600 seconds, 8 MiB, or 100,000 SSE events, whichever
+limit is reached first; an individual blocked socket read times out after 120 seconds. Batch
+execution spaces provider request starts by at least 25 seconds to remain below the account's
+three-request-per-minute limit. This pacing is not a retry.
 
 ## Credential and two-canary sequence
 
@@ -92,9 +94,14 @@ uv run sable-ir evaluate-stage0 \
   --job-id path_symlink_report__native_thinking_full_document_a__s00
 ```
 
-Confirm that the thinking result contains reasoning content and sensible token usage. After both
-canaries have `result.json` and `evaluation.json` artifacts and have been manually audited, unlock
-the remaining jobs with the exact run ID:
+Confirm that the thinking result contains reasoning content and sensible token usage. The full-run
+lock validates that both canaries are non-truncated runnable generations, their response and
+candidate hashes match, their evaluations have matching manifest/result provenance, and their
+complete evaluations used the configured Docker backend. It also requires a hash-matched reasoning
+artifact for the thinking canary. Merely creating `result.json` and `evaluation.json` cannot unlock
+the batch.
+After both canaries pass that operational check and have been manually audited, unlock the
+remaining jobs with the exact run ID:
 
 ```bash
 uv run sable-ir generate-stage0 \
@@ -109,6 +116,26 @@ SSE stream, response-limit breach, missing usage, or model mismatch stops the in
 later job can be sent. Prepare a new run only after inspecting a failed attempt artifact. The API
 key is used only in the Authorization header and is never written to request, response, manifest,
 or error artifacts.
+
+### Explicit recovery from a rate-limit stop
+
+Do not mutate or delete the interrupted run. After manually approving a retry and waiting at least
+65 seconds from the recorded HTTP 429 completion time, prepare a new lineage-linked run:
+
+```bash
+uv run sable-ir prepare-stage0 \
+  --run-id stage0-smoke-20260902-rpm-recovery \
+  --recovery-from-manifest \
+    artifacts/stage0/stage0-smoke-20260902/manifest.json \
+  --authorize-retry-job-id path_symlink_report__full_document_a__s00 \
+  --retry-cooldown-seconds 65
+```
+
+Recovery preparation automatically hashes and carries completed result artifacts, records the
+unchanged failed-attempt path and hash, computes the exact earliest retry timestamp, and authorizes
+one additional attempt for only that failed job. The new manifest retains one attempt per job and
+`automatic_retries: false`. Re-evaluate carried results under the new manifest hash before using
+the normal exact-run-ID full-generation command. Any new provider error stops the recovery batch.
 
 ## Evaluation and report
 

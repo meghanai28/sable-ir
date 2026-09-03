@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from sable_ir.config import load_stage0_config
 from sable_ir.generation import (
     GenerationError,
     GenerationRecord,
+    prepare_stage0_recovery,
     prepare_stage0_run,
     provider_preflight,
     run_stage0_generation,
@@ -50,6 +52,12 @@ class FailingGenerationClient:
         raise ProviderError("simulated provider failure", retryable=True)
 
 
+class RateLimitedGenerationClient:
+    def generate(self, request: ModelRequest) -> ProviderResponse:
+        del request
+        raise ProviderError("Kimi HTTP 429: test rate limit", retryable=True)
+
+
 def test_prepare_freezes_all_forty_stage0_requests(tmp_path: Path) -> None:
     root = Path.cwd()
     config = load_stage0_config(root / "config/stage0.toml")
@@ -58,8 +66,8 @@ def test_prepare_freezes_all_forty_stage0_requests(tmp_path: Path) -> None:
     manifest = prepare_stage0_run(config, root, run_directory, "test-run")
 
     assert len(manifest.jobs) == 40
-    assert manifest.schema_version == 6
-    assert manifest.generation_harness_version == "stage0-kimi-generation-v2"
+    assert manifest.schema_version == 8
+    assert manifest.generation_harness_version == "stage0-kimi-generation-v4"
     assert manifest.evaluation_harness_version == "stage0-evaluation-v2"
     assert sum(job.thinking_requested == "enabled" for job in manifest.jobs) == 10
     assert {job.condition for job in manifest.jobs} == set(Stage0Condition)
@@ -97,6 +105,10 @@ def test_prepare_freezes_all_forty_stage0_requests(tmp_path: Path) -> None:
     }
     assert all(not job.provider_seed_supported for job in manifest.jobs)
     assert all(job.provider_seed_sent is None for job in manifest.jobs)
+    assert manifest.provider.minimum_request_interval_seconds == 25.0
+    assert not manifest.provider.automatic_retries
+    assert manifest.carried_forward_result_sha256s == {}
+    assert manifest.manual_retry_authorization is None
 
 
 def test_generation_is_resumable_and_records_immutable_artifacts(tmp_path: Path) -> None:
@@ -165,7 +177,7 @@ def test_generation_can_target_a_native_thinking_canary(tmp_path: Path) -> None:
     assert len(client.requests) == 1
     assert client.requests[0].job_id == target.job_id
     assert client.requests[0].thinking_requested == "enabled"
-    assert client.requests[0].max_completion_tokens == 16_384
+    assert client.requests[0].max_completion_tokens == 32_768
     result = GenerationRecord.model_validate_json(
         (run_directory / target.result_path).read_text(encoding="utf-8")
     )
@@ -196,6 +208,88 @@ def test_provider_failure_trips_circuit_breaker_before_later_jobs(tmp_path: Path
     with pytest.raises(GenerationError, match="already used its single provider attempt"):
         run_stage0_generation(run_directory / "manifest.json", client)
     assert client.calls == 1
+
+
+def test_generation_paces_request_starts_at_twenty_five_seconds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = Path.cwd()
+    run_directory = tmp_path / "paced"
+    prepare_stage0_run(
+        load_stage0_config(root / "config/stage0.toml"),
+        root,
+        run_directory,
+        "paced-test",
+    )
+    now = [0.0]
+    sleeps: list[float] = []
+    monkeypatch.setattr("sable_ir.generation.time.monotonic", lambda: now[0])
+
+    def advance(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr("sable_ir.generation.time.sleep", advance)
+
+    summary = run_stage0_generation(
+        run_directory / "manifest.json", FakeGenerationClient(), limit=2
+    )
+
+    assert summary.generated == 2
+    assert sleeps == [25.0]
+
+
+def test_recovery_hash_links_results_and_authorizes_one_429_attempt(
+    tmp_path: Path,
+) -> None:
+    root = Path.cwd()
+    config = load_stage0_config(root / "config/stage0.toml")
+    source_directory = tmp_path / "source"
+    source = prepare_stage0_run(config, root, source_directory, "source-run")
+    completed_job = source.jobs[0]
+    retry_job = source.jobs[1]
+    run_stage0_generation(
+        source_directory / "manifest.json",
+        FakeGenerationClient(),
+        job_id=completed_job.job_id,
+    )
+    run_stage0_generation(
+        source_directory / "manifest.json",
+        RateLimitedGenerationClient(),
+        job_id=retry_job.job_id,
+    )
+    source_result = source_directory / completed_job.result_path
+    source_result_bytes = source_result.read_bytes()
+    failed_attempt = (
+        source_directory / "jobs" / retry_job.job_id / "attempts/attempt-01.json"
+    )
+    failed_attempt_bytes = failed_attempt.read_bytes()
+
+    recovery_directory = tmp_path / "recovery"
+    recovery = prepare_stage0_recovery(
+        config,
+        root,
+        source_directory / "manifest.json",
+        recovery_directory,
+        "recovery-run",
+        retry_job.job_id,
+    )
+
+    assert recovery.carried_forward_result_sha256s == {
+        completed_job.job_id: hashlib.sha256(source_result_bytes).hexdigest()
+    }
+    authorization = recovery.manual_retry_authorization
+    assert authorization is not None
+    assert authorization.job_id == retry_job.job_id
+    assert authorization.cooldown_seconds == 65
+    assert authorization.additional_attempts == 1
+    assert not authorization.automatic_retry
+    assert authorization.prior_attempt_sha256 == hashlib.sha256(
+        failed_attempt_bytes
+    ).hexdigest()
+    assert (recovery_directory / completed_job.result_path).read_bytes() == source_result_bytes
+    assert failed_attempt.read_bytes() == failed_attempt_bytes
+    assert not (recovery_directory / "jobs" / retry_job.job_id / "attempts").exists()
 
 
 def test_preflight_never_contacts_provider_and_never_returns_key(monkeypatch) -> None:

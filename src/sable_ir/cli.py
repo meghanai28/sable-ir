@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from sable_ir.audit import audit_stage0_tasks
 from sable_ir.config import ConfigLoadError, load_stage0_config, load_task
 from sable_ir.generation import (
     GenerationError,
     GenerationManifest,
+    GenerationRecord,
+    GenerationStatus,
     client_from_environment,
     load_manifest,
+    prepare_stage0_recovery,
     prepare_stage0_run,
     provider_preflight,
     run_stage0_generation,
@@ -27,8 +33,15 @@ from sable_ir.harness import (
     HarnessError,
     UnsafeLocalSandbox,
 )
-from sable_ir.schema import Stage0Condition, Stage0Config, TaskSpec, json_schema_for
+from sable_ir.schema import (
+    Stage0Condition,
+    Stage0Config,
+    TaskSpec,
+    TestSuiteKind,
+    json_schema_for,
+)
 from sable_ir.scoring import (
+    EvaluationArtifact,
     OverallRecommendation,
     ScoringError,
     build_dataset_audit_review,
@@ -92,6 +105,21 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument(
         "--migrated-from-manifest-sha256",
         help="record the prior manifest hash for a metadata-only artifact migration",
+    )
+    prepare_parser.add_argument(
+        "--recovery-from-manifest",
+        type=Path,
+        help="create a lineage-linked manual recovery from an interrupted run",
+    )
+    prepare_parser.add_argument(
+        "--authorize-retry-job-id",
+        help="authorize one new-run attempt for the source run's retryable 429 job",
+    )
+    prepare_parser.add_argument(
+        "--retry-cooldown-seconds",
+        type=int,
+        default=65,
+        help="frozen cooldown after the preserved 429 attempt (must be 65)",
     )
 
     generate_parser = subparsers.add_parser(
@@ -214,13 +242,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_directory = args.run_directory or (
                 args.repository_root / config.artifacts_dir / "stage0" / args.run_id
             )
-            manifest = prepare_stage0_run(
-                config,
-                args.repository_root,
-                run_directory,
-                args.run_id,
-                args.migrated_from_manifest_sha256,
-            )
+            recovery_requested = args.recovery_from_manifest is not None
+            retry_job_provided = args.authorize_retry_job_id is not None
+            if recovery_requested != retry_job_provided:
+                raise GenerationError(
+                    "recovery requires both --recovery-from-manifest and "
+                    "--authorize-retry-job-id"
+                )
+            if recovery_requested:
+                if args.migrated_from_manifest_sha256 is not None:
+                    raise GenerationError(
+                        "recovery computes its source manifest hash automatically"
+                    )
+                manifest = prepare_stage0_recovery(
+                    config,
+                    args.repository_root,
+                    args.recovery_from_manifest,
+                    run_directory,
+                    args.run_id,
+                    args.authorize_retry_job_id,
+                    cooldown_seconds=args.retry_cooldown_seconds,
+                )
+            else:
+                manifest = prepare_stage0_run(
+                    config,
+                    args.repository_root,
+                    run_directory,
+                    args.run_id,
+                    args.migrated_from_manifest_sha256,
+                )
             print(
                 f"prepared {len(manifest.jobs)} immutable requests at "
                 f"{run_directory.resolve()}"
@@ -320,14 +370,14 @@ def _audit_choice(value: str | None) -> bool | None:
 def _require_canary_artifacts(
     manifest_path: Path, manifest: GenerationManifest
 ) -> None:
-    """Refuse a paid full run until both representative canaries were evaluated."""
+    """Refuse a paid full run until both canaries generated and were evaluated."""
     first_task_id = manifest.jobs[0].task_id
     required_conditions = (
         Stage0Condition.ORIGINAL_BENCHMARK,
         Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A,
     )
     run_directory = manifest_path.resolve().parent
-    missing: list[str] = []
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     for condition in required_conditions:
         matching = [
             job
@@ -341,14 +391,140 @@ def _require_canary_artifacts(
                 f"manifest must contain one {condition.value} canary for {first_task_id}"
             )
         job = matching[0]
-        for artifact in (
-            run_directory / job.result_path,
-            run_directory / "jobs" / job.job_id / "evaluation.json",
-        ):
-            if not artifact.is_file():
-                missing.append(str(artifact.relative_to(run_directory)))
-    if missing:
-        raise GenerationError(
-            "full generation is locked until both canaries have result.json and "
-            f"evaluation.json artifacts; missing: {', '.join(missing)}"
+        result_path = run_directory / job.result_path
+        evaluation_path = run_directory / "jobs" / job.job_id / "evaluation.json"
+        missing = [
+            str(path.relative_to(run_directory))
+            for path in (result_path, evaluation_path)
+            if not path.is_file()
+        ]
+        if missing:
+            raise GenerationError(
+                "full generation is locked until both canaries have result.json and "
+                f"evaluation.json artifacts; missing: {', '.join(missing)}"
+            )
+        try:
+            result_bytes = result_path.read_bytes()
+            generation = GenerationRecord.model_validate_json(result_bytes)
+            evaluation = EvaluationArtifact.model_validate_json(
+                evaluation_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError) as error:
+            raise GenerationError(
+                f"full generation is locked: could not validate canary {job.job_id}: {error}"
+            ) from error
+
+        generation_identity = (
+            generation.job_id,
+            generation.task_id,
+            generation.condition,
+            generation.assigned_policy,
+            generation.sample_index,
+            generation.pair_id,
+            generation.model,
+            generation.thinking_requested,
         )
+        job_identity = (
+            job.job_id,
+            job.task_id,
+            job.condition,
+            job.assigned_policy,
+            job.sample_index,
+            job.pair_id,
+            manifest.provider.model,
+            job.thinking_requested,
+        )
+        if generation_identity != job_identity:
+            raise GenerationError(
+                f"full generation is locked: canary metadata mismatch for {job.job_id}"
+            )
+        if (
+            generation.status is not GenerationStatus.GENERATED
+            or generation.finish_reason == "length"
+            or generation.candidate_path is None
+            or generation.candidate_sha256 is None
+        ):
+            raise GenerationError(
+                "full generation is locked: canary did not complete with runnable output: "
+                f"{job.job_id} ({generation.status.value}, "
+                f"finish_reason={generation.finish_reason!r})"
+            )
+        if condition is Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A and (
+            generation.thinking_requested != "enabled"
+            or not generation.reasoning_content_present
+        ):
+            raise GenerationError(
+                f"full generation is locked: thinking evidence is missing for {job.job_id}"
+            )
+
+        candidate_path = _checked_canary_path(
+            run_directory, generation.candidate_path, "candidate"
+        )
+        raw_response_path = _checked_canary_path(
+            run_directory, generation.raw_response_path, "raw response"
+        )
+        try:
+            candidate_sha256 = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+            raw_response_sha256 = hashlib.sha256(raw_response_path.read_bytes()).hexdigest()
+        except OSError as error:
+            raise GenerationError(
+                f"full generation is locked: could not read canary artifact: {error}"
+            ) from error
+        if candidate_sha256 != generation.candidate_sha256:
+            raise GenerationError(
+                f"full generation is locked: candidate hash mismatch for {job.job_id}"
+            )
+        if raw_response_sha256 != generation.raw_response_sha256:
+            raise GenerationError(
+                f"full generation is locked: raw response hash mismatch for {job.job_id}"
+            )
+        if condition is Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A:
+            if generation.reasoning_path is None or generation.reasoning_sha256 is None:
+                raise GenerationError(
+                    f"full generation is locked: reasoning artifact is missing for {job.job_id}"
+                )
+            reasoning_path = _checked_canary_path(
+                run_directory, generation.reasoning_path, "reasoning"
+            )
+            try:
+                reasoning_sha256 = hashlib.sha256(reasoning_path.read_bytes()).hexdigest()
+            except OSError as error:
+                raise GenerationError(
+                    f"full generation is locked: could not read reasoning artifact: {error}"
+                ) from error
+            if reasoning_sha256 != generation.reasoning_sha256:
+                raise GenerationError(
+                    f"full generation is locked: reasoning hash mismatch for {job.job_id}"
+                )
+
+        expected_result_sha256 = hashlib.sha256(result_bytes).hexdigest()
+        if (
+            evaluation.job_id != job.job_id
+            or evaluation.harness_version != manifest.evaluation_harness_version
+            or evaluation.manifest_sha256 != manifest_sha256
+            or evaluation.generation_result_sha256 != expected_result_sha256
+            or evaluation.candidate_path != generation.candidate_path
+            or evaluation.evaluation is None
+        ):
+            raise GenerationError(
+                f"full generation is locked: evaluation provenance is invalid for {job.job_id}"
+            )
+        evaluated = evaluation.evaluation
+        if (
+            evaluated.task_id != job.task_id
+            or evaluated.candidate_sha256 != generation.candidate_sha256
+            or evaluated.backend != manifest.sandbox.backend
+            or set(evaluated.suites) != set(TestSuiteKind)
+        ):
+            raise GenerationError(
+                f"full generation is locked: evaluation is incomplete for {job.job_id}"
+            )
+
+
+def _checked_canary_path(run_directory: Path, relative: str, label: str) -> Path:
+    path = (run_directory / relative).resolve()
+    if not path.is_relative_to(run_directory):
+        raise GenerationError(f"full generation is locked: unsafe {label} path")
+    if not path.is_file():
+        raise GenerationError(f"full generation is locked: missing {label} artifact")
+    return path

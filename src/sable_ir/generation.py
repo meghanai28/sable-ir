@@ -6,10 +6,10 @@ import hashlib
 import os
 import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol
 
 from pydantic import Field, ValidationError, model_validator
 
@@ -41,6 +41,9 @@ class GenerationStatus(StrEnum):
     GENERATED = "generated"
     TRUNCATED = "truncated"
     MALFORMED = "malformed"
+
+
+Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 
 
 class GenerationJob(StrictModel):
@@ -88,22 +91,74 @@ class GenerationJob(StrictModel):
         return self
 
 
+class ManualRetryAuthorization(StrictModel):
+    source_manifest_sha256: Sha256
+    job_id: str
+    prior_attempt_path: str
+    prior_attempt_sha256: Sha256
+    prior_attempt_finished_at: str
+    cooldown_seconds: Literal[65] = 65
+    earliest_retry_at: str
+    additional_attempts: Literal[1] = 1
+    automatic_retry: Literal[False] = False
+    reason: Literal["provider_rate_limit_429"] = "provider_rate_limit_429"
+
+    @model_validator(mode="after")
+    def require_exact_cooldown_and_safe_path(self) -> ManualRetryAuthorization:
+        path = PurePosixPath(self.prior_attempt_path)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("prior_attempt_path must be source-run-relative")
+        try:
+            finished_at = datetime.fromisoformat(self.prior_attempt_finished_at)
+            earliest_retry_at = datetime.fromisoformat(self.earliest_retry_at)
+        except ValueError as error:
+            raise ValueError("retry timestamps must be ISO-8601") from error
+        if finished_at.tzinfo is None or earliest_retry_at.tzinfo is None:
+            raise ValueError("retry timestamps must include UTC offsets")
+        if earliest_retry_at != finished_at + timedelta(seconds=self.cooldown_seconds):
+            raise ValueError("earliest_retry_at must enforce the exact cooldown")
+        return self
+
+
 class GenerationManifest(StrictModel):
-    schema_version: int = 6
+    schema_version: int = 8
     run_id: str
     created_at: str
-    generation_harness_version: Literal["stage0-kimi-generation-v2"] = (
-        "stage0-kimi-generation-v2"
-    )
+    generation_harness_version: Literal[
+        "stage0-kimi-generation-v2",
+        "stage0-kimi-generation-v3",
+        "stage0-kimi-generation-v4",
+    ] = "stage0-kimi-generation-v4"
     evaluation_harness_version: Literal["stage0-evaluation-v2"] = "stage0-evaluation-v2"
-    migrated_from_manifest_sha256: str | None = Field(
-        default=None, pattern=r"^[a-f0-9]{64}$"
-    )
+    migrated_from_manifest_sha256: Sha256 | None = None
+    carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    manual_retry_authorization: ManualRetryAuthorization | None = None
     config_sha256: str
     provider: KimiConfig
     sandbox: SandboxConfig
     thresholds: Stage0Thresholds
     jobs: tuple[GenerationJob, ...]
+
+    @model_validator(mode="after")
+    def require_consistent_recovery_lineage(self) -> GenerationManifest:
+        job_ids = {job.job_id for job in self.jobs}
+        carried_ids = set(self.carried_forward_result_sha256s)
+        if not carried_ids <= job_ids:
+            raise ValueError("carried-forward result references an unknown job")
+        recovery_present = bool(carried_ids) or self.manual_retry_authorization is not None
+        if recovery_present and self.migrated_from_manifest_sha256 is None:
+            raise ValueError("recovery metadata requires a source manifest hash")
+        authorization = self.manual_retry_authorization
+        if authorization is not None:
+            if authorization.source_manifest_sha256 != self.migrated_from_manifest_sha256:
+                raise ValueError("retry authorization must reference the source manifest")
+            if authorization.job_id not in job_ids:
+                raise ValueError("retry authorization references an unknown job")
+            if authorization.job_id in carried_ids:
+                raise ValueError("a retry-authorized job cannot have a carried result")
+        if self.schema_version >= 8 and self.provider.minimum_request_interval_seconds is None:
+            raise ValueError("schema v8 manifests require an explicit request interval")
+        return self
 
 
 class RequestArtifact(StrictModel):
@@ -122,7 +177,7 @@ class RequestArtifact(StrictModel):
 
 
 class AttemptRecord(StrictModel):
-    schema_version: int = 1
+    schema_version: int = 2
     attempt: int
     started_at: str
     finished_at: str
@@ -131,6 +186,8 @@ class AttemptRecord(StrictModel):
     retryable: bool = False
     provider_request_id: str | None = None
     error: str | None = None
+    automatic_retry: Literal[False] = False
+    authorized_lineage_retry_of_attempt_sha256: Sha256 | None = None
 
 
 class GenerationRecord(StrictModel):
@@ -234,6 +291,8 @@ def prepare_stage0_run(
     run_directory: Path,
     run_id: str,
     migrated_from_manifest_sha256: str | None = None,
+    carried_forward_result_sha256s: dict[str, str] | None = None,
+    manual_retry_authorization: ManualRetryAuthorization | None = None,
 ) -> GenerationManifest:
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", run_id):
         raise GenerationError("run_id must be 1-80 safe filename characters")
@@ -329,6 +388,8 @@ def prepare_stage0_run(
         run_id=run_id,
         created_at=_now(),
         migrated_from_manifest_sha256=migrated_from_manifest_sha256,
+        carried_forward_result_sha256s=carried_forward_result_sha256s or {},
+        manual_retry_authorization=manual_retry_authorization,
         config_sha256=hashlib.sha256(config_json.encode()).hexdigest(),
         provider=config.hosted_kimi,
         sandbox=config.sandbox,
@@ -336,6 +397,194 @@ def prepare_stage0_run(
         jobs=tuple(jobs),
     )
     _write_json_new(run_directory / "manifest.json", manifest)
+    return manifest
+
+
+def prepare_stage0_recovery(
+    config: Stage0Config,
+    repository_root: Path,
+    source_manifest_path: Path,
+    run_directory: Path,
+    run_id: str,
+    retry_job_id: str,
+    *,
+    cooldown_seconds: int = 65,
+) -> GenerationManifest:
+    """Create a new immutable run that carries valid results across one manual retry."""
+    if cooldown_seconds != 65:
+        raise GenerationError("the approved rate-limit recovery cooldown must be 65 seconds")
+    approved_cooldown: Literal[65] = 65
+    source_manifest_path = source_manifest_path.resolve()
+    source_manifest = load_manifest(source_manifest_path)
+    source_directory = source_manifest_path.parent
+    source_bytes = source_manifest_path.read_bytes()
+    source_manifest_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    if source_manifest.provider.thinking_max_completion_tokens != 32_768:
+        raise GenerationError("source recovery manifest does not use the approved 32K ceiling")
+    provider_identity = (
+        source_manifest.provider.provider,
+        source_manifest.provider.transport,
+        source_manifest.provider.model,
+        source_manifest.provider.base_url,
+        source_manifest.provider.generation_path,
+        source_manifest.provider.api_key_env,
+        source_manifest.provider.max_completion_tokens,
+        source_manifest.provider.thinking_max_completion_tokens,
+        source_manifest.provider.max_attempts,
+        source_manifest.provider.automatic_retries,
+    )
+    requested_provider_identity = (
+        config.hosted_kimi.provider,
+        config.hosted_kimi.transport,
+        config.hosted_kimi.model,
+        config.hosted_kimi.base_url,
+        config.hosted_kimi.generation_path,
+        config.hosted_kimi.api_key_env,
+        config.hosted_kimi.max_completion_tokens,
+        config.hosted_kimi.thinking_max_completion_tokens,
+        config.hosted_kimi.max_attempts,
+        config.hosted_kimi.automatic_retries,
+    )
+    if provider_identity != requested_provider_identity:
+        raise GenerationError("recovery would change a frozen provider request setting")
+    if config.hosted_kimi.minimum_request_interval_seconds != 25.0:
+        raise GenerationError("rate-limit recovery requires a 25-second request interval")
+
+    source_jobs = {job.job_id: job for job in source_manifest.jobs}
+    if retry_job_id not in source_jobs:
+        raise GenerationError(f"source manifest does not contain retry job: {retry_job_id}")
+    carried_hashes: dict[str, str] = {}
+    carried_paths: set[str] = set()
+    for job in source_manifest.jobs:
+        result_path = _checked_optional_run_path(source_directory, job.result_path)
+        if result_path is None:
+            continue
+        result_bytes = result_path.read_bytes()
+        try:
+            generation = GenerationRecord.model_validate_json(result_bytes)
+        except ValidationError as error:
+            raise GenerationError(
+                f"could not validate carried result for {job.job_id}: {error}"
+            ) from error
+        _validate_carried_generation(generation, job, source_manifest)
+        if generation.status is not GenerationStatus.GENERATED:
+            raise GenerationError(f"only complete generated results may be carried: {job.job_id}")
+        carried_hashes[job.job_id] = hashlib.sha256(result_bytes).hexdigest()
+        carried_paths.add(job.result_path)
+
+        attempt_relative = (
+            f"jobs/{job.job_id}/attempts/attempt-{generation.successful_attempt:02d}.json"
+        )
+        attempt_path = _checked_required_run_path(
+            source_directory, attempt_relative, "successful attempt"
+        )
+        try:
+            attempt = AttemptRecord.model_validate_json(attempt_path.read_bytes())
+        except ValidationError as error:
+            raise GenerationError(
+                f"could not validate carried attempt for {job.job_id}: {error}"
+            ) from error
+        if (
+            not attempt.succeeded
+            or attempt.provider_request_id != generation.provider_request_id
+            or attempt.attempt != generation.successful_attempt
+        ):
+            raise GenerationError(f"carried attempt metadata mismatch for {job.job_id}")
+        carried_paths.add(attempt_relative)
+
+        raw_path = _checked_required_run_path(
+            source_directory, generation.raw_response_path, "raw response"
+        )
+        if hashlib.sha256(raw_path.read_bytes()).hexdigest() != generation.raw_response_sha256:
+            raise GenerationError(f"carried raw response hash mismatch for {job.job_id}")
+        carried_paths.add(generation.raw_response_path)
+
+        if generation.candidate_path is None or generation.candidate_sha256 is None:
+            raise GenerationError(f"carried result is missing its candidate: {job.job_id}")
+        candidate_path = _checked_required_run_path(
+            source_directory, generation.candidate_path, "candidate"
+        )
+        if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != generation.candidate_sha256:
+            raise GenerationError(f"carried candidate hash mismatch for {job.job_id}")
+        carried_paths.add(generation.candidate_path)
+
+        if generation.reasoning_path is not None:
+            if generation.reasoning_sha256 is None:
+                raise GenerationError(f"carried reasoning hash is missing for {job.job_id}")
+            reasoning_path = _checked_required_run_path(
+                source_directory, generation.reasoning_path, "reasoning"
+            )
+            if (
+                hashlib.sha256(reasoning_path.read_bytes()).hexdigest()
+                != generation.reasoning_sha256
+            ):
+                raise GenerationError(f"carried reasoning hash mismatch for {job.job_id}")
+            carried_paths.add(generation.reasoning_path)
+
+    if retry_job_id in carried_hashes:
+        raise GenerationError("retry job already has a completed result")
+    failed_attempts = sorted(
+        (source_directory / "jobs" / retry_job_id / "attempts").glob("attempt-*.json")
+    )
+    if len(failed_attempts) != 1:
+        raise GenerationError("retry job must have exactly one preserved source attempt")
+    failed_attempt_path = failed_attempts[0]
+    failed_attempt_bytes = failed_attempt_path.read_bytes()
+    try:
+        failed_attempt = AttemptRecord.model_validate_json(failed_attempt_bytes)
+    except ValidationError as error:
+        raise GenerationError(f"could not validate preserved 429 attempt: {error}") from error
+    if (
+        failed_attempt.succeeded
+        or not failed_attempt.retryable
+        or failed_attempt.error is None
+        or "Kimi HTTP 429:" not in failed_attempt.error
+    ):
+        raise GenerationError("manual retry authorization requires a retryable Kimi HTTP 429")
+    try:
+        failed_finished_at = datetime.fromisoformat(failed_attempt.finished_at)
+    except ValueError as error:
+        raise GenerationError("failed attempt has an invalid completion timestamp") from error
+    if failed_finished_at.tzinfo is None:
+        raise GenerationError("failed attempt completion timestamp lacks a UTC offset")
+    earliest_retry_at = failed_finished_at + timedelta(seconds=approved_cooldown)
+    failed_attempt_relative = failed_attempt_path.relative_to(source_directory).as_posix()
+    authorization = ManualRetryAuthorization(
+        source_manifest_sha256=source_manifest_sha256,
+        job_id=retry_job_id,
+        prior_attempt_path=failed_attempt_relative,
+        prior_attempt_sha256=hashlib.sha256(failed_attempt_bytes).hexdigest(),
+        prior_attempt_finished_at=failed_attempt.finished_at,
+        cooldown_seconds=approved_cooldown,
+        earliest_retry_at=earliest_retry_at.isoformat(),
+        additional_attempts=1,
+        automatic_retry=False,
+    )
+    manifest = prepare_stage0_run(
+        config,
+        repository_root,
+        run_directory,
+        run_id,
+        source_manifest_sha256,
+        carried_hashes,
+        authorization,
+    )
+    new_jobs = {job.job_id: job for job in manifest.jobs}
+    if set(new_jobs) != set(source_jobs):
+        raise GenerationError("recovery changed the frozen job matrix")
+    for job_id, source_job in source_jobs.items():
+        new_job = new_jobs[job_id]
+        if (
+            source_job.request_sha256 != new_job.request_sha256
+            or source_job.condition != new_job.condition
+            or source_job.assigned_policy != new_job.assigned_policy
+            or source_job.pair_id != new_job.pair_id
+        ):
+            raise GenerationError(f"recovery changed the frozen request for {job_id}")
+    destination_directory = run_directory.resolve()
+    for relative in sorted(carried_paths):
+        source = _checked_required_run_path(source_directory, relative, "carried artifact")
+        _write_bytes_new(destination_directory / relative, source.read_bytes())
     return manifest
 
 
@@ -359,6 +608,7 @@ def run_stage0_generation(
     counters = {status.value: 0 for status in GenerationStatus}
     failed = 0
     skipped = 0
+    last_request_started: float | None = None
 
     for job in selected:
         result_path = run_directory / job.result_path
@@ -382,8 +632,19 @@ def run_stage0_generation(
                 f"{job.job_id} already used its single provider attempt; prepare a new run "
                 "only after inspecting the recorded failure"
             )
+        retry_authorization = manifest.manual_retry_authorization
+        retry_of_attempt_sha256 = None
+        if retry_authorization is not None and job.job_id == retry_authorization.job_id:
+            _enforce_retry_cooldown(retry_authorization)
+            retry_of_attempt_sha256 = retry_authorization.prior_attempt_sha256
+        request_interval = manifest.provider.minimum_request_interval_seconds or 0.0
+        if last_request_started is not None:
+            wait_seconds = request_interval - (time.monotonic() - last_request_started)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
         started_at = _now()
         started = time.monotonic()
+        last_request_started = started
         try:
             response = client.generate(request_artifact.model_request)
         except ProviderError as error:
@@ -397,6 +658,10 @@ def run_stage0_generation(
                     succeeded=False,
                     retryable=error.retryable,
                     error=str(error),
+                    automatic_retry=False,
+                    authorized_lineage_retry_of_attempt_sha256=(
+                        retry_of_attempt_sha256
+                    ),
                 ),
             )
             failed += 1
@@ -417,6 +682,8 @@ def run_stage0_generation(
                 latency_seconds=time.monotonic() - started,
                 succeeded=True,
                 provider_request_id=response.request_id,
+                automatic_retry=False,
+                authorized_lineage_retry_of_attempt_sha256=retry_of_attempt_sha256,
             ),
         )
         try:
@@ -631,8 +898,83 @@ def _validate_request_metadata(
         raise GenerationError(f"request metadata mismatch for {job.job_id}")
 
 
+def _validate_carried_generation(
+    generation: GenerationRecord,
+    job: GenerationJob,
+    manifest: GenerationManifest,
+) -> None:
+    observed = (
+        generation.job_id,
+        generation.task_id,
+        generation.condition,
+        generation.assigned_policy,
+        generation.sample_index,
+        generation.pair_id,
+        generation.provider_seed_supported,
+        generation.provider_seed_sent,
+        generation.model,
+        generation.thinking_requested,
+    )
+    expected = (
+        job.job_id,
+        job.task_id,
+        job.condition,
+        job.assigned_policy,
+        job.sample_index,
+        job.pair_id,
+        job.provider_seed_supported,
+        job.provider_seed_sent,
+        manifest.provider.model,
+        job.thinking_requested,
+    )
+    if observed != expected:
+        raise GenerationError(f"carried generation metadata mismatch for {job.job_id}")
+
+
+def _enforce_retry_cooldown(authorization: ManualRetryAuthorization) -> None:
+    try:
+        earliest_retry_at = datetime.fromisoformat(authorization.earliest_retry_at)
+    except ValueError as error:
+        raise GenerationError("manual retry authorization has an invalid timestamp") from error
+    if datetime.now(UTC) < earliest_retry_at.astimezone(UTC):
+        raise GenerationError(
+            f"manual retry is locked until {authorization.earliest_retry_at}"
+        )
+
+
+def _checked_optional_run_path(root: Path, relative: str) -> Path | None:
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise GenerationError(f"artifact path escapes source run: {relative}") from error
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise GenerationError(f"artifact path is not a file: {relative}")
+    return path
+
+
+def _checked_required_run_path(root: Path, relative: str, label: str) -> Path:
+    path = _checked_optional_run_path(root, relative)
+    if path is None:
+        raise GenerationError(f"missing {label} artifact: {relative}")
+    return path
+
+
 def _write_json_new(path: Path, value: StrictModel) -> None:
     _write_text_new(path, f"{value.model_dump_json(indent=2)}\n")
+
+
+def _write_bytes_new(path: Path, value: bytes) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as output:
+            output.write(value)
+            output.flush()
+            os.fsync(output.fileno())
+    except OSError as error:
+        raise GenerationError(f"could not create immutable artifact {path}: {error}") from error
 
 
 def _write_text_new(path: Path, value: str) -> None:

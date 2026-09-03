@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SchemaVersion = Literal[1]
 NonEmpty = Annotated[str, Field(min_length=1)]
-GENERATION_HARNESS_VERSION = "stage0-kimi-generation-v2"
+GENERATION_HARNESS_VERSION = "stage0-kimi-generation-v4"
 EVALUATION_HARNESS_VERSION = "stage0-evaluation-v2"
 
 
@@ -255,14 +255,18 @@ class KimiConfig(StrictModel):
     generation_path: Literal["/chat/completions"] = "/chat/completions"
     api_key_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
     request_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
-    max_stream_seconds: Annotated[float, Field(ge=30, le=600)] = 300.0
+    max_stream_seconds: Annotated[float, Field(ge=30, le=600)] = 600.0
+    minimum_request_interval_seconds: Annotated[
+        float, Field(ge=0, le=60)
+    ] | None = None
     max_response_bytes: Annotated[int, Field(ge=65_536, le=16_777_216)] = 8_388_608
     max_sse_events: Annotated[int, Field(ge=1, le=1_000_000)] = 100_000
     max_completion_tokens: Annotated[int, Field(ge=256, le=65_536)] = 4096
     thinking_max_completion_tokens: Annotated[
         int, Field(ge=256, le=65_536)
-    ] = 16_384
+    ] = 32_768
     max_attempts: Literal[1] = 1
+    automatic_retries: Literal[False] = False
 
     @model_validator(mode="after")
     def require_secure_endpoint(self) -> KimiConfig:
