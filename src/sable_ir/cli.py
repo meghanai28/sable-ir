@@ -58,6 +58,7 @@ from sable_ir.stage1 import (
     load_render_manifest,
     prepare_stage1_plan_recovery,
     prepare_stage1_plans,
+    prepare_stage1_render_recovery,
     prepare_stage1_renders,
     require_plan_canary,
     require_render_canary,
@@ -311,6 +312,22 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_renders_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
     prepare_renders_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
     prepare_renders_parser.add_argument("--run-directory", type=Path)
+
+    recover_renders_parser = subparsers.add_parser(
+        "recover-stage1-renders",
+        help="create a lineage-linked continuation after inspected renderer failures",
+    )
+    recover_renders_parser.add_argument("source_manifest", type=Path)
+    recover_renders_parser.add_argument(
+        "--retry-job-id",
+        action="append",
+        required=True,
+        help="explicitly authorize one new attempt; repeat once per reviewed failed job",
+    )
+    recover_renders_parser.add_argument("--run-id", required=True)
+    recover_renders_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    recover_renders_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    recover_renders_parser.add_argument("--run-directory", type=Path)
 
     generate_renders_parser = subparsers.add_parser(
         "generate-stage1-renders", help="run or inspect immutable Stage 1A renderer jobs"
@@ -775,6 +792,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 f"prepared {len(render_manifest.jobs)} immutable renderer requests at "
                 f"{stage1_run_directory.resolve()}"
+            )
+        elif args.command == "recover-stage1-renders":
+            stage1_config = load_stage1_config(args.config)
+            stage1_run_directory = args.run_directory or (
+                args.repository_root / stage1_config.artifacts_dir / "stage1" / args.run_id
+            )
+            render_manifest = prepare_stage1_render_recovery(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                stage1_run_directory,
+                args.run_id,
+                tuple(args.retry_job_id),
+            )
+            print(
+                f"prepared Stage 1 renderer recovery with "
+                f"{len(render_manifest.carried_forward_result_sha256s)} carried results and "
+                f"{len(render_manifest.manual_retry_authorizations)} explicitly authorized "
+                f"attempts at {stage1_run_directory.resolve()}"
             )
         elif args.command == "generate-stage1-renders":
             render_manifest = load_render_manifest(args.manifest)

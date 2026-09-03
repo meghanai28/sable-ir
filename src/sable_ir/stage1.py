@@ -73,7 +73,11 @@ class Stage1RetryAuthorization(StrictModel):
     additional_attempts: Literal[1] = 1
     automatic_retry: Literal[False] = False
     reason: Literal[
-        "transport_tls_eof", "provider_stream_incomplete", "malformed_plan_output"
+        "transport_tls_eof",
+        "provider_stream_incomplete",
+        "malformed_plan_output",
+        "malformed_renderer_output",
+        "truncated_renderer_output",
     ] = "transport_tls_eof"
 
     @model_validator(mode="after")
@@ -89,8 +93,13 @@ class Stage1RetryAuthorization(StrictModel):
         if earliest != finished:
             raise ValueError("transport/malformed recovery adds no provider cooldown")
         has_result = self.prior_result_path is not None and self.prior_result_sha256 is not None
-        if (self.reason == "malformed_plan_output") != has_result:
-            raise ValueError("only malformed-output recovery references a prior result")
+        result_reasons = {
+            "malformed_plan_output",
+            "malformed_renderer_output",
+            "truncated_renderer_output",
+        }
+        if (self.reason in result_reasons) != has_result:
+            raise ValueError("result-based recovery must reference the preserved prior result")
         return self
 
 
@@ -325,6 +334,11 @@ class RenderManifest(StrictModel):
     provider: KimiConfig
     sandbox: SandboxConfig
     renders_per_plan: Literal[2, 4]
+    migrated_from_manifest_path: str | None = None
+    migrated_from_manifest_sha256: Sha256 | None = None
+    carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = ()
+    execution_order: tuple[str, ...] | None = None
     jobs: tuple[RenderJob, ...]
 
     @model_validator(mode="after")
@@ -340,6 +354,29 @@ class RenderManifest(StrictModel):
             raise ValueError("render manifest contains duplicate job IDs")
         if (self.condition == "natural") != (self.control_mapping_sha256 is None):
             raise ValueError("only renderer controls require a frozen mapping hash")
+        job_ids = {job.job_id for job in self.jobs}
+        carried = set(self.carried_forward_result_sha256s)
+        if not carried <= job_ids:
+            raise ValueError("invalid carried Stage 1 render result set")
+        recovery = bool(carried or self.manual_retry_authorizations)
+        if recovery != bool(self.migrated_from_manifest_sha256):
+            raise ValueError("Stage 1 render recovery lineage is incomplete")
+        if recovery and self.migrated_from_manifest_path is None:
+            raise ValueError("Stage 1 render recovery requires its source manifest path")
+        if len({item.job_id for item in self.manual_retry_authorizations}) != len(
+            self.manual_retry_authorizations
+        ):
+            raise ValueError("render retry authorizations contain duplicate jobs")
+        for authorization in self.manual_retry_authorizations:
+            if authorization.source_manifest_sha256 != self.migrated_from_manifest_sha256:
+                raise ValueError("render retry authorization references the wrong source manifest")
+            if authorization.job_id in carried or authorization.job_id not in job_ids:
+                raise ValueError("render retry authorization references an invalid job")
+        if self.execution_order is not None:
+            if len(self.execution_order) != len(set(self.execution_order)):
+                raise ValueError("render execution_order contains duplicate jobs")
+            if set(self.execution_order) != job_ids - carried:
+                raise ValueError("render execution_order must enumerate every pending recovery job")
         _validate_provider_safety(self.provider)
         return self
 
@@ -907,6 +944,12 @@ def prepare_stage1_renders(
     plan_manifest_path: Path,
     run_directory: Path,
     run_id: str,
+    *,
+    migrated_from_manifest_path: str | None = None,
+    migrated_from_manifest_sha256: str | None = None,
+    carried_forward_result_sha256s: dict[str, str] | None = None,
+    manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = (),
+    execution_order: tuple[str, ...] | None = None,
 ) -> RenderManifest:
     _validate_run_id(run_id)
     root = repository_root.resolve()
@@ -1018,9 +1061,170 @@ def prepare_stage1_renders(
         provider=config.hosted_kimi,
         sandbox=config.sandbox,
         renders_per_plan=config.renders_per_plan,
+        migrated_from_manifest_path=migrated_from_manifest_path,
+        migrated_from_manifest_sha256=migrated_from_manifest_sha256,
+        carried_forward_result_sha256s=carried_forward_result_sha256s or {},
+        manual_retry_authorizations=manual_retry_authorizations,
+        execution_order=execution_order,
         jobs=tuple(jobs),
     )
     _write_model_new(destination / "manifest.json", manifest)
+    return manifest
+
+
+def prepare_stage1_render_recovery(
+    config: Stage1Config,
+    repository_root: Path,
+    source_manifest_path: Path,
+    run_directory: Path,
+    run_id: str,
+    retry_job_ids: tuple[str, ...],
+) -> RenderManifest:
+    """Carry exact renderer results and authorize one named attempt per reviewed failure."""
+    root = repository_root.resolve()
+    source_manifest_path = source_manifest_path.resolve()
+    source_manifest = load_render_manifest(source_manifest_path)
+    if source_manifest.condition != "natural":
+        raise Stage1Error("renderer recovery currently supports only the natural Stage 1 matrix")
+    source_directory = source_manifest_path.parent
+    source_manifest_hash = _sha(source_manifest_path.read_bytes())
+    try:
+        source_manifest_relative = source_manifest_path.relative_to(root).as_posix()
+    except ValueError as error:
+        raise Stage1Error("source render manifest must be inside the repository") from error
+    source_jobs = {job.job_id: job for job in source_manifest.jobs}
+    if not retry_job_ids or len(set(retry_job_ids)) != len(retry_job_ids):
+        raise Stage1Error("render recovery requires unique explicitly authorized retry jobs")
+    unknown_retry_ids = set(retry_job_ids) - set(source_jobs)
+    if unknown_retry_ids:
+        raise Stage1Error(f"unknown Stage 1 render retry jobs: {sorted(unknown_retry_ids)}")
+
+    carried: dict[str, str] = {}
+    artifact_paths: set[str] = set()
+    for job in source_manifest.jobs:
+        result_path = source_directory / job.result_path
+        if not result_path.is_file():
+            continue
+        result_bytes = result_path.read_bytes()
+        record = _load_model(result_path, RenderRecord, "source render result")
+        _validate_render_record(record, job, source_manifest)
+        _validate_render_artifacts(source_directory, job, source_manifest, record)
+        if job.job_id in retry_job_ids:
+            continue
+        if record.status is not GenerationStatus.GENERATED or record.finish_reason == "length":
+            raise Stage1Error(f"cannot carry non-final render result: {job.job_id}")
+        carried[job.job_id] = _sha(result_bytes)
+        artifact_paths.update(_render_record_artifact_paths(job, record))
+
+    authorizations: list[Stage1RetryAuthorization] = []
+    for retry_job_id in retry_job_ids:
+        if retry_job_id in carried:
+            raise Stage1Error(f"render retry job already has a usable result: {retry_job_id}")
+        prior_attempts = sorted(
+            (source_directory / "jobs" / retry_job_id / "attempts").glob("attempt-*.json")
+        )
+        if len(prior_attempts) != 1:
+            raise Stage1Error(
+                f"manual render recovery requires exactly one preserved attempt: {retry_job_id}"
+            )
+        prior_bytes = prior_attempts[0].read_bytes()
+        prior = _load_model(prior_attempts[0], AttemptRecord, "failed render attempt")
+        result_path = source_directory / source_jobs[retry_job_id].result_path
+        reason: Literal[
+            "transport_tls_eof",
+            "provider_stream_incomplete",
+            "malformed_renderer_output",
+            "truncated_renderer_output",
+        ]
+        prior_result_path: str | None = None
+        prior_result_sha256: str | None = None
+        if result_path.is_file():
+            record = _load_model(result_path, RenderRecord, "failed render result")
+            _validate_render_record(record, source_jobs[retry_job_id], source_manifest)
+            _validate_render_artifacts(
+                source_directory, source_jobs[retry_job_id], source_manifest, record
+            )
+            if not prior.succeeded:
+                raise Stage1Error(
+                    f"render result has no successful provider attempt: {retry_job_id}"
+                )
+            if record.status is GenerationStatus.TRUNCATED and record.finish_reason == "length":
+                reason = "truncated_renderer_output"
+            elif record.status is GenerationStatus.MALFORMED:
+                reason = "malformed_renderer_output"
+            else:
+                raise Stage1Error(f"retry result is not a reviewed render failure: {retry_job_id}")
+            prior_result_path = source_jobs[retry_job_id].result_path
+            prior_result_sha256 = _sha(result_path.read_bytes())
+        elif (
+            not prior.succeeded
+            and prior.retryable
+            and prior.error is not None
+            and "SSE stream ended before" in prior.error
+        ):
+            reason = "provider_stream_incomplete"
+        elif (
+            not prior.succeeded
+            and prior.retryable
+            and prior.error is not None
+            and "SSL:" in prior.error
+        ):
+            reason = "transport_tls_eof"
+        else:
+            raise Stage1Error(f"unsupported manual render retry reason: {retry_job_id}")
+        authorizations.append(
+            Stage1RetryAuthorization(
+                source_manifest_path=source_manifest_relative,
+                source_manifest_sha256=source_manifest_hash,
+                job_id=retry_job_id,
+                prior_attempt_path=prior_attempts[0].relative_to(source_directory).as_posix(),
+                prior_attempt_sha256=_sha(prior_bytes),
+                prior_attempt_finished_at=prior.finished_at,
+                earliest_retry_at=prior.finished_at,
+                prior_result_path=prior_result_path,
+                prior_result_sha256=prior_result_sha256,
+                reason=reason,
+            )
+        )
+
+    execution_order = tuple(
+        job.job_id for job in source_manifest.jobs if job.job_id not in carried
+    )
+    plan_manifest_path = _root_path(
+        root, source_manifest.source_plan_manifest_path, "source plan manifest"
+    )
+    manifest = prepare_stage1_renders(
+        config,
+        root,
+        plan_manifest_path,
+        run_directory,
+        run_id,
+        migrated_from_manifest_path=source_manifest_relative,
+        migrated_from_manifest_sha256=source_manifest_hash,
+        carried_forward_result_sha256s=carried,
+        manual_retry_authorizations=tuple(authorizations),
+        execution_order=execution_order,
+    )
+    if (
+        manifest.source_plan_manifest_sha256 != source_manifest.source_plan_manifest_sha256
+        or manifest.lineage != source_manifest.lineage
+        or manifest.config_sha256 != source_manifest.config_sha256
+        or manifest.provider != source_manifest.provider
+        or manifest.sandbox != source_manifest.sandbox
+        or manifest.renders_per_plan != source_manifest.renders_per_plan
+    ):
+        raise Stage1Error("Stage 1 render recovery changed frozen manifest inputs")
+    new_jobs = {job.job_id: job for job in manifest.jobs}
+    if set(new_jobs) != set(source_jobs):
+        raise Stage1Error("Stage 1 render recovery changed the job matrix")
+    for job_id, source_job in source_jobs.items():
+        if source_job.model_dump() != new_jobs[job_id].model_dump():
+            raise Stage1Error(f"Stage 1 render recovery changed a frozen job: {job_id}")
+
+    destination = run_directory.resolve()
+    for relative in sorted(artifact_paths):
+        source = _required_file(source_directory, relative, "carried render artifact")
+        _write_bytes_new(destination / relative, source.read_bytes())
     return manifest
 
 
@@ -1032,7 +1236,11 @@ def run_stage1_renders(
 ) -> RunSummary:
     manifest = load_render_manifest(manifest_path)
     run_directory = manifest_path.resolve().parent
-    selected = _select_jobs(manifest.jobs, job_id)
+    if job_id is None and manifest.execution_order is not None:
+        by_id = {job.job_id: job for job in manifest.jobs}
+        selected = [by_id[item] for item in manifest.execution_order]
+    else:
+        selected = _select_jobs(manifest.jobs, job_id)
     counts = {status: 0 for status in GenerationStatus}
     failed = 0
     skipped = 0
@@ -1051,7 +1259,23 @@ def run_stage1_renders(
                 "before preparing any lineage-linked recovery"
             )
         _wait_for_request_interval(run_directory, manifest.provider)
-        response = _request_once(run_directory, job.job_id, attempt, request.model_request, client)
+        authorizations = {
+            item.job_id: item for item in manifest.manual_retry_authorizations
+        }
+        authorization = authorizations.get(job.job_id)
+        retry_hash = None
+        if authorization is not None:
+            if datetime.now(UTC) < datetime.fromisoformat(authorization.earliest_retry_at):
+                raise Stage1Error("manual render retry cooldown has not elapsed")
+            retry_hash = authorization.prior_attempt_sha256
+        response = _request_once(
+            run_directory,
+            job.job_id,
+            attempt,
+            request.model_request,
+            client,
+            authorized_lineage_retry_of_attempt_sha256=retry_hash,
+        )
         if response is None:
             failed = 1
             break
@@ -1961,6 +2185,19 @@ def _plan_record_artifact_paths(job: PlanJob, record: PlanRecord) -> set[str]:
         paths.add(job.result_path)
     if record.plan_path is not None:
         paths.add(record.plan_path)
+    if record.reasoning_path is not None:
+        paths.add(record.reasoning_path)
+    return paths
+
+
+def _render_record_artifact_paths(job: RenderJob, record: RenderRecord) -> set[str]:
+    paths = {
+        job.result_path,
+        f"jobs/{job.job_id}/attempts/attempt-{record.successful_attempt:02d}.json",
+        record.raw_response_path,
+    }
+    if record.candidate_path is not None:
+        paths.add(record.candidate_path)
     if record.reasoning_path is not None:
         paths.add(record.reasoning_path)
     return paths

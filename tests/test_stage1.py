@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from sable_ir.stage1 import (
     evaluate_stage1_renders,
     extract_plan,
     prepare_stage1_plans,
+    prepare_stage1_render_recovery,
     prepare_stage1_renders,
     require_plan_canary,
     require_render_canary,
@@ -74,6 +77,24 @@ class FailingClient:
         del request
         self.calls += 1
         raise ProviderError("simulated provider failure", retryable=True)
+
+
+class TruncatedRenderClient:
+    def generate(self, request: ModelRequest) -> ProviderResponse:
+        return ProviderResponse(
+            request_id="mock-truncated-render",
+            model=request.model,
+            content="def read_report(filename: str, reports_root: str) -> str:\n    return ''\n",
+            reasoning_content="",
+            finish_reason="length",
+            usage=TokenUsage(
+                input_tokens=100,
+                output_tokens=4096,
+                total_tokens=4196,
+                reasoning_tokens=1,
+            ),
+            raw_events=({"id": "mock-truncated-render"},),
+        )
 
 
 def test_stage1a_matrix_and_end_to_end_artifact_flow(
@@ -139,6 +160,80 @@ def test_stage1a_matrix_and_end_to_end_artifact_flow(
         assert status.generated_renders == 1
         assert status.evaluated_renders == 1
         assert not status.complete
+
+
+def test_renderer_recovery_carries_exact_results_and_authorizes_one_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path.cwd()
+    config = load_stage1_config(root / "config/stage1.toml")
+    monkeypatch.setattr("sable_ir.stage1._wait_for_request_interval", lambda *_args: None)
+    with tempfile.TemporaryDirectory(dir=root / "artifacts") as temporary:
+        base = Path(temporary)
+        plan_dir = base / "plans"
+        prepare_stage1_plans(config, root, plan_dir, "stage1-render-recovery-plans")
+        run_stage1_plans(plan_dir / "manifest.json", FakeStage1Client())
+
+        source_dir = base / "source-renders"
+        source_manifest = prepare_stage1_renders(
+            config,
+            root,
+            plan_dir / "manifest.json",
+            source_dir,
+            "stage1-render-recovery-source",
+        )
+        carried_job, retry_job = source_manifest.jobs[:2]
+        run_stage1_renders(
+            source_dir / "manifest.json", FakeStage1Client(), job_id=carried_job.job_id
+        )
+        run_stage1_renders(
+            source_dir / "manifest.json", TruncatedRenderClient(), job_id=retry_job.job_id
+        )
+
+        source_result = source_dir / carried_job.result_path
+        source_result_bytes = source_result.read_bytes()
+        retry_attempt = source_dir / "jobs" / retry_job.job_id / "attempts" / "attempt-01.json"
+        retry_attempt_hash = hashlib.sha256(retry_attempt.read_bytes()).hexdigest()
+        recovery_dir = base / "recovery-renders"
+        recovery = prepare_stage1_render_recovery(
+            config,
+            root,
+            source_dir / "manifest.json",
+            recovery_dir,
+            "stage1-render-recovery",
+            (retry_job.job_id,),
+        )
+
+        assert recovery.carried_forward_result_sha256s == {
+            carried_job.job_id: hashlib.sha256(source_result_bytes).hexdigest()
+        }
+        assert (recovery_dir / carried_job.result_path).read_bytes() == source_result_bytes
+        assert not (recovery_dir / retry_job.result_path).exists()
+        assert not (recovery_dir / "jobs" / retry_job.job_id / "attempts").exists()
+        assert recovery.execution_order is not None
+        assert retry_job.job_id in recovery.execution_order
+        authorization = recovery.manual_retry_authorizations[0]
+        assert authorization.job_id == retry_job.job_id
+        assert authorization.reason == "truncated_renderer_output"
+        assert authorization.prior_attempt_sha256 == retry_attempt_hash
+        assert authorization.prior_result_sha256 == hashlib.sha256(
+            (source_dir / retry_job.result_path).read_bytes()
+        ).hexdigest()
+
+        summary = run_stage1_renders(
+            recovery_dir / "manifest.json", FakeStage1Client(), job_id=retry_job.job_id
+        )
+        assert summary.generated == 1
+        attempt = json.loads(
+            (
+                recovery_dir
+                / "jobs"
+                / retry_job.job_id
+                / "attempts"
+                / "attempt-01.json"
+            ).read_text()
+        )
+        assert attempt["authorized_lineage_retry_of_attempt_sha256"] == retry_attempt_hash
 
 
 def test_plan_parser_requires_marker_and_structured_fields() -> None:
