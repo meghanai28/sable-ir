@@ -1087,8 +1087,9 @@ def _require_stage3_authorization(
     )
     if not report.causal_evaluation_authorized or not exact or not dataset.complete:
         raise Stage4Error(
-            "Stage 4 requires renderer-ingestion decodability, set-2 transfer, aligned "
-            "renderer-ingestion task directions, and a complete dataset"
+            "Stage 4 requires held-out renderer-ingestion decodability on the supported "
+            "omitted/blurred subset, set-2 transfer, aligned renderer-ingestion task "
+            "directions, and a complete dataset"
         )
 
 

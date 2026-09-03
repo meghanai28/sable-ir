@@ -5,8 +5,10 @@ until Stage 2/3 complete and Stage 3 passes all renderer-ingestion authorization
 
 ## Authorization and claim scope
 
-- The gate reads exact Stage 3 dataset/report hashes and requires renderer-ingestion decodability,
-  set-2 transfer, renderer-ingestion direction alignment, and complete data.
+- The gate reads exact Stage 3 dataset/report hashes and requires held-out renderer-ingestion
+  decodability on the supported omitted/blurred subset, set-2 transfer, renderer-ingestion
+  direction alignment, and complete data. Pooled plans containing explicit policy text cannot
+  authorize intervention.
 - Planner-boundary results cannot authorize intervention.
 - Recipient source/target selection is behavior-blinded and bound back to every immutable Stage 3
   candidate row; editing candidate text inside the audit invalidates it.

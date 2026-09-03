@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from sable_ir.harness import EvaluationResult, ExecutionResult, RunStatus
 from sable_ir.schema import PolicyValue
@@ -457,6 +458,7 @@ class TestActivationTrack:
 
     def test_capture_labels_probes_and_report(self, tmp_path: Path) -> None:
         from sable_ir.stage3_analysis import (
+            Stage3Report,
             build_stage3_report,
             evaluate_stage3_heldout,
             fit_stage3_probes,
@@ -553,6 +555,34 @@ class TestActivationTrack:
         assert "policy-orientation" in report.policy_orientation_scope
         assert "path_symlink_report" in report.fact_specific_transfer_scope
         assert "none: mechanistic case study" in report.generalization_claim
+
+        unsupported = omitted.model_copy(
+            update={
+                "support_status": "insufficient_quadrant_support",
+                "renderer_ingestion": None,
+                "best_text_baseline": None,
+                "best_text": None,
+                "activation_minus_text_auroc": None,
+            }
+        )
+        unsupported_primary = report.primary_renderer_ingestion_analysis.model_copy(
+            update={"omitted_or_blurred": unsupported}
+        )
+        with pytest.raises(
+            ValidationError,
+            match="renderer_ingestion_decodable must describe the supported held-out",
+        ):
+            Stage3Report.model_validate(
+                {
+                    **report.model_dump(),
+                    "primary_renderer_ingestion_analysis": unsupported_primary.model_dump(),
+                    "stage4_authorization_requirements": {
+                        **report.stage4_authorization_requirements,
+                        "renderer_ingestion_decodable": True,
+                    },
+                    "causal_evaluation_authorized": True,
+                }
+            )
 
     def test_dry_run_capturer_is_well_formed(self) -> None:
         capturer = DryRunCapturer((1, 2), 8)

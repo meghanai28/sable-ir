@@ -17,12 +17,14 @@ transfer in this corpus is `path_symlink_report` to `path_symlink_archive`.
 `prepare-stage4-recipient-audit` and `prepare-stage4-experiment` both verify the exact Stage 3
 dataset/report hashes. The experiment is blocked unless all four report fields are true:
 
-- renderer-ingestion policy decodability;
+- held-out renderer-ingestion policy decodability on at least 10 supported omitted/blurred plans
+  containing both policy labels;
 - transfer to paraphrase set 2;
 - alignment of renderer-ingestion task-level directions; and
 - a complete Stage 3 dataset.
 
-Planner-input or planner-output decoding is localization evidence only and cannot unlock Stage 4.
+Pooled renderer-ingestion results containing explicit policy text and planner-input or
+planner-output decoding are localization evidence only and cannot unlock Stage 4.
 
 ## Frozen design
 
