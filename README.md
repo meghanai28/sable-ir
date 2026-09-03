@@ -1,9 +1,8 @@
 # sable-ir
 
 This repository implements the staged experiment described in the accompanying proposal. The
-current checkpoint contains the Stage 0 scaffold, sandbox, five-task A/B corpus, hosted-Kimi
-generation path, and continuation-gate scorer. The activation-hook smoke test remains a later
-checkpoint.
+current checkpoint contains the completed Stage 0 scaffold and the Stage 1A hosted-Kimi
+planner-to-renderer generation pipeline. The activation-hook smoke test remains a later checkpoint.
 
 ## Development
 
@@ -84,3 +83,8 @@ results from the scoring runbook to permit a `continue_to_stage1` recommendation
 
 The scoring formulas, thresholds, provenance checks, dataset audit, and final-state precedence are
 specified in [the Stage 0 scoring runbook](docs/stage0-scoring.md).
+
+Stage 1A freezes 180 thinking-enabled plan requests and, after those plans finish, 720 fresh
+non-thinking renderer requests. The exact five-task pilot matrix, Stage 0 lineage checks, learned
+token/time ceilings, failure behavior, and commands are documented in
+[the hosted Kimi Stage 1A runbook](docs/hosted-kimi-stage1a.md).

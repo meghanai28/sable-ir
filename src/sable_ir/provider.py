@@ -30,10 +30,7 @@ class ModelRequest(StrictModel):
     thinking_requested: Literal["enabled", "disabled"]
     pair_id: str | None = Field(
         default=None,
-        pattern=(
-            r"^[a-z][a-z0-9_]*__(?:relevant_clause_only|full_document|"
-            r"native_thinking_full_document)__pair_[0-9]{2}$"
-        ),
+        pattern=r"^[a-z][a-z0-9_]{0,239}$",
     )
     provider_seed_supported: Literal[False] = False
     provider_seed_sent: None = None

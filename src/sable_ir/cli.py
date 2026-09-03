@@ -13,7 +13,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from sable_ir.audit import audit_stage0_tasks
-from sable_ir.config import ConfigLoadError, load_stage0_config, load_task
+from sable_ir.config import ConfigLoadError, load_stage0_config, load_stage1_config, load_task
 from sable_ir.generation import (
     GenerationError,
     GenerationManifest,
@@ -50,6 +50,22 @@ from sable_ir.scoring import (
     evaluate_generated_candidates,
     write_stage0_report,
 )
+from sable_ir.stage1 import (
+    Stage1Error,
+    build_stage1a_status,
+    evaluate_stage1_renders,
+    load_plan_manifest,
+    load_render_manifest,
+    prepare_stage1_plans,
+    prepare_stage1_renders,
+    require_plan_canary,
+    require_render_canary,
+    run_stage1_plans,
+    run_stage1_renders,
+)
+from sable_ir.stage1 import (
+    client_from_environment as stage1_client_from_environment,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_parser = subparsers.add_parser("validate-config", help="validate Stage 0 TOML")
     config_parser.add_argument("path", type=Path)
+
+    stage1_config_parser = subparsers.add_parser(
+        "validate-stage1-config", help="validate Stage 1A TOML"
+    )
+    stage1_config_parser.add_argument("path", type=Path)
 
     task_parser = subparsers.add_parser("validate-task", help="validate task JSON")
     task_parser.add_argument("paths", type=Path, nargs="+")
@@ -95,6 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
         "kimi-preflight", help="check local hosted-Kimi configuration without an API call"
     )
     preflight_parser.add_argument("--config", type=Path, default=Path("config/stage0.toml"))
+
+    stage1_preflight_parser = subparsers.add_parser(
+        "stage1-kimi-preflight",
+        help="check local Stage 1A hosted-Kimi configuration without an API call",
+    )
+    stage1_preflight_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
 
     prepare_parser = subparsers.add_parser(
         "prepare-stage0", help="freeze the Stage 0 request matrix without calling Kimi"
@@ -207,6 +234,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="manual result: every distractor clause is genuinely irrelevant",
     )
     report_parser.add_argument("--dataset-audit-notes")
+
+    prepare_plans_parser = subparsers.add_parser(
+        "prepare-stage1-plans", help="freeze all Stage 1A planner requests"
+    )
+    prepare_plans_parser.add_argument("--run-id", required=True)
+    prepare_plans_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    prepare_plans_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    prepare_plans_parser.add_argument("--run-directory", type=Path)
+
+    generate_plans_parser = subparsers.add_parser(
+        "generate-stage1-plans", help="run or inspect immutable Stage 1A planner jobs"
+    )
+    generate_plans_parser.add_argument("manifest", type=Path)
+    plan_selection = generate_plans_parser.add_mutually_exclusive_group()
+    plan_selection.add_argument("--job-id")
+    plan_selection.add_argument("--all", action="store_true")
+    generate_plans_parser.add_argument("--confirm-full-run", metavar="RUN_ID")
+    generate_plans_parser.add_argument("--dry-run", action="store_true")
+
+    prepare_renders_parser = subparsers.add_parser(
+        "prepare-stage1-renders", help="freeze four renderer requests for every exact plan"
+    )
+    prepare_renders_parser.add_argument("plan_manifest", type=Path)
+    prepare_renders_parser.add_argument("--run-id", required=True)
+    prepare_renders_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    prepare_renders_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    prepare_renders_parser.add_argument("--run-directory", type=Path)
+
+    generate_renders_parser = subparsers.add_parser(
+        "generate-stage1-renders", help="run or inspect immutable Stage 1A renderer jobs"
+    )
+    generate_renders_parser.add_argument("manifest", type=Path)
+    render_selection = generate_renders_parser.add_mutually_exclusive_group()
+    render_selection.add_argument("--job-id")
+    render_selection.add_argument("--all", action="store_true")
+    generate_renders_parser.add_argument("--confirm-full-run", metavar="RUN_ID")
+    generate_renders_parser.add_argument("--dry-run", action="store_true")
+
+    evaluate_renders_parser = subparsers.add_parser(
+        "evaluate-stage1-renders", help="run all four suites on Stage 1A renderer outputs"
+    )
+    evaluate_renders_parser.add_argument("manifest", type=Path)
+    evaluate_renders_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    evaluate_renders_parser.add_argument("--job-id")
+    evaluate_renders_parser.add_argument("--unsafe-local", action="store_true")
+
+    status_parser = subparsers.add_parser(
+        "status-stage1a", help="summarize Stage 1A generation and evaluation completeness"
+    )
+    status_parser.add_argument("plan_manifest", type=Path)
+    status_parser.add_argument("--render-manifest", type=Path)
+    status_parser.add_argument("--output", type=Path)
     return parser
 
 
@@ -218,6 +297,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 f"valid Stage 0 config: {len(config.task_paths)} tasks, "
                 f"{len(config.conditions)} conditions, model {config.hosted_kimi.model}"
+            )
+        elif args.command == "validate-stage1-config":
+            stage1_config = load_stage1_config(args.path)
+            plans = (
+                len(stage1_config.task_paths)
+                * 2
+                * len(stage1_config.formats)
+                * len(stage1_config.concision_levels)
+                * stage1_config.plans_per_cell
+            )
+            print(
+                f"valid Stage 1A config: {len(stage1_config.task_paths)} tasks, "
+                f"{plans} plans, {plans * stage1_config.renders_per_plan} renders, "
+                f"model {stage1_config.hosted_kimi.model}"
             )
         elif args.command == "validate-task":
             for path in args.paths:
@@ -265,6 +358,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(preflight.model_dump_json(indent=2))
             if not preflight.ready_for_requests:
                 return 1
+        elif args.command == "stage1-kimi-preflight":
+            stage1_config = load_stage1_config(args.config)
+            preflight = provider_preflight(stage1_config.hosted_kimi)
+            print(preflight.model_dump_json(indent=2))
+            if not preflight.ready_for_requests:
+                return 1
         elif args.command == "prepare-stage0":
             config = load_stage0_config(args.config)
             run_directory = args.run_directory or (
@@ -274,8 +373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             retry_job_provided = args.authorize_retry_job_id is not None
             if recovery_requested != retry_job_provided:
                 raise GenerationError(
-                    "recovery requires both --recovery-from-manifest and "
-                    "--authorize-retry-job-id"
+                    "recovery requires both --recovery-from-manifest and --authorize-retry-job-id"
                 )
             revision_fields = (
                 args.revision_from_manifest is not None,
@@ -330,17 +428,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.run_id,
                     args.migrated_from_manifest_sha256,
                 )
-            print(
-                f"prepared {len(manifest.jobs)} immutable requests at "
-                f"{run_directory.resolve()}"
-            )
+            print(f"prepared {len(manifest.jobs)} immutable requests at {run_directory.resolve()}")
         elif args.command == "generate-stage0":
             manifest = load_manifest(args.manifest)
             if args.dry_run:
                 run_directory = args.manifest.resolve().parent
-                completed = sum(
-                    (run_directory / job.result_path).exists() for job in manifest.jobs
-                )
+                completed = sum((run_directory / job.result_path).exists() for job in manifest.jobs)
                 selected = select_manifest_jobs(
                     manifest,
                     job_id=args.job_id,
@@ -389,9 +482,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ScoringError("--report-id must be 1-80 safe filename characters")
             dataset_audit = build_dataset_audit_review(
                 reviewer=args.dataset_audit_reviewer,
-                unambiguous_applicable_clauses=_audit_choice(
-                    args.applicable_clause_audit
-                ),
+                unambiguous_applicable_clauses=_audit_choice(args.applicable_clause_audit),
                 distractors_genuinely_irrelevant=_audit_choice(args.distractor_audit),
                 notes=args.dataset_audit_notes,
             )
@@ -401,24 +492,129 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"report is incomplete ({report.scored_jobs}/{report.expected_jobs}); "
                     "finish evaluation or pass --allow-incomplete"
                 )
-            output_directory = (
-                args.manifest.resolve().parent / "reports" / args.report_id
-            )
+            output_directory = args.manifest.resolve().parent / "reports" / args.report_id
             write_stage0_report(report, output_directory)
-            print(
-                f"wrote Stage 0 report to {output_directory}: "
-                f"{report.recommendation.value}"
-            )
+            print(f"wrote Stage 0 report to {output_directory}: {report.recommendation.value}")
             if report.recommendation in {
                 OverallRecommendation.INCOMPLETE,
                 OverallRecommendation.INVALID_TASK_OR_TESTS,
                 OverallRecommendation.STOP_OR_PIVOT,
             }:
                 return 1
-    except (ConfigLoadError, GenerationError, HarnessError, ScoringError) as error:
+        elif args.command == "prepare-stage1-plans":
+            stage1_config = load_stage1_config(args.config)
+            stage1_run_directory = args.run_directory or (
+                args.repository_root / stage1_config.artifacts_dir / "stage1" / args.run_id
+            )
+            plan_manifest = prepare_stage1_plans(
+                stage1_config, args.repository_root, stage1_run_directory, args.run_id
+            )
+            print(
+                f"prepared {len(plan_manifest.jobs)} immutable planner requests at "
+                f"{stage1_run_directory.resolve()}"
+            )
+        elif args.command == "generate-stage1-plans":
+            plan_manifest = load_plan_manifest(args.manifest)
+            if args.dry_run:
+                complete = sum(
+                    (args.manifest.resolve().parent / job.result_path).is_file()
+                    for job in plan_manifest.jobs
+                )
+                print(
+                    f"dry run: {plan_manifest.run_id}, "
+                    f"{len(plan_manifest.jobs)} total plans, "
+                    f"{complete} complete; no API calls made"
+                )
+            else:
+                _require_stage1_live_selection(
+                    args.job_id, args.all, args.confirm_full_run, plan_manifest.run_id
+                )
+                if args.all:
+                    require_plan_canary(args.manifest)
+                stage1_client = stage1_client_from_environment(plan_manifest.provider)
+                plan_summary = run_stage1_plans(args.manifest, stage1_client, job_id=args.job_id)
+                print(plan_summary.model_dump_json(indent=2))
+        elif args.command == "prepare-stage1-renders":
+            stage1_config = load_stage1_config(args.config)
+            stage1_run_directory = args.run_directory or (
+                args.repository_root / stage1_config.artifacts_dir / "stage1" / args.run_id
+            )
+            render_manifest = prepare_stage1_renders(
+                stage1_config,
+                args.repository_root,
+                args.plan_manifest,
+                stage1_run_directory,
+                args.run_id,
+            )
+            print(
+                f"prepared {len(render_manifest.jobs)} immutable renderer requests at "
+                f"{stage1_run_directory.resolve()}"
+            )
+        elif args.command == "generate-stage1-renders":
+            render_manifest = load_render_manifest(args.manifest)
+            if args.dry_run:
+                complete = sum(
+                    (args.manifest.resolve().parent / job.result_path).is_file()
+                    for job in render_manifest.jobs
+                )
+                print(
+                    f"dry run: {render_manifest.run_id}, "
+                    f"{len(render_manifest.jobs)} total renders, "
+                    f"{complete} complete; no API calls made"
+                )
+            else:
+                _require_stage1_live_selection(
+                    args.job_id, args.all, args.confirm_full_run, render_manifest.run_id
+                )
+                if args.all:
+                    require_render_canary(args.manifest)
+                stage1_client = stage1_client_from_environment(render_manifest.provider)
+                render_summary = run_stage1_renders(
+                    args.manifest, stage1_client, job_id=args.job_id
+                )
+                print(render_summary.model_dump_json(indent=2))
+        elif args.command == "evaluate-stage1-renders":
+            render_manifest = load_render_manifest(args.manifest)
+            stage1_backend = (
+                UnsafeLocalSandbox(render_manifest.sandbox)
+                if args.unsafe_local
+                else DockerSandbox(render_manifest.sandbox)
+            )
+            stage1_evaluation_summary = evaluate_stage1_renders(
+                args.manifest,
+                args.repository_root,
+                stage1_backend,
+                job_id=args.job_id,
+            )
+            print(stage1_evaluation_summary.model_dump_json(indent=2))
+        elif args.command == "status-stage1a":
+            status = build_stage1a_status(args.plan_manifest, args.render_manifest)
+            serialized = status.model_dump_json(indent=2)
+            if args.output is None:
+                print(serialized)
+            else:
+                if args.output.exists():
+                    raise Stage1Error(f"status output already exists: {args.output}")
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(f"{serialized}\n", encoding="utf-8")
+                print(f"wrote Stage 1A status: {args.output}")
+            if not status.complete:
+                return 1
+    except (ConfigLoadError, GenerationError, HarnessError, ScoringError, Stage1Error) as error:
         print(error, file=sys.stderr)
         return 2
     return 0
+
+
+def _require_stage1_live_selection(
+    job_id: str | None, all_jobs: bool, confirmation: str | None, run_id: str
+) -> None:
+    if job_id is None and not all_jobs:
+        raise Stage1Error(
+            "live generation requires one explicit --job-id or --all with confirmation"
+        )
+    if all_jobs and confirmation != run_id:
+        raise Stage1Error("--all requires --confirm-full-run with the exact manifest run ID")
 
 
 def _audit_choice(value: str | None) -> bool | None:
@@ -427,9 +623,7 @@ def _audit_choice(value: str | None) -> bool | None:
     return value == "passed"
 
 
-def _require_canary_artifacts(
-    manifest_path: Path, manifest: GenerationManifest
-) -> None:
+def _require_canary_artifacts(manifest_path: Path, manifest: GenerationManifest) -> None:
     """Refuse a paid full run until both canaries generated and were evaluated."""
     first_task_id = manifest.jobs[0].task_id
     required_conditions = (
@@ -442,9 +636,7 @@ def _require_canary_artifacts(
         matching = [
             job
             for job in manifest.jobs
-            if job.task_id == first_task_id
-            and job.condition is condition
-            and job.sample_index == 0
+            if job.task_id == first_task_id and job.condition is condition and job.sample_index == 0
         ]
         if len(matching) != 1:
             raise GenerationError(
@@ -510,16 +702,13 @@ def _require_canary_artifacts(
                 f"finish_reason={generation.finish_reason!r})"
             )
         if condition is Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A and (
-            generation.thinking_requested != "enabled"
-            or not generation.reasoning_content_present
+            generation.thinking_requested != "enabled" or not generation.reasoning_content_present
         ):
             raise GenerationError(
                 f"full generation is locked: thinking evidence is missing for {job.job_id}"
             )
 
-        candidate_path = _checked_canary_path(
-            run_directory, generation.candidate_path, "candidate"
-        )
+        candidate_path = _checked_canary_path(run_directory, generation.candidate_path, "candidate")
         raw_response_path = _checked_canary_path(
             run_directory, generation.raw_response_path, "raw response"
         )

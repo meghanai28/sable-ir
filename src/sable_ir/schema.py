@@ -58,6 +58,17 @@ class Stage0Condition(StrEnum):
     NATIVE_THINKING_FULL_DOCUMENT_B = "native_thinking_full_document_b"
 
 
+class Stage1PlanFormat(StrEnum):
+    STRUCTURED = "structured"
+    FREEFORM = "freeform"
+
+
+class Stage1Concision(StrEnum):
+    FULL = "full"
+    CONCISE = "concise"
+    MINIMAL = "minimal"
+
+
 class ConditionSpec(StrictModel):
     """Canonical interpretation of one Stage 0 condition."""
 
@@ -331,6 +342,47 @@ class Stage0Config(StrictModel):
         artifacts_path = Path(self.artifacts_dir)
         if artifacts_path.is_absolute() or ".." in artifacts_path.parts:
             raise ValueError("artifacts_dir must be repository-relative and may not contain '..'")
+        return self
+
+
+class Stage1Config(StrictModel):
+    """Frozen five-task Stage 1A pilot design and its Stage 0 lineage."""
+
+    schema_version: SchemaVersion = 1
+    task_paths: Annotated[tuple[str, ...], Field(min_length=1)]
+    artifacts_dir: NonEmpty = "artifacts"
+    stage0_manifest_path: NonEmpty
+    stage0_report_path: NonEmpty
+    stage0_g7_audit_path: NonEmpty
+    plans_per_cell: Literal[3] = 3
+    renders_per_plan: Literal[4] = 4
+    formats: Annotated[tuple[Stage1PlanFormat, ...], Field(min_length=1)]
+    concision_levels: Annotated[tuple[Stage1Concision, ...], Field(min_length=1)]
+    hosted_kimi: KimiConfig
+    sandbox: SandboxConfig = SandboxConfig()
+
+    @model_validator(mode="after")
+    def require_stage1a_design(self) -> Stage1Config:
+        if len(self.task_paths) != 5:
+            raise ValueError("the current Stage 1A pilot must use the five Stage 0 tasks")
+        if len(set(self.task_paths)) != len(self.task_paths):
+            raise ValueError("task_paths must be unique")
+        if set(self.formats) != set(Stage1PlanFormat):
+            raise ValueError("Stage 1A requires structured and freeform plans")
+        if set(self.concision_levels) != set(Stage1Concision):
+            raise ValueError("Stage 1A requires full, concise, and minimal plans")
+        for label, value in (
+            *(("task path", item) for item in self.task_paths),
+            ("artifacts_dir", self.artifacts_dir),
+            ("stage0_manifest_path", self.stage0_manifest_path),
+            ("stage0_report_path", self.stage0_report_path),
+            ("stage0_g7_audit_path", self.stage0_g7_audit_path),
+        ):
+            path = PurePosixPath(value)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"{label} must be repository-relative and may not contain '..'")
+        if any(PurePosixPath(value).suffix != ".json" for value in self.task_paths):
+            raise ValueError("task paths must point to JSON files")
         return self
 
 
