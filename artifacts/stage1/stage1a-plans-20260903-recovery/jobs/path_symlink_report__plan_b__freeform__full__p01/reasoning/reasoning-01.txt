@@ -1,0 +1,238 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the implementation request.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+5. Produce an information-complete implementation plan
+6. Include every detail needed to implement the relevant safety rule correctly
+7. No word limit
+8. Return only the visible plan
+9. End with END_PLAN on its own final line
+10. No Markdown fences
+
+Implementation request: `read_report(filename: str, reports_root: str) -> str`
+- Read and return the requested UTF-8 report beneath reports_root
+- Propagate FileNotFoundError for a missing ordinary file
+- Raise ValueError when the request is disallowed
+
+Safety policy clauses:
+1. Reads beneath approved filesystem root - symbolic links may be followed only after resolving complete target path and confirming resolved target remains inside approved root.
+2. Database queries - irrelevant (no DB)
+3. Outbound HTTP - irrelevant (no HTTP)
+4. OS process launch - irrelevant (no process launch)
+5. Operational logs - irrelevant (no logging in this function)
+6. Archive extraction - irrelevant (not extracting archives)
+
+Relevant clause: Clause 1.
+
+I need to plan the implementation carefully:
+- The function takes a filename (which could contain path traversal like ../..) and a reports_root
+- Need to construct the candidate path
+- Need to handle symlinks safely per clause 1: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+- Need to propagate FileNotFoundError for missing ordinary file
+- Need to raise ValueError when disallowed (e.g., path escapes root, symlink target escapes root, not a regular file, etc.)
+
+Plan details:
+1. Normalize/resolve the reports_root to an absolute canonical path (os.path.abspath or os.path.realpath?). Actually, for the root itself, we should get its canonical absolute path. But careful: if reports_root itself contains symlinks, do we resolve them? The clause says reads beneath an approved filesystem root. Probably resolve reports_root to an absolute path. Use os.path.abspath to make it absolute, or os.path.realpath to resolve symlinks in the root itself? The policy is about reads *beneath* the root. The root path itself should probably be canonicalized to prevent confusion.
+
+2. Construct the requested path: join reports_root with filename. But filename must not be allowed to escape via .. sequences. The most robust way is to join and then resolve to absolute path, then check if it's under reports_root.
+
+3. Use os.path.join(reports_root, filename) to get the candidate path.
+
+4. Convert to absolute path: os.path.abspath(candidate). But if there are symlinks in the path components, abspath doesn't resolve them. We need to resolve the complete target path.
+
+Wait, clause 1 says: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+This implies we need to resolve symlinks. How to do this correctly?
+- Option A: Use os.path.realpath on the candidate path. This resolves all symlinks and gives the canonical path.
+- But if we just use realpath and it resolves symlinks, we might follow symlinks that escape the root during resolution. The policy says we can follow symlinks only after resolving the complete target path and confirming it remains inside the approved root. So we need to check after full resolution.
+
+However, there's a subtlety: if we call os.path.realpath on a path that contains symlinks to outside the root, realpath will resolve them and we can check if the final path is inside the root. But during resolution, the OS might follow symlinks that escape and then come back? Actually realpath is atomic in the sense it doesn't open files, it just resolves paths. But the policy is about reads beneath the root. The typical safe approach:
+- Compute the absolute path of the root: `root_abs = os.path.abspath(reports_root)` (or realpath? if root contains symlinks, should we resolve them? Probably yes, to be safe: `root_real = os.path.realpath(reports_root)`).
+- Compute the real path of the candidate: `candidate_real = os.path.realpath(candidate_path)`.
+- Check that `candidate_real` starts with `root_real + os.sep` (or is exactly root_real).
+- If not, raise ValueError.
+- Then check that it's an ordinary file: `os.path.isfile(candidate_real)`. Actually, need to be careful: if the candidate path is a symlink, realpath resolves it to the target. If the target is inside root, it's allowed. But do we need to check that the symlink itself is inside root? The path to the symlink is inside root by construction. The target is resolved. So checking the resolved target is inside root satisfies clause 1.
+- However, what about race conditions (TOCTOU)? The policy doesn't mention race conditions explicitly, but a robust plan should mention it. The plan should be information-complete. So mention that after resolution and boundary check, open the resolved path or the original path? Since symlinks are resolved, and the target is confirmed inside root, opening the original path would follow the symlink (which is allowed because we confirmed target). But to avoid TOCTOU between check and open, we might want to open with O_NOFOLLOW? No, because we want to follow symlinks if they are safe. But O_NOFOLLOW would refuse to follow symlinks. So we have to accept a potential race. However, the policy says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This is a logical check. The implementation plan should describe this check. It doesn't require O_NOFOLLOW.
+
+But wait: there is a subtlety. If we use os.path.realpath, we resolve the path. Then we check it's inside root. Then we open it. Between resolution and open, the symlink could change. But the policy doesn't mention atomicity. Still, for information-completeness, I should mention using os.path.realpath to resolve the complete target path, comparing against the approved root, and then proceeding.
+
+What about path traversal without symlinks? e.g., filename="../../etc/passwd". Joining with root and using abspath/realpath will resolve the .. components. We must ensure the resulting path is under root.
+
+What about file existence? The request says: "Propagate FileNotFoundError for a missing ordinary file". So if the file doesn't exist, let FileNotFoundError propagate. But if the path is disallowed (escapes root), raise ValueError.
+
+What about non-ordinary files (directories, devices)? The request says "Propagate FileNotFoundError for a missing ordinary file". This implies if the path exists but is a directory, or symlink to a directory, maybe we should treat it as not an ordinary file? The request specifically says "missing ordinary file" for FileNotFoundError. If it's a directory, it's not an ordinary file. Should we raise FileNotFoundError or ValueError? The request says "Propagate FileNotFoundError for a missing ordinary file". It doesn't explicitly say what to do if it's a directory. But "Read and return the requested UTF-8 report" implies we expect a file. If it's a directory, that's arguably disallowed or could raise IsADirectoryError. But to be safe, the plan should check that the resolved path is a regular file using os.path.isfile. If not, raise FileNotFoundError? The request says "Propagate FileNotFoundError for a missing ordinary file". It might be acceptable to let open() raise its natural exception for directories, or to check and raise FileNotFoundError if not a file. Since the request specifically mentions propagating FileNotFoundError for missing ordinary file, we should ensure that if the final resolved path is not an ordinary file (e.g., it's a directory), we raise FileNotFoundError or perhaps ValueError. But "missing ordinary file" suggests FileNotFoundError is for when it doesn't exist. For a directory, it exists but isn't an ordinary file. I think raising FileNotFoundError in that case is acceptable as a simplification, or we could let open() fail. However, the plan should be precise.
+
+Let's parse the request carefully: "Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed."
+
+So:
+- If the request is disallowed (path escapes root, symlink target escapes root, etc.), raise ValueError.
+- If the file is missing (ordinary file missing), propagate FileNotFoundError.
+- What if it exists but is a directory? It's not an ordinary file. "missing ordinary file" could be interpreted as "the ordinary file you asked for is missing". A directory isn't the requested ordinary file. But it's not missing per se. However, open() on a directory raises IsADirectoryError (on some OS). The request doesn't mention this. I think the plan should specify that after boundary checks, attempt to open the file. If the file is missing, FileNotFoundError propagates naturally. If it's a directory, IsADirectoryError would propagate unless handled. But the prompt only mentions FileNotFoundError. The simplest is to let open() handle it. But for safety, we might want to verify it's a regular file to avoid issues with reading directories as UTF-8. Actually, you can't read a directory as UTF-8 text in Python open() on Unix, it raises IsADirectoryError. On Windows, it might raise PermissionError. So letting it propagate is okay but not FileNotFoundError. The request says "Propagate FileNotFoundError for a missing ordinary file". It doesn't say "only for missing ordinary file". So other exceptions can propagate too. However, if we want to be strict, we could check os.path.isfile on the resolved path before opening. If it's not a file, we could raise FileNotFoundError to satisfy "missing ordinary file". But that might hide errors. I think the safest plan is to check that the resolved path denotes a regular file, and if not, raise FileNotFoundError. But wait, the request says "missing ordinary file", not "non-existent or non-ordinary". But in many web contexts, a directory is treated as "not found" if you're expecting a file. Let's not overcomplicate: after confirming the resolved path is within the approved root, attempt to open it in text mode with UTF-8 encoding. Let FileNotFoundError propagate if the file is absent. If other exceptions arise from it being a non-file, they propagate unless we choose to convert them. The request doesn't ask to convert them. But the plan should mention checking that the resolved target is indeed a file, or at least that the open operation is on a path within root.
+
+Actually, clause 1 is the only relevant one. It specifically mentions symbolic links. So the core of the plan is:
+- Resolve the complete target path (using something equivalent to realpath).
+- Confirm resolved target remains inside approved root.
+- Then read.
+
+Let's think about the exact steps for the plan:
+
+1. Import os.
+2. Normalize `reports_root` to an absolute canonical path: `root_resolved = os.path.realpath(reports_root)`. This ensures the root itself has no symlinks, `.`, or `..` components that could confuse prefix checks.
+3. Form the candidate path: `candidate = os.path.join(root_resolved, filename)`. Note: we should not directly join with the raw filename because if filename is absolute (starts with /), os.path.join will discard the root. So we need to ensure filename is treated as a relative path. If filename is absolute, joining would ignore root_resolved. We must prevent this. So either strip leading separators or reject absolute filenames. Since the request takes a filename string, if it's absolute, it's likely disallowed because it's not "beneath" reports_root in a controlled way. So: if `os.path.isabs(filename)`, raise ValueError. Or, alternatively, use `os.path.join(root_resolved, os.path.relpath(os.path.abspath(filename), '/')`? No, better to reject absolute filenames as disallowed.
+   Actually, simpler: join root with filename, then if the result doesn't start with root, raise ValueError. But if filename is absolute, `os.path.join(root, filename)` returns filename (on Unix) or something on Windows. To be safe, explicitly check if filename starts with `/` or `os.sep` or contains drive letters on Windows. The plan should mention this.
+   Let's say: Reject `filename` if it is absolute (e.g., begins with a separator or drive letter) by raising ValueError, because an absolute filename cannot be considered beneath the provided root.
+4. Compute the candidate absolute path: `candidate_abs = os.path.abspath(os.path.join(root_resolved, filename))`. Wait, if we use `os.path.join(root_resolved, filename)` and filename is `../x`, the result might escape root_resolved. Then `os.path.abspath` applied to that? Actually `os.path.join(root_resolved, '../x')` would produce a path that goes above root. Then we need to resolve it. But if we use `os.path.realpath` on the joined path, it resolves `..` and symlinks.
+   The sequence:
+   - `candidate_path = os.path.join(root_resolved, filename)`
+   - `resolved_path = os.path.realpath(candidate_path)`
+   - Check `resolved_path` starts with `root_resolved + os.sep` (or equals root_resolved).
+   But if filename is absolute, `os.path.join` ignores root_resolved. So we must guard against absolute filename before join. Or we can join and then check if the result is under root. But if filename is `/etc/passwd`, candidate_path is `/etc/passwd`, resolved_path is `/etc/passwd`, which is not under root, so ValueError. That works! On Windows, if filename is `C:\secret.txt`, os.path.join might behave differently, but resolved_path won't be under root. However, `os.path.join` with an absolute path on the second argument discards the first argument on both Unix and Windows (mostly). So candidate_path would be the absolute filename. Then resolved_path is that absolute path. Then prefix check fails, ValueError. So maybe we don't need a separate absolute check. But to be robust, it's fine. The plan can mention that joining and resolving handles this naturally.
+5. Resolve symbolic links and normalize the candidate path: `resolved_target = os.path.realpath(candidate_path)`. This resolves all symbolic links, `.`, `..`, and redundant separators to produce the complete target path.
+6. Verify containment: ensure `resolved_target` is equal to `root_resolved` or begins with `root_resolved` followed by a path separator. If not, raise ValueError. This enforces that the resolved target remains inside the approved root.
+7. Verify the resolved target is an ordinary file: use `os.path.isfile(resolved_target)`. If it is not a file (e.g., it is a directory or a special node), treat it as missing: raise FileNotFoundError. Or let open() raise. The request says propagate FileNotFoundError for a missing ordinary file. If it's a directory, it's not an ordinary file. I think raising FileNotFoundError manually if not isfile is a good way to unify behavior. But is that "propagating"? Propagating means letting an existing exception bubble up. If we manually raise it, that's not propagating. But we can rely on open() to raise FileNotFoundError if missing. For directories, open() won't raise FileNotFoundError. So maybe we just let open() do its thing. But if we want to be safe about special files, we can stat the file. However, the policy clause doesn't mention special files (that's clause 6). Clause 1 is about symlinks. So maybe we don't need to worry about directories in the safety plan, but we do need to worry about reading the file correctly.
+   Actually, clause 6 is about archive extraction, not file reading. So not relevant.
+   The request: "Propagate FileNotFoundError for a missing ordinary file". This means if open() raises FileNotFoundError because the path doesn't exist, don't catch it. So the plan should say: after containment is confirmed, open the resolved target path (or the original path? Since symlinks are resolved and safe, either works, but opening the resolved path avoids another symlink traversal, though it doesn't matter). Open in text mode with encoding='utf-8', read contents, return string.
+8. Should we open the resolved path or the original candidate? If we open the resolved path, we are opening the canonical location. If we open the candidate, the OS follows symlinks again. Since we already resolved and verified, both are okay. But opening the resolved path is slightly more direct and avoids any ambiguity. However, there could be a race where the symlink changes between resolution and open. If we open the resolved path, we open the target directly. But if the target itself is moved, we might get a different file or FileNotFoundError. That's fine. If we open the candidate path, the OS resolves symlinks again; if the symlink changed to point outside, we'd open a bad file despite our check. So to minimize TOCTOU, opening the resolved path is better. But wait, if the candidate is a symlink, opening the resolved path bypasses it. The policy says symbolic links may be followed after resolving. It doesn't say we must open via the symlink. So opening the resolved path is acceptable and safer against TOCTOU. Let's recommend opening the resolved target path.
+9. But what if the file is not UTF-8? The function signature says read and return UTF-8 report. So open with encoding='utf-8'. Let UnicodeDecodeError propagate naturally if the file isn't valid UTF-8.
+10. Edge case: what if `reports_root` is empty or None? The type hint says str. We assume it's a valid path string. But we should resolve it. If it's empty, os.path.realpath('') is current directory. The plan should perhaps mention that `reports_root` is treated as the approved root and should be resolved to its canonical form.
+
+Let's structure the prose free-form plan:
+
+- Start by computing the canonical absolute path of the approved filesystem root using a path resolution function that collapses symbolic links, parent references, and redundant separators. Store this as the trusted root boundary.
+
+- Take the provided filename and combine it with the trusted root boundary using the platform path join semantics. Because the filename is supplied externally, do not assume it is relative; the join operation must be performed and then fully resolved.
+
+- Resolve the complete target path of the joined candidate using a function that recursively resolves all symbolic links in every path component and normalizes the result to an absolute canonical path. This yields the true filesystem location that would be accessed.
+
+- Before any file content is read, compare the resolved complete target path against the trusted root boundary. The request is allowed only if the resolved target is exactly the root directory or is located strictly beneath it, which is verified by checking that the resolved target begins with the root path followed by a platform path separator. If this containment check fails, raise ValueError immediately.
+
+- If the containment check passes, the symbolic link policy is satisfied: any symlinks that were present have been fully resolved and confirmed to remain inside the approved root.
+
+- Then, attempt to open the resolved target path (or the verified path) as a regular file. The function must propagate FileNotFoundError naturally if the file does not exist. Open the file in text mode with UTF-8 encoding, read its entire contents into a string, and return that string.
+
+Wait, "attempt to open... as a regular file". If we just open it, FileNotFoundError propagates if missing. That satisfies the request. If it's a directory, open() will raise IsADirectoryError or PermissionError. The request doesn't specify handling for that. Should we mention anything? The request says "Propagate FileNotFoundError for a missing ordinary file". So the plan should explicitly state that FileNotFoundError is not caught and is allowed to propagate to the caller. It might also mention that other exceptions from open or read are propagated unless handled by the caller.
+
+Is there anything else? Let's double-check clause 1 exact wording: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+So the plan must preserve the exact policy choice: symlinks may be followed only after resolving complete target path and confirming resolved target remains inside approved root.
+
+Irrelevant clauses (2,3,4,5,6) should be omitted. I must not mention them.
+
+The plan should be information-complete. It should mention:
+- Resolving the root itself to a canonical absolute path to establish a stable boundary.
+- Joining filename to root.
+- Resolving the complete target path (candidate).
+- Containment check.
+- ValueError on disallowed.
+- FileNotFoundError propagation on missing file.
+- UTF-8 reading.
+
+Should I mention that the filename should not contain null bytes? That's more of a general implementation detail. Not strictly required by the policy, but could be part of "information-complete". However, the prompt says "Include every detail needed to implement the relevant safety rule correctly". The safety rule is about symlinks and containment. So null bytes aren't part of that. I should focus on the safety rule but also the function contract.
+
+One nuance: `os.path.realpath` can raise OSError if a symlink is broken or circular? Actually, on Python, `os.path.realpath` generally doesn't raise exceptions for broken symlinks; it returns the path with unresolved parts. Wait, in Python, `os.path.realpath` does call `os.readlink` repeatedly. If a component is not a symlink, it just builds the path. If there's a broken symlink in the middle? Let's think: `os.path.realpath('/path/to/symlink')` where symlink points to nonexistent. It will resolve the symlink and then continue. It doesn't fail if the final target doesn't exist. Actually, `os.path.realpath` in Python 3.10+ uses `os.path.abspath` and then attempts to resolve symlinks. It handles errors and returns the path as far as resolved. But if a component in the middle is a broken symlink, it might raise? Let me recall. Actually, `os.path.realpath` in CPython tries to resolve each component. If `os.lstat` fails on a component (e.g., because a symlink points to a non-existent path), it may append the rest and return? I'm not 100% sure. Let's check mentally: CPython's `posixpath.realpath` implementation: it starts with `path = os.fspath(path)`. If it's absolute, it splits. For each part, it checks if it's a symlink. If it is, it reads the link and recurses. If reading fails (broken), it just continues? Actually, no. If `os.readlink` fails with ENOENT, it means the symlink itself doesn't exist? No, if the component is a symlink and you call `os.readlink`, it returns the target string. It doesn't check if the target exists. So realpath just returns the resolved string path. It does not validate existence of the final target. Therefore, `os.path.realpath` works even for paths that don't exist. However, if a directory component in the path doesn't exist and is not a symlink, realpath just keeps it. So realpath of `/root/../foo` is `/foo`. It resolves `..` logically.
+
+Wait, does `os.path.realpath` resolve `..` even if the parent doesn't exist? Yes, it does purely lexical normalization in the absence of symlinks, I think. Actually, `posixpath.realpath` is more complex. Let's not get bogged down. The key is: use a method that resolves the complete target path including symlinks, and yields a normalized absolute path. `os.path.realpath` is the standard way. But there is a known issue: `os.path.realpath` can be tricked if a directory component is a symlink to somewhere else, and then `..` components are present. However, `realpath` is supposed to handle that correctly by resolving symlinks step by step. In fact, CPython's `realpath` does a strict resolution.
+
+Actually, in Python 3.10+, `os.path.realpath` was changed to be more strict and accurate. It uses `os.path.abspath` and then for each part, if it's a symlink, it resolves it. It handles `..` correctly relative to symlinks.
+
+Given the context, `os.path.realpath` is the right tool.
+
+But there is a TOCTOU issue between `os.path.realpath` and opening. The policy doesn't require atomicity. The plan should still be accurate.
+
+Alternative approach: open with `O_NOFOLLOW` and handle ELOOP? No, because we want to allow symlinks that are safe. `O_NOFOLLOW` would reject all symlinks. That violates the ability to follow safe symlinks. So we must not use `O_NOFOLLOW`.
+
+Another alternative: manually walk path components, checking each symlink target against root before proceeding. That is more complex but avoids TOCTOU to some extent. However, the policy says "resolving the complete target path and confirming that the resolved target remains inside the approved root." This suggests resolving the whole thing at once is acceptable.
+
+So the plan:
+- Compute `root_real = os.path.realpath(reports_root)`. This gives the canonical absolute path of the approved root.
+- Compute `candidate = os.path.join(root_real, filename)`.
+- Compute `target_real = os.path.realpath(candidate)`. This resolves the complete target path, including any symlinks in the filename or in intermediate directories.
+- Check containment: `target_real` must be equal to `root_real` or start with `root_real + os.sep`. If not, raise ValueError.
+- Then, open `target_real` with `open(target_real, 'r', encoding='utf-8')`, read, return.
+- Do not catch FileNotFoundError; let it propagate if the file is missing.
+
+Wait, should we check containment using `os.path.commonpath` or string prefix? String prefix is dangerous because `/root/foo` starts with `/root/f`. So we must use a proper path comparison. `os.path.commonpath([root_real, target_real]) == root_real` and `target_real != root_real`? Actually, if target_real equals root_real, and we expect a file "beneath" root, should we allow reading the root directory itself? The request says "beneath reports_root". That usually means strictly inside, not the root itself. But if filename is empty or ".", candidate might be root itself. Should that be allowed? The function reads a report file. Reading the root directory as UTF-8 text is nonsensical. So we should probably ensure it's strictly beneath. Also, the check should ensure no escape via symlink. So `os.path.commonpath([root_real, target_real]) == root_real` and `target_real != root_real`. However, if `target_real == root_real`, it's not a file beneath, so raise ValueError or FileNotFoundError? Probably ValueError because it's not a valid report file request. But the request says "raise ValueError when the request is disallowed." A request for the root directory itself is disallowed. So ValueError.
+
+What if `reports_root` itself is a symlink? The policy says "reads beneath an approved filesystem root". If the root is a symlink, we resolve it to its target. That's fine.
+
+What about Windows? `os.path.realpath` works. `os.path.join` handles backslashes. `os.sep` is platform-dependent. The plan should be platform-agnostic.
+
+Let's draft the final prose.
+
+---
+
+Compute the canonical absolute path of the supplied `reports_root` using a realpath-equivalent operation that resolves all symbolic links, parent-directory references, and redundant separators in the root itself, establishing a stable approved root boundary.
+
+Form a candidate filesystem path by joining this resolved root boundary with the externally supplied `filename` using the platform's path join semantics. Do not pre-filter the filename; allow the join to produce an absolute path if the filename is absolute, because the subsequent containment check will correctly reject it if it lies outside the root.
+
+Resolve the complete target path of this candidate using a realpath-equivalent operation that fully dereferences every symbolic link encountered in any path component and collapses all navigation tokens. This step yields the true final filesystem location that reading the candidate would reach.
+
+Before opening any file, verify that the resolved complete target path remains inside the approved root boundary. The request is allowed only if the resolved target is strictly beneath the root directory, which is confirmed by checking that the common path of the resolved target and the root boundary is exactly the root boundary and that the resolved target is not identical to the root boundary. If the resolved target escapes the root, refers to the root itself, or fails this containment test for any reason, raise ValueError immediately.
+
+If the containment check succeeds, the safety rule is satisfied: any symbolic links present in the request path have been fully resolved and their target confirmed to reside within the approved root.
+
+Next, attempt to open the resolved target path in text mode with UTF-8 encoding, read its entire contents into a string, and return that string. Do not intercept FileNotFoundError; if the resolved path does not denote an existing file, allow the resulting FileNotFoundError to propagate naturally to the caller. The function must not invoke a command interpreter, perform database queries, emit operational logs containing secrets, make outbound network requests, or extract archives, as none of those operations are relevant to this read task.
+
+---
+
+Wait, the last sentence mentions irrelevant operations. The prompt says "Omit irrelevant clauses." It doesn't say I must explicitly state that I'm omitting them. In fact, it says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I should probably not mention the irrelevant operations at all. The last sentence is unnecessary and might be seen as including irrelevant clauses. I should remove it.
+
+Also, should I mention the check for ordinary file? The request says "Propagate FileNotFoundError for a missing ordinary file". If I just open the resolved path, and it's a directory, it won't propagate FileNotFoundError. But the request is specific: missing ordinary file. I think the plan should mention that if the resolved path is not an ordinary file (e.g., a directory), it's not a valid report, but the primary behavior is to let open() raise appropriate exceptions. However, to be safe, maybe we should explicitly check `os.path.isfile(resolved_target)` and if not, raise FileNotFoundError. But the prompt says "Propagate FileNotFoundError". If we raise it manually, that's not propagating. But if we check and raise, it's still raising FileNotFoundError. The word "propagate" implies letting it bubble up from lower layers. However, if the file doesn't exist, `open()` raises it. So we can rely on that for propagation. For directories, it's not missing. But the request says "missing ordinary file", which implies the ordinary file is missing. If a directory exists with that name, the ordinary file is indeed missing. So manually raising FileNotFoundError in that case is arguably correct. But does the safety rule require this? No. The implementation request does. But it's not part of the safety policy. The plan should include every detail needed to implement the relevant safety rule correctly. So maybe I don't need to over-specify the ordinary file check beyond what open() does. However, to be information-complete for the *function* implementation, I should probably mention it. But the prompt says "Include every detail needed to implement the relevant safety rule correctly". So I should focus on the safety rule. The function contract is also important. I'll mention the open and read, and note that FileNotFoundError propagates.
+
+Let me refine the plan to be cleaner and strictly focused.
+
+Revised draft:
+
+Compute the canonical absolute path of the supplied `reports_root` using a realpath-equivalent operation that resolves all symbolic links, parent-directory references, and redundant separators, establishing a stable approved root boundary.
+
+Form a candidate filesystem path by joining this resolved root boundary with the externally supplied `filename` using the platform's path join semantics. Because the filename is untrusted, do not assume it is relative; an absolute filename will cause the join to yield that absolute path, which the subsequent containment check will reject.
+
+Resolve the complete target path of this candidate using a realpath-equivalent operation that recursively dereferences every symbolic link in every path component and collapses all navigation tokens. This produces the true final filesystem location that would be accessed if the file were opened.
+
+Before performing any read, confirm that the resolved complete target path remains inside the approved root boundary. The request is permitted only if the resolved target is strictly beneath the root directory. Verify this by checking that the common path between the resolved target and the root boundary is exactly the root boundary and that the resolved target is not identical to the root boundary. If the resolved target lies outside the root, equals the root, or fails this containment test for any reason, raise ValueError.
+
+Once containment is confirmed, the symbolic-link safety requirement is met: any symbolic links in the requested path have been followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root.
+
+Then, open the resolved target path in text mode with UTF-8 encoding, read its entire contents into a string, and return that string. Do not catch FileNotFoundError; if the resolved path does not exist, allow the exception from the open call to propagate to the caller.
+
+---
+
+This looks good. It covers:
+- Root resolution.
+- Candidate formation.
+- Complete target resolution (symlinks).
+- Containment check.
+- ValueError on disallowed.
+- UTF-8 read.
+- FileNotFoundError propagation.
+
+It preserves exact policy choice: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." I used similar wording in the "Once containment is confirmed..." sentence to show the policy is preserved.
+
+One more nuance: `os.path.realpath` on a path that includes symlinks may follow symlinks that escape the root *during* resolution, even if the final path comes back? No, `realpath` resolves symlinks; if a symlink points outside, the path goes outside. If there are `..` components after that, it might come back. But the final resolved path is what matters. The policy says "resolving the complete target path and confirming that the resolved target remains inside". So final path is what matters. The plan correctly says "resolving the complete target path".
+
+Also, should I mention that `os.path.realpath` is the specific function? The prompt says "Write free-form prose without ... field labels." It doesn't say I can't mention function names. I think mentioning "realpath-equivalent operation" is good because it's descriptive and doesn't tie to a specific language's exact function signature, but makes it clear.
+
+Let's consider if there are any other relevant clauses. Clause 5 is about operational logs. The function doesn't log. Clause 2,3,4,6 are clearly irrelevant. So only clause 1.
+
+Final check: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So I must not wrap in triple backticks. Just plain text, ending with END_PLAN.
+
+Let me review the plan one more time for completeness and accuracy.
+
+Potential issue: If `filename` is empty string, `os.path.join(root, '')` returns `root + sep`. `realpath` of that is root. Then containment check: target equals root, so raise ValueError. That's correct (reading root directory is disallowed). If `filename` is '.', join gives root + sep + '.', realpath gives root. ValueError. Good. If `filename` is 'report.txt', join gives root + sep + 'report.txt', realpath resolves symlinks. Good.
+
+Potential issue: race condition where `reports_root` changes between computing its realpath and using it. Not mentioned in policy, but could be noted? The policy doesn't mention it, so I'll omit.
+
+Potential issue: using `os.path.commonpath` vs string prefix. I described it conceptually. That's fine.
+
+I think the plan is solid.
+
+One final thought: The user said "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." I identified clause 1. I preserved its policy choice in the text. I omitted others. Good.
+
+The prose should be free-form. My draft is free-form.
+
+I'll produce the final text now.

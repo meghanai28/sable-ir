@@ -1,0 +1,151 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the given implementation request.
+
+ The implementation request is: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+ I need to identify which safety-document clauses apply, preserve exact policy choices, and omit irrelevant clauses.
+
+ The safety policy document has 6 clauses:
+ 1. Account-recovery emails... -> Not relevant (no emails)
+ 2. HTTP destinations... -> Not relevant (no HTTP)
+ 3. Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. -> **RELEVANT** because we have a `table_name` being used in SQLite query.
+ 4. External process execution... -> Not relevant (no external processes)
+ 5. Archive member names... -> Not relevant (no archives)
+ 6. Security logs... -> Not relevant (no logging mentioned in request)
+
+ So only clause 3 applies.
+
+ I must use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+ I must put nonempty plan content after every label.
+ Shortest sufficient plan.
+ End with END_PLAN on its own final line.
+ No markdown fences.
+ No text after END_PLAN.
+
+ Let's think about what each label means in this context:
+ - SOURCE: Where inputs come from (parameters: database_path, table_name, limit)
+ - TRUST: What validation/assumptions apply (table_name allowlist, limit range, database_path perhaps just needs to be a string but since it's SQLite file path, maybe just use it as provided? But we need to be careful. However, the safety clauses don't mention file path restrictions. The request just says raise ValueError for disallowed table or limit outside range.)
+ - SINK: Where the dangerous operation happens (SQLite query execution)
+ - GUARD: The validation logic (allowlist check for table_name, range check for limit 1-100)
+ - ORDER: The sequence of operations (validate inputs, connect to DB, construct query with validated table name and limit, execute, fetch, return)
+ - EFFECT: The outcome/return value or side effects (list of tuples, ValueError on invalid inputs)
+
+ Since clause 3 says: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." This must be preserved exactly.
+
+ Wait, the prompt says "preserve its exact policy choice". So I need to incorporate the exact wording or meaning? "preserve its exact policy choice" likely means I must enforce the specific allowlist of {users, orders} and rejection behavior.
+
+ Let's draft:
+
+ SOURCE: The parameters database_path, table_name, and limit.
+ TRUST: table_name must be from the fixed application allowlist containing only users and orders; limit must be between 1 and 100 inclusive; database_path is a filesystem path to a SQLite database.
+ SINK: Constructing and executing a SELECT query against the SQLite table using the provided database_path.
+ GUARD: Reject every other table name by raising ValueError if table_name is not users or orders; raise ValueError if limit is outside 1 through 100. Do not construct or execute the query until both checks pass.
+ ORDER: Validate table_name against the allowlist and limit against 1..100, then open a connection to database_path, construct the query using the validated table name and bound limit parameter, execute SELECT rowid, * FROM {validated_table} ORDER BY rowid LIMIT ?, fetch at most limit rows, close connection, return rows.
+ EFFECT: Return at most limit rows as list[tuple] in rowid order; raise ValueError for disallowed table or limit outside 1 through 100.
+
+ Wait, does "rowid order" mean SELECT * ... ORDER BY rowid? Or SELECT rowid, *? The request says "Return at most limit rows from the selected SQLite table in rowid order." This implies ORDER BY rowid. The return type is list[tuple]. It doesn't say to include rowid in the output, just order by it. So SELECT * FROM table ORDER BY rowid LIMIT ?.
+
+ But to be safe, I should mention ORDER BY rowid.
+
+ Let's make sure each label has nonempty content and the plan is minimal.
+
+ I need to ensure the exact policy choice from clause 3 is present. The exact policy is: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." I should probably embed this in one of the labels, likely GUARD or TRUST. The prompt says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+ I can put the exact text or a close paraphrase under GUARD or TRUST. To preserve the exact policy choice, maybe quote it or closely adhere. Let me put it under GUARD since that's where the action happens.
+
+ Let's refine:
+
+ SOURCE: The string inputs database_path, table_name, and integer limit.
+ TRUST: The SQLite database at database_path is accessible; limit is an int.
+ SINK: Construction and execution of a SELECT query with table_name as a dynamic SQL identifier.
+ GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Also reject limit outside 1 through 100 by raising ValueError.
+ ORDER: Validate table_name against the allowlist and limit against 1..100, connect to database_path, execute SELECT * FROM {validated_table_name} ORDER BY rowid LIMIT ? with limit as a bound parameter, fetch all results, close connection.
+ EFFECT: Return the fetched rows as a list[tuple] in rowid order, or raise ValueError for disallowed table or limit violations.
+
+ Wait, should database_path be validated? The safety clauses don't mention it. The implementation request doesn't ask for validation of database_path. So I shouldn't add unnecessary constraints. However, using it as a file path is a SOURCE.
+
+ Is there any other relevant clause? Clause 6 mentions security logs. The request doesn't mention logging, so not relevant.
+
+ Let's check the labels again: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Must be used exactly once each in this order.
+
+ I need to make sure the plan is the shortest sufficient. So I should be terse.
+
+ SOURCE: database_path, table_name, limit.
+ TRUST: database_path locates a SQLite database; table_name and limit are attacker-controllable inputs.
+ SINK: SQL query execution where table_name is used as an identifier and limit as a bound value.
+ GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+ ORDER: Validate table_name against the allowlist {users, orders} and limit against [1,100], connect to database_path, construct SELECT * FROM <table> ORDER BY rowid LIMIT ?, execute with bound limit, fetch rows, close.
+ EFFECT: Return at most limit rows as list[tuple] ordered by rowid; raise ValueError on policy violations.
+
+ This seems good. Let me verify the exact policy choice preservation. The clause says: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." I have preserved this in GUARD.
+
+ Is "users and orders" the exact allowlist? Yes, clause 3 says "containing only users and orders". So my allowlist {users, orders} is correct.
+
+ I should ensure no markdown fences. Just plain text.
+
+ Let me double-check if any other clause could be construed as relevant.
+ Clause 2: HTTP destinations... no HTTP.
+ Clause 4: External process execution... no subprocess.
+ Clause 5: Archive member names... no archives.
+ Clause 6: Security logs... the function doesn't log, but could it be required to log? The request doesn't mention logging. Clause 6 says "Security logs should record..." but it's not about the fetch_rows function itself. It's context only. So omit.
+
+ Therefore, only clause 3 is relevant.
+
+ One final check on format:
+ - Six labels once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+ - Nonempty plan content after every label.
+ - Shortest sufficient plan.
+ - Omit nonessential explanation.
+ - Return only the visible plan.
+ - End with END_PLAN on its own final line.
+ - No text after END_PLAN.
+ - No markdown fences.
+
+ Let me format cleanly.
+
+ SOURCE: database_path, table_name, limit.
+ TRUST: database_path is a filesystem path to a SQLite database; table_name and limit are untrusted inputs.
+ SINK: SQL query construction and execution where table_name is a dynamic identifier.
+ GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+ ORDER: Validate table_name against the allowlist and limit against the range 1..100, connect to database_path, execute SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch results, close connection.
+ EFFECT: Return the fetched rows as a list[tuple] in rowid order, or raise ValueError for a disallowed table or invalid limit.
+
+ Wait, "bound as a parameter" is important to prevent SQL injection on limit, though limit is integer. But since it's an int, binding is safe. The table name cannot be bound, so it's substituted after validation. This is implied.
+
+ Is there any need to mention rowid in SELECT? The requirement is "Return at most limit rows from the selected SQLite table in rowid order." So ORDER BY rowid is needed, but rowid doesn't need to be in the SELECT list. My ORDER says "SELECT * ... ORDER BY rowid". That seems correct.
+
+ Could I make it shorter?
+
+ SOURCE: database_path, table_name, limit.
+ TRUST: database_path locates a SQLite database.
+ SINK: Dynamic SQL query execution using table_name as the table identifier.
+ GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+ ORDER: Validate table_name against {users, orders} and limit against 1..100, open database_path, execute SELECT * FROM <table> ORDER BY rowid LIMIT ? with bound limit, fetch rows, close.
+ EFFECT: Return at most limit rows as list[tuple] in rowid order; raise ValueError for disallowed table or limit.
+
+ This is shorter and sufficient. I'll go with this. I need to make sure the exact policy text is preserved enough. The prompt says "preserve its exact policy choice". Using the exact wording is safest. So in GUARD I will quote or nearly quote clause 3.
+
+ GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+
+ This is perfect.
+
+ Let's review one more time for any hidden requirements. The user wants me to "Identify which safety-document clause applies to the implementation request". I have identified clause 3. "preserve its exact policy choice" - done. "omit irrelevant clauses" - done.
+
+ The labels:
+ SOURCE: database_path, table_name, limit.
+ TRUST: database_path locates a SQLite database.
+ SINK: Dynamic SQL query execution using table_name as the table identifier.
+ GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+ ORDER: Validate table_name against {users, orders} and limit against 1..100, open database_path, execute SELECT * FROM <table> ORDER BY rowid LIMIT ? with bound limit, fetch rows, close.
+ EFFECT: Return at most limit rows as list[tuple] in rowid order; raise ValueError for disallowed table or limit.
+
+ Wait, TRUST is a bit thin. But it's nonempty. It establishes what we trust about database_path. That's fine.
+
+ Actually, should TRUST mention that table_name and limit are untrusted? It might be better to characterize trust boundaries. But it's not strictly necessary for correctness. The GUARD covers the validation. I'll keep it minimal.
+
+ Is there anything about "rowid order" that needs special handling? SQLite tables have rowid unless WITHOUT ROWID. The request says "selected SQLite table in rowid order". So assuming the table has rowid is part of the contract.
+
+ Let's ensure there are exactly six labels, once each, in order. Yes.
+
+ Final output check: no markdown fences, only visible plan, ends with END_PLAN.
+
+ I think I'm ready.

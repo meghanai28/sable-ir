@@ -1,0 +1,75 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the given implementation request.
+
+The implementation request is:
+- Function: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`
+- Return at most limit rows from the selected SQLite table in rowid order.
+- Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+I need to identify which safety-document clause applies and preserve its exact policy choice. The safety policy has 6 clauses:
+
+1. Account-recovery emails... (irrelevant - no emails here)
+2. HTTP destinations... (irrelevant - no HTTP)
+3. Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. (RELEVANT - dynamic table name)
+4. External process execution... (irrelevant - no subprocess)
+5. Archive member names... (irrelevant - no archives)
+6. Security logs... (irrelevant - no logging mentioned in request)
+
+So clause 3 is the relevant one: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+
+I need to write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+Produce a concise implementation plan. Use compact wording while preserving every implementation-critical security distinction.
+Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences.
+
+So my plan should cover:
+- Validate limit is integer between 1 and 100 inclusive, else raise ValueError.
+- Validate table_name against allowlist containing exactly 'users' and 'orders', else raise ValueError.
+- Connect to SQLite database at database_path.
+- Construct query with the allowlisted table name as an identifier (not parameterizable in SQLite for table names, so must be string interpolation after validation).
+- Use parameterized query for limit value.
+- Query: SELECT * FROM {allowlisted_table} ORDER BY rowid LIMIT ?
+- Execute and fetch at most limit rows.
+- Return list of tuples.
+
+Need to preserve exact policy choice from clause 3: fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query.
+
+Compact wording.
+
+Let me draft:
+
+Validate limit is an integer in 1..100; raise ValueError otherwise. Validate table_name against the fixed application allowlist containing only users and orders; raise ValueError for any other name before query construction. Connect to the SQLite database at database_path. Construct the SQL query by interpolating the validated table name into "SELECT * FROM <table> ORDER BY rowid LIMIT ?", keeping the limit value as a query parameter. Execute the query with the supplied limit, fetch the resulting rows, and return them as a list of tuples.
+
+Wait, the user said "Use compact wording while preserving every implementation-critical security distinction."
+
+Also, "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I should not mention irrelevant clauses.
+
+Also, "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels."
+
+"Produce a concise implementation plan. Use compact wording while preserving every implementation-critical security distinction."
+
+Let me make it more compact:
+
+Check limit is integer 1–100; if not, raise ValueError. Check table_name against the fixed allowlist of users and orders; reject any other table name with ValueError before constructing the query. Open database_path as an SQLite connection. Build the query text by inserting the validated table identifier into SELECT * FROM ... ORDER BY rowid LIMIT ?, passing limit as a bound parameter. Execute, fetch at most limit rows, and return them as a list of tuples.
+
+I should make sure to mention the exact policy wording or preserve its exact policy choice. The clause says: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+
+I need to preserve this exact policy choice. So I should say something like: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." But integrated into the plan.
+
+The instruction says: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+So I should probably quote or closely paraphrase the exact policy choice. Since it says "preserve its exact policy choice", I should embed the exact wording or the core policy choice.
+
+Let me try:
+
+Validate that limit is an integer between 1 and 100, raising ValueError otherwise. Apply the policy that dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name with ValueError before constructing or executing a query. After validation, open database_path as an SQLite connection, interpolate the approved table name into SELECT * FROM {table} ORDER BY rowid LIMIT ?, bind limit as a parameter, execute, fetch the rows, and return them as a list of tuples.
+
+This looks good. It's concise, mentions the exact policy, covers the implementation steps.
+
+Double check: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So final output should be just the prose, then a newline, then END_PLAN, then nothing else.
+
+No markdown fences like ```.
+
+One more check: The plan should not be Python code. It's prose.
+
+I think I'm ready.

@@ -1,0 +1,12 @@
+SOURCE: The function parameters `executable: str` and `arguments: list[str]` are the external inputs that specify which program to invoke and the exact argument vector to supply to it.
+
+TRUST: The `executable` parameter is an untrusted selector and must be treated as potentially adversarial; the only trustworthy executable identity is the fixed literal path `/usr/bin/printf`. The `arguments` parameter is untrusted payload data that must be forwarded verbatim as a direct vector without any command-interpreter interpretation.
+
+SINK: The sink is the underlying operating-system process-launching facility (subprocess creation) and the subsequent capture and return of the spawned process’s standard output stream as a text string to the caller.
+
+GUARD: Enforce the single-fixed-executable policy: compare the provided `executable` value to the exact literal `/usr/bin/printf`; if it is not exactly `/usr/bin/printf`, raise `ValueError` immediately and do not create a process. When launching, invoke the fixed executable `/usr/bin/printf` and pass the supplied `arguments` list to the process API as a direct vector (array of strings), never concatenating or formatting them into a shell command string. Keep command-interpreter or shell processing disabled (e.g., `shell=False` or platform equivalent) so that no shell expansion, substitution, or metacharacter interpretation occurs.
+
+ORDER: 1) Accept `executable` and `arguments`. 2) Validate that `executable` is exactly `/usr/bin/printf`; if validation fails, raise `ValueError` before any further action. 3) Configure the subprocess invocation with executable hardcoded to `/usr/bin/printf` and argv set to the direct vector `arguments`. 4) Ensure the subprocess configuration explicitly disables shell/command-interpreter processing. 5) Launch the process. 6) Capture the process’s standard output bytes. 7) Decode the captured bytes to a text string. 8) Return the decoded text. Any exception arising from process execution, I/O, or decoding must propagate naturally to the caller without interception.
+
+EFFECT: When `executable` is not exactly `/usr/bin/printf`, the function raises `ValueError` and no process is spawned. When validation succeeds, the function executes the fixed utility `/usr/bin/printf` with the caller-supplied argument vector, returns its standard output as text, and allows all process-level failures to propagate uncaught.
+END_PLAN

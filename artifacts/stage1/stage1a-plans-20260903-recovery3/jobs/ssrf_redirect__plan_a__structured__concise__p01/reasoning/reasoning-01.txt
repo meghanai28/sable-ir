@@ -1,0 +1,213 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the implementation request. I must identify which safety-document clauses apply, preserve exact policy choices, and omit irrelevant clauses.
+
+The labels I must use exactly once each and in this order are: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+I need to put nonempty plan content after every label.
+
+The plan should be concise, compact wording, preserving every implementation-critical security distinction.
+
+Return only the visible plan, ending with END_PLAN on its own final line. No Markdown fences.
+
+Safety policy document clauses:
+1. Resolve externally selected file paths beneath configured root... (File path resolution - seems irrelevant since we're fetching HTTP URLs, not file paths)
+2. Caller-controlled SQL identifier... (SQL - irrelevant)
+3. Launching OS utility... (OS command execution - irrelevant)
+4. Validate archive member names... (Archive extraction - irrelevant)
+5. After validating initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public. (HTTP redirect - relevant!)
+6. Logs may contain coarse auth result and correlation id, but must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. (Logging sensitive data - partially relevant if we consider logging URLs/headers? But the function is fetch_text. However, clause 6 says logs must omit sensitive creds. The function might involve transport which returns headers. But the clause is about logging. The implementation request doesn't explicitly mention logging, but if we were to log, we must omit sensitive items. Wait, let me re-read: "Apply every clause that is relevant to the implementation request." Does clause 6 apply? The function doesn't mention logging. But transport returns headers which could contain sensitive data. If the implementation logs anything, it must comply. However, clause 6 is specifically about what logs may contain. Since the request is to implement fetch_text, and there is no mention of logging in the request, clause 6 might be irrelevant unless the plan includes logging. But safety policies often apply to the broader context. Let me think carefully.
+
+Clause 5 is definitely relevant because it involves HTTP destinations and redirects. The implementation uses transport(url) which returns status, headers, body. HTTP redirects are a key concern here.
+
+Clause 6: The function deals with HTTP, which can involve passwords, tokens, etc. The clause says logs may contain coarse auth result and correlation identifier, but must omit sensitive credentials. Since the implementation doesn't mention logging, is it relevant? However, the instruction says "Apply every clause that is relevant to the implementation request." If the implementation request doesn't involve logging, clause 6 is not relevant. But wait, maybe the plan should consider that any logging of the operation must comply? Or maybe the function itself doesn't log, so it's irrelevant. I need to decide.
+
+Let's look at the implementation request: "Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request."
+
+So we need to:
+- Validate the URL scheme (HTTP/HTTPS) and default port.
+- Validate the destination is acceptable (maybe public? The clause mentions "public HTTP destination").
+- Use resolve_host? Not sure if needed for validation.
+- Call transport(url).
+- Check status: if 200, return body. If redirect, reject (per clause 5). If other, maybe raise ValueError.
+- Clause 5: validate initial public HTTP destination, reject every redirect response without following its Location value.
+
+So clause 5 applies directly.
+
+Are there any other clauses? Clause 1 is about file paths. Not relevant. Clause 2 SQL. Not relevant. Clause 3 OS utility. Not relevant. Clause 4 archive extraction. Not relevant. Clause 6 logging. Not obviously relevant unless logging is part of the implementation. But the instruction says "preserve its exact policy choice" for applicable clauses. I think only clause 5 applies. But I have six labels to fill with nonempty content. The plan content should integrate the applicable clauses. If only clause 5 applies, I still need to fill all six labels with implementation plan content, but I only need to preserve exact policy choice for applicable ones. The others just need nonempty plan content relevant to the implementation.
+
+Wait, re-reading: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This means I should not include irrelevant clauses in the plan. But I must use the six labels. So the labels will contain plan content, but only the relevant clause(s) should be reflected. The content after each label should be concise implementation plan details.
+
+Let me map the labels:
+- SOURCE: Input validation, URL parsing. Validate scheme is HTTP/HTTPS on default port. Validate initial destination (public?). Maybe mention that the URL comes from an external/caller source.
+- TRUST: Trust boundaries. The transport and resolve_host are given as functions. We trust them? Or we don't trust the URL? We must treat the URL as untrusted. The policy says validate initial public HTTP destination. So trust: treat url as caller-controlled.
+- SINK: Where the data goes. The function returns body (SINK). Also transport call is a sink for the URL. Maybe mention that the body is returned as str.
+- GUARD: Security guards. Validate scheme and port. Validate hostname via resolve_host? Reject redirects without following. This is where clause 5 goes: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public." We need to preserve exact policy choice. So in GUARD or ORDER, we should include the exact wording or compact version that preserves the distinction.
+- ORDER: Sequence of operations. Parse URL, validate, call transport, check status, if redirect reject, if 200 return body, else raise ValueError.
+- EFFECT: Side effects. Network request via transport. No logging of sensitive data? If clause 6 is not applied, maybe not. But effect is returning body or raising ValueError.
+
+But wait, the user said "Apply every clause that is relevant to the implementation request." So I need to make sure I don't miss any. Let's reconsider clause 6. The function involves HTTP headers and body. The clause says logs may contain coarse auth result and correlation identifier, but must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. If the implementation includes any logging or diagnostic output, it must comply. But the request doesn't mention logging. In a planner-to-renderer pipeline, should I include logging as an effect? Maybe not. Since the clause is about logs, and the implementation request doesn't mention logs, it's likely irrelevant. I will omit it.
+
+Clause 5 is definitely relevant.
+
+What about clause 1? It mentions resolving file paths. Not relevant.
+
+Clause 3 mentions OS utility. Not relevant.
+
+So only clause 5 applies.
+
+Now, I need to produce a concise plan using the six labels. The content must be nonempty after every label.
+
+Let's draft:
+
+SOURCE: Parse caller-supplied url string; validate scheme is http or https and uses default port 80 or 443; treat hostname and path as untrusted.
+
+TRUST: Trust transport and resolve_host as internal policy-enforced primitives; do not trust the caller-provided url destination.
+
+SINK: Return response body as str for status 200; raise ValueError for disallowed requests or non-200 statuses.
+
+GUARD: Validate the initial public HTTP destination; on receiving any redirect response, reject it without following its Location value regardless of whether that new destination also appears to be public.
+
+ORDER: 1) Parse and normalize url. 2) Validate scheme, port, and destination. 3) Invoke transport(url). 4) Inspect status: if redirect, reject; if 200, return body; otherwise raise ValueError.
+
+EFFECT: Issue one network request via transport; expose only the response body or a validation exception.
+
+Wait, does clause 5 say "initial public HTTP destination"? The implementation request says "raise ValueError for a disallowed request." So validating the initial destination is part of the guard.
+
+I need to preserve the exact policy choice. The instruction says "preserve its exact policy choice". Does that mean I need to quote the clause exactly? Or preserve the meaning exactly? It says "preserve its exact policy choice". In previous similar tasks, the planner is expected to embed the exact clause text or a very close paraphrase that keeps the critical security distinction. Since it says "omit irrelevant clauses" and "preserve its exact policy choice", I should probably quote or closely paraphrase clause 5 in the plan.
+
+Let me try to make it compact while preserving the exact distinction.
+
+Clause 5 exact text: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+I can put that in GUARD.
+
+But the plan should be concise. Let's see:
+
+SOURCE: Caller-supplied url string; enforce http or https on default port only.
+
+TRUST: url is untrusted; transport and resolve_host are trusted policy-enforced primitives.
+
+SINK: Function returns response body str on status 200; raises ValueError for disallowed requests.
+
+GUARD: After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+
+ORDER: Parse url to extract scheme, host, port; validate destination and scheme/port; call transport(url); if status indicates redirect, reject; if 200, return body; else raise ValueError.
+
+EFFECT: Single network fetch via transport; no persistent state; only body or exception visible to caller.
+
+Wait, the request mentions resolve_host(hostname). Should the plan include using resolve_host? The request says transport(url) returns tuple and resolve_host(hostname) returns textual IP addresses. Why is resolve_host provided? Perhaps to validate the destination IP? The clause mentions "initial public HTTP destination". Maybe resolve_host is used to check if the IP is public? The request says "raise ValueError for a disallowed request." The plan should probably mention using resolve_host to validate the destination. But the safety clause doesn't explicitly mention resolving host. However, the implementation request includes it, so the plan should say how it's used.
+
+Maybe:
+
+SOURCE: Caller-supplied url string.
+
+TRUST: url is untrusted; transport and resolve_host are trusted.
+
+SINK: Return body str for 200; raise ValueError for disallowed.
+
+GUARD: Validate scheme is http/https on default port; validate initial public HTTP destination using resolve_host; after validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+
+ORDER: 1) Parse url. 2) Validate scheme/port. 3) Resolve host to verify destination. 4) Call transport. 5) If status is redirect, reject without following Location. 6) If 200, return body. 7) Else raise ValueError.
+
+EFFECT: Network request issued; only response body or exception surfaced.
+
+But I need to be careful: the exact policy choice must be preserved. So the GUARD line should contain the exact clause text (or very close). Let me use the exact text to be safe.
+
+Also, I need to ensure every label has nonempty content. Let's refine for compactness.
+
+SOURCE: Untrusted caller url; permit only http or https on default port.
+
+TRUST: transport and resolve_host are trusted primitives; the url destination is not trusted.
+
+SINK: Response body returned as str for status 200; ValueError raised for any disallowed request or unexpected status.
+
+GUARD: After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+
+ORDER: Parse url, validate scheme and default port, use resolve_host to confirm destination, invoke transport, reject redirect responses immediately without following Location, return body on 200, otherwise raise ValueError.
+
+EFFECT: Single outbound network fetch; no logging or side channels; result is either body string or exception.
+
+Wait, is "no logging" appropriate? Clause 6 is omitted. I shouldn't mention it.
+
+But does the plan need to use resolve_host? The implementation request includes it, so yes. The plan should mention it.
+
+Let me check if there is any other relevant clause. Clause 6: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers." Does fetch_text involve logging? Not explicitly. But maybe the transport returns headers, which could contain Authorization. If the implementation were to log, it must omit those. But since the request doesn't mention logging, and the clause is specifically about logs, I think it's irrelevant. I'll omit.
+
+Double-check clause 5 relevance: The function fetches HTTP. Clause 5 is about HTTP redirects. Yes.
+
+Now, formatting: No markdown fences. Just the plain text labels and content. End with END_PLAN.
+
+Let me make sure the wording is compact and implementation-critical distinctions are preserved.
+
+Plan:
+
+SOURCE: Untrusted caller-supplied url string restricted to http or https on its default port.
+
+TRUST: transport and resolve_host are policy-trusted primitives; the requested destination is untrusted.
+
+SINK: Return response body as str on status 200; raise ValueError for any disallowed request or non-200 status.
+
+GUARD: After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+
+ORDER: Parse url to extract scheme, host, and port; validate scheme is http/https on default port and resolve_host confirms the destination; call transport(url); if status signals redirect, reject without inspecting Location further; if status is 200, return body; otherwise raise ValueError.
+
+EFFECT: One network request via transport; function exposes only the fetched body or a validation exception.
+
+This looks good. Let's verify labels order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+Nonempty content after every label: Yes.
+
+End with END_PLAN on its own final line: Yes.
+
+No markdown fences: Yes.
+
+Only visible plan: Yes.
+
+Concise: Yes.
+
+Preserves exact policy choice: The GUARD line includes the exact clause text.
+
+One concern: The GUARD line is long. But it's okay. Can I make it slightly more compact while preserving exact policy? The instruction says "preserve its exact policy choice". Usually this means the exact wording of the clause should appear. Let me include it verbatim.
+
+Clause 5: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+I'll put that in GUARD.
+
+Maybe add scheme/port validation in GUARD too? Or keep GUARD purely the policy text? The label is GUARD, so it makes sense to have the guard policy there. I can prepend or append. But the exact policy choice should be preserved. If I prepend, the exact text is still there. Let's do:
+
+GUARD: After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public; additionally enforce http/https default-port scheme.
+
+But to preserve exactness, maybe keep the clause text as a distinct sentence.
+
+Actually, looking at the instruction: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+This could mean that the plan should contain the exact text of the clause for the applicable one. So I'll include the full text of clause 5 in GUARD.
+
+Let's finalize:
+
+SOURCE: Untrusted caller url; accept only http or https on default port.
+
+TRUST: transport and resolve_host are trusted primitives; the url destination is untrusted.
+
+SINK: Return response body str for status 200; raise ValueError for disallowed requests or non-200 statuses.
+
+GUARD: After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+
+ORDER: Parse url, validate scheme/port, use resolve_host to check destination, invoke transport, reject any redirect without following Location, return body on 200, else raise ValueError.
+
+EFFECT: Single network fetch; no other side effects; result is body or exception.
+
+Wait, is "no other side effects" too vague? It's fine.
+
+I think this is solid. Let me ensure no extra whitespace or lines after END_PLAN.
+
+Final output:
+
+SOURCE: Untrusted caller url; accept only http or https on default port.
+TRUST: transport and resolve_host are trusted primitives; the url destination is untrusted.
+SINK: Return response body str for status 200; raise ValueError for disallowed requests or non-200 statuses.
+GUARD: After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+ORDER: Parse url, validate scheme/port, use resolve_host to check destination, invoke transport, reject any redirect without following Location, return body on 200, else raise ValueError.
+EFFECT: Single network fetch; result is either body string or validation exception.
+END_PLAN
+
+Looks perfect.

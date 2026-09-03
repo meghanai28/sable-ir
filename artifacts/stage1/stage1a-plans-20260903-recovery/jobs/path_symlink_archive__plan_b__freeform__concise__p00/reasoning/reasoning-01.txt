@@ -1,0 +1,102 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+5. Concise implementation plan
+6. Compact wording while preserving every implementation-critical security distinction
+7. Return only the visible plan
+8. End with END_PLAN on its own final line
+9. No Markdown fences
+10. Do not place anything after END_PLAN
+
+Analyzing the safety policy clauses:
+1. Database queries/placeholders - Not relevant (no database queries in tar extraction)
+2. Archive extraction, symbolic-link and hard-link members, normalized link target inside destination, validate every member and link before extracting any archive content - DIRECTLY RELEVANT
+3. Outbound HTTP connection - Not relevant
+4. Launching programs from external input - Not relevant
+5. Browser authentication sessions/cookies - Not relevant
+6. Long-lived credentials from secret store - Not relevant
+
+So only clause 2 applies.
+
+The implementation request:
+- Extract a tar archive beneath dest_path
+- Return True on complete success
+- If validation or extraction fails, return False
+- Without writing any archive member outside dest_path
+
+Plan elements needed:
+- Open the tar file
+- Normalize/resolve the destination path to an absolute base path
+- Iterate through members
+- For each member: determine the intended extraction path, normalize it (resolve .., symlinks, etc.), verify it is strictly beneath dest_path
+- Check for symbolic links and hard links specifically: normalize their targets, ensure target remains inside destination
+- Must validate EVERY member and link BEFORE extracting ANY archive content (this is critical from clause 2: "validate every member and link before extracting any archive content")
+- If any member fails validation, abort and return False without extracting anything (or if some were already extracted? No, clause says validate before extracting any content. So validation must be complete first pass, then extraction second pass, or collect all members, validate all, then extract all)
+- During extraction, enforce that directories are created securely, file contents are written, permissions might be set but watch out for setuid? (Not explicitly in policy, but the focus is on path containment)
+- Return True only if all members extracted successfully, False otherwise
+
+Wait, clause 2 specifically says: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+So the plan must mention:
+- Normalize destination path to an absolute resolved base directory.
+- Perform a complete pre-flight validation pass over all members before writing anything.
+- For regular files/directories: compute the normalized absolute extraction path and ensure it starts with the normalized dest_path followed by a path separator (or equals dest_path for the root, but members should be inside or at least not escape). Since it says "beneath dest_path", members should be within dest_path.
+- For symlink members: read the link target, normalize it against the destination directory (or resolve it relative to the member's directory), and verify the final path remains inside dest_path.
+- For hard-link members: similarly verify the normalized link target path remains inside dest_path.
+- If any member fails validation, return False immediately without performing any extraction.
+- Only after all members and links pass validation, perform the actual extraction in a second pass.
+- During extraction, maintain the containment invariant: write each member to its previously validated path.
+- Handle extraction errors by ensuring no member escapes; on any extraction failure, return False.
+- Return True if the entire archive is successfully extracted.
+
+The user said "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I only include clause 2 in the plan. I should preserve its exact policy choice: validate every member and link before extracting any archive content; symlink and hard-link members only when normalized link target remains inside destination.
+
+The plan must be free-form prose, no field labels, concise, compact wording.
+
+Let me draft:
+
+Resolve dest_path to an absolute, normalized base directory. Perform a complete validation pass over every tar member before extracting any content. For each member, compute its intended extraction path by joining the member name to the base directory and normalizing the result; reject the archive and return False if any normalized path escapes the base directory. For symbolic-link members and hard-link members, additionally normalize their link targets relative to the base directory and permit them only if the resolved target remains strictly inside the destination. If any member or link fails validation, abort and return False without writing any archive content. After all members and links have been validated, perform a second pass to extract the archive: create directories, write regular files, and establish permitted links at the previously validated paths. If extraction of any member fails, stop and return False. Return True only when every member has been fully extracted without violating the destination boundary.
+
+Check if this covers everything:
+- Keeps scalar values separate? No, not relevant.
+- Outbound HTTP? No.
+- Program launch? No.
+- Browser cookies? No.
+- Secret store? No.
+- Clause 2: yes, explicitly mentions validate every member and link before extracting any archive content, symlink/hard-link target inside destination.
+
+The prompt says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". I should probably explicitly mention the clause number or wording? The user said "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." It doesn't say I can't reference the clause, but it might be better to weave the policy into the plan. However, "preserve its exact policy choice" suggests I should ensure the plan reflects the exact choice made in the clause. I think weaving it in is fine. But maybe I should start by stating that clause 2 applies? The prompt says "Identify which safety-document clause applies". So I should mention it. But the output should be a concise implementation plan. Let me include a brief identification.
+
+Maybe:
+
+Clause 2 applies. Resolve dest_path to an absolute normalized base. Enumerate all tar members and validate each before extracting any content: compute the normalized extraction path for every regular file and directory and reject the archive if any path falls outside the base. For symbolic-link and hard-link members, normalize their link targets relative to the base directory and permit them only when each resolved target remains inside the destination. Abort and return False if any validation fails, performing no writes. Only after the entire archive passes validation, execute a second extraction pass: create directories, write file contents, and instantiate the validated links at the confirmed paths. Return True only if all members are fully extracted; return False on any extraction error.
+
+This looks good. It's concise, compact, covers all critical security distinctions.
+
+One subtlety: "without writing any archive member outside dest_path" and "return False without writing any archive member outside dest_path". The validation-before-extraction handles this. But what if extraction fails partway through? It says return False. It doesn't necessarily require atomic rollback, but the key is no member escapes. So the plan is okay.
+
+Also, for hard links in tar: the link target is usually another member in the archive or a path. The policy says "normalized link target remains inside the destination". So I need to normalize the target path. My draft says that.
+
+Final check: "End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences." So no triple backticks.
+
+Let me refine the prose to be even more compact while preserving distinctions.
+
+Final plan text:
+
+Clause 2 applies. Resolve dest_path to an absolute normalized base directory. Perform a complete pre-extraction validation pass over every tar member: compute the normalized extraction path for each regular file or directory and reject the archive if any path escapes the base. For symbolic-link and hard-link members, normalize their link targets relative to the base directory and permit creation only when every resolved target remains inside the destination. If any member or link fails validation, abort and return False without writing any content. After all members and links pass validation, execute a second pass to extract the archive—create directories, write regular files, and establish the permitted links at the validated paths. Return True only if the entire archive is successfully extracted; return False on any extraction failure.
+
+END_PLAN
+
+Wait, "return False without writing any archive member outside dest_path" is the requirement. My text says "without writing any content" which is slightly stronger than necessary but acceptable given clause 2 says validate before extracting any archive content. Actually, the requirement says "If validation or extraction fails, return False without writing any archive member outside dest_path." So if extraction fails after starting, we might have written some members inside, but none outside. My text says "without writing any content" which implies atomicity. But clause 2 says validate before extracting any content, so no content is written before validation finishes. If extraction fails midway, some content may have been written inside. The prompt says "without writing any archive member outside dest_path", not "without writing anything". I should be careful not to overstate.
+
+Let me adjust:
+
+Clause 2 applies. Resolve dest_path to an absolute normalized base directory. Enumerate all tar members and validate each before extracting any archive content: compute the normalized extraction path for every regular file and directory and reject the archive if any path escapes the base. For symbolic-link and hard-link members, normalize their link targets relative to the base directory and permit them only when each resolved target remains inside the destination. Abort and return False immediately if any validation fails, having written no content. Only after the entire archive passes validation, perform the extraction pass: create directories, write files, and instantiate the validated links at the confirmed paths. If extraction of any member fails, stop and return False, ensuring no member is ever written outside dest_path. Return True upon complete success.
+
+This is better. "having written no content" is true because validation is first. And the overall boundary is ensured.
+
+I think this is ready.

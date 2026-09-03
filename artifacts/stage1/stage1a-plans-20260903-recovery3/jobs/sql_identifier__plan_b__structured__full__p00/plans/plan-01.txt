@@ -1,0 +1,18 @@
+SOURCE
+The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return.
+
+TRUST
+Establish trust in `table_name` by performing a parameterized schema lookup, e.g., `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, binding the raw `table_name` as the sole parameter. The table is trusted only if the lookup returns a row and the name represents an existing non-system table; any system table (such as `sqlite_master`, `sqlite_sequence`, or any name prefixed with `sqlite_`) or a missing table must be rejected. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+SINK
+The sink is the final SQL SELECT statement that incorporates the validated and quoted table identifier into its text and executes against the database connection, specifically the query form `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+GUARD
+Reject with ValueError if `limit` is outside 1–100 or if the parameterized schema lookup fails to return an existing, non-system table. After successful lookup, quote the identifier correctly for SQLite by enclosing it in double quotes and escaping any internal double quotes by doubling them. Never place the raw `table_name` into query text. Use a bound parameter only for the `limit` value, never for the table identifier.
+
+ORDER
+1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise. 2) Connect to the SQLite database at `database_path`. 3) Execute the parameterized schema lookup query binding `table_name` to confirm an existing non-system table. 4) If no row is returned or the table is a system table, raise ValueError for a disallowed table. 5) Correctly quote the validated `table_name` as an SQL identifier. 6) Construct the query string `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?`. 7) Execute the query with `limit` bound as the only parameter. 8) Fetch all resulting row tuples. 9) Return the list of tuples.
+
+EFFECT
+The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. The implementation satisfies the safety rule because the dynamic identifier was restricted to an existing non-system table discovered through a parameterized schema lookup and was correctly quoted before the SELECT statement was constructed.
+END_PLAN

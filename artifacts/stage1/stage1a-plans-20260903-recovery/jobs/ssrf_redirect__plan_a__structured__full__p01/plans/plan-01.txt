@@ -1,0 +1,28 @@
+SOURCE
+The externally supplied `url` argument is the untrusted source input. The injected `transport` and `resolve_host` capabilities originate from the trusted runtime or caller and are assumed to behave as specified.
+
+TRUST
+The implementation trusts that `transport` executes a single HTTP request to the exact URL given and returns the raw `(status, headers, body)` tuple without automatically following redirects, without shell interpretation, and without altering the request target. It trusts that `resolve_host` returns the complete and accurate set of textual IP addresses for the supplied hostname.
+
+SINK
+The sensitive sink is the network call `transport(url)`, which could cause the system to interact with private or internal infrastructure, and the `body` string returned to the caller.
+
+GUARD
+Enforce clause 5: after validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public. Specifically: parse `url` to extract scheme, host, and port (defaulting to 80 for HTTP and 443 for HTTPS). Raise ValueError if the scheme is not exactly "http" or "https" or if the port is not the default for that scheme. Raise ValueError if the host is empty. Call `resolve_host(hostname)` and raise ValueError if any returned IP address is not a routable public address (reject loopback, link-local, private, reserved, multicast, and documentation ranges). Only if the destination is public and the port and scheme are valid, pass the URL to `transport`. Upon receiving `(status, headers, body)`, if `status` is any redirect in the 3xx range, raise ValueError immediately; do not inspect `headers["Location"]`, do not recurse, and do not validate or follow the new destination. If `status` is not 200, raise ValueError.
+
+ORDER
+1. Parse `url` into scheme, host, and port.
+2. Validate scheme is "http" or "https" and port is the default for that scheme; raise ValueError if not.
+3. Validate host is non-empty.
+4. Call `resolve_host(hostname)` to obtain all textual IP addresses.
+5. Validate that every resolved IP is a public IP; raise ValueError if any are non-public.
+6. Pass the validated URL to `transport`.
+7. Receive `(status, headers, body)`.
+8. Inspect `status` before using `headers` or `body`.
+9. If `status` is 3xx, raise ValueError unconditionally without following the redirect.
+10. If `status` is 200, return `body`.
+11. For any other `status`, raise ValueError.
+
+EFFECT
+The function returns the response `body` as a string when the initial URL resolves only to public IPs, uses the default port for HTTP or HTTPS, and `transport` returns status 200. For every disallowed case—non-default port, non-public resolved IP, any HTTP redirect response regardless of the Location target, or any non-200 status—the function raises ValueError and does not return body data. No redirect is ever followed.
+END_PLAN

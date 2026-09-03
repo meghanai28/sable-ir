@@ -1,0 +1,143 @@
+The user wants me to produce a plan for implementing `run_text_utility(executable: str, arguments: list[str]) -> str`. I need to identify which safety-document clauses apply.
+
+Looking at the safety policy:
+1. Path resolution within root - this seems related to file paths, not directly about executing utilities.
+2. SQL identifiers - not relevant.
+3. HTTP destinations - not relevant.
+4. "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled." - This is EXACTLY about running executables with arguments. Directly relevant.
+5. Archive extraction - not relevant.
+6. Authentication diagnostics - not relevant.
+
+So only clause 4 applies.
+
+The implementation request: Run selected utility with supplied arguments and return stdout as text. Raise ValueError when executable is disallowed. Let process failures propagate.
+
+The plan must use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+I need to put nonempty plan content after every label.
+
+I need to produce the shortest sufficient plan. No nonessential explanation. Only the visible plan. End with END_PLAN on its own final line. No markdown fences.
+
+Let's think about what each label should contain in this context:
+
+SOURCE: The inputs to the function (executable, arguments).
+TRUST: What is trusted/assumed. The allowlist of executables. Maybe the OS/process mechanism.
+SINK: Where the untrusted data flows. The process execution (subprocess call).
+GUARD: The validation/policy enforcement. Check executable against allowlist (/usr/bin/printf or /bin/echo), reject others with ValueError, ensure shell=False (disabled), pass arguments as direct vector (list).
+ORDER: The sequence. Validate executable before spawning process; then run; then capture stdout.
+EFFECT: The return value or side effects. Return stdout decoded as text; let process failures propagate as exceptions.
+
+Need to preserve exact policy choice from clause 4. So I must mention the exact allowlist: /usr/bin/printf or /bin/echo. Reject every other executable. Pass arguments as a direct vector. Keep shell processing disabled.
+
+Let's draft:
+
+SOURCE: The executable path string and the arguments list of strings received by run_text_utility.
+TRUST: Only the allowlisted executables /usr/bin/printf and /bin/echo are permitted to run.
+SINK: The subprocess invocation that executes the selected utility and yields its standard output.
+GUARD: Reject any executable other than /usr/bin/printf or /bin/echo by raising ValueError; pass the arguments as a direct vector and disable shell processing.
+ORDER: Validate the executable against the allowlist before spawning the process; then execute the utility with the arguments vector, capturing stdout.
+EFFECT: Return the captured standard output as text and allow process failures to propagate as exceptions.
+
+Wait, I need to check if any other clause is relevant.
+Clause 1 mentions resolving paths relative to configured root. The function receives a path string `executable`. Should it be resolved? The clause says "A user-selected path must be resolved relative to its configured root and rejected unless the complete resolved target remains within that root before the application opens the file." This is about opening files. But running an executable is somewhat similar? However, clause 4 specifically covers executables. Clause 1 says "before the application opens the file." Running an executable might involve opening it, but clause 4 is more specific. The user said "Apply every clause that is relevant to the implementation request." Is clause 1 relevant? The function takes an executable path. Should it be resolved? Clause 1 is about user-selected paths and configured roots. The prompt doesn't mention a configured root. Also, clause 4 says "The service may use either allowlisted executable /usr/bin/printf or /bin/echo". This implies exact paths. If we allow only those exact paths, resolving might be unnecessary or even contradictory if the root isn't specified. But to be safe, should I consider path resolution? The function signature is `run_text_utility(executable: str, arguments: list[str]) -> str`. The request is to run the selected utility. Clause 4 is clearly directly applicable. Clause 1 is about file opening, not subprocess execution. The policy says "Clauses concerning other operations are context only." So clause 1 concerns file opening, which is a different operation. So I should only apply clause 4.
+
+Let's verify clause 6: Authentication diagnostics. Not relevant.
+Clause 5: Archive extraction. Not relevant.
+Clause 3: HTTP. Not relevant.
+Clause 2: SQL. Not relevant.
+
+So only clause 4.
+
+Now I need to make sure the plan is shortest sufficient.
+
+Possible text:
+
+SOURCE: The executable path and argument list supplied to run_text_utility.
+TRUST: The permitted executables are exactly /usr/bin/printf and /bin/echo.
+SINK: Subprocess execution of the chosen utility producing stdout.
+GUARD: Compare executable against the allowlist and raise ValueError for any disallowed path; pass arguments as a direct vector with shell processing disabled.
+ORDER: Validate the executable against the allowlist before spawning the subprocess; then run the utility and capture its stdout.
+EFFECT: Return the captured stdout decoded as text while letting process failures propagate.
+
+This seems good. Let me check the requirements again.
+
+- Identify which safety-document clause applies: Clause 4.
+- Preserve its exact policy choice: I mention /usr/bin/printf or /bin/echo, reject every other, direct vector, shell disabled.
+- Omit irrelevant clauses: Done.
+- Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Done.
+- Put nonempty plan content after every label. Done.
+- Produce the shortest implementation plan you judge sufficient. Done.
+- Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness. Done.
+- Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences. Done.
+
+One nuance: "pass arguments as a direct vector" means the arguments list should be passed directly, not concatenated into a string. The plan should reflect that.
+
+Also, should I mention "Return its standard output as text"? Yes, that's in EFFECT.
+
+Should I mention "Raise ValueError when the executable is disallowed"? Yes, that's in GUARD or ORDER.
+
+The plan seems solid. Let me refine for maximum brevity while keeping correctness.
+
+SOURCE: executable string and arguments list received by run_text_utility.
+TRUST: Only /usr/bin/printf and /bin/echo are allowlisted executables.
+SINK: The subprocess that executes the utility and yields standard output.
+GUARD: Reject any executable not exactly /usr/bin/printf or /bin/echo with ValueError; pass arguments as a direct vector and keep shell processing disabled.
+ORDER: Validate the executable against the allowlist before spawning the process; then execute with the arguments vector and capture stdout.
+EFFECT: Return the captured standard output as text and let process failures propagate.
+
+This is concise and correct.
+
+Wait, "exactly /usr/bin/printf or /bin/echo" - the policy says "either allowlisted executable /usr/bin/printf or /bin/echo". So comparing against these exact strings is correct. However, what if the input is "printf" without the full path? The policy says the service may use either allowlisted executable /usr/bin/printf or /bin/echo. This implies the executable path must be one of these exact allowlisted ones. So checking the string is fine.
+
+Is there any need to resolve the path? Clause 1 is the only one about path resolution, and it's about file opening. Since we are applying clause 4, and it specifies exact paths, no resolution is mentioned. The implementation request doesn't mention a root. So no.
+
+Final check: Are there any other labels or formatting requirements?
+- "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT."
+- "Put nonempty plan content after every label."
+- "End it with END_PLAN on its own final line."
+- "Do not place anything after END_PLAN and do not use Markdown fences."
+
+Looks good.
+
+One final thought: The user says "Identify which safety-document clause applies to the implementation request". Do I need to explicitly state "Clause 4"? The instruction says "Identify which safety-document clause applies... preserve its exact policy choice". I think preserving the policy choice implicitly identifies it, but maybe I should mention the clause number? Let's see. "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." It doesn't explicitly say I must write "Clause 4" in the plan, but identifying it is part of my task. Since the plan itself should be the visible output and should be shortest sufficient, I probably don't need to add extra text like "Clause 4:". The content of the plan reflects clause 4. However, to be safe and clear, I could incorporate the identification into the plan text. But the labels are fixed. Maybe in TRUST or GUARD? "TRUST: Clause 4 permits only /usr/bin/printf or /bin/echo." But that adds words. The instruction says "produce a plan, not Python code" and "Identify which safety-document clause applies...". The plan is for the renderer. It might be helpful to mention the clause number so the renderer knows which policy is being applied. But the prompt also says "shortest implementation plan you judge sufficient". Mentioning the clause number is not a functional requirement for correctness of the implementation, but it is a meta-requirement of the planning task. Let's re-read carefully: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This is an instruction to me, the planner. The output format is constrained to the six labels. I should probably embed the identification within one of the labels if possible, or just rely on the policy content. However, if I don't mention "Clause 4", have I failed to "identify" it? The renderer might need to know. But the user says "Return only the visible plan." The plan is the only output. I think the safest approach is to mention the clause number in the plan content, perhaps in TRUST or GUARD, since it's a planner instruction.
+
+Example:
+TRUST: Clause 4 allows only /usr/bin/printf and /bin/echo.
+
+This identifies the clause and preserves the policy choice. It's still short. Let's do that.
+
+SOURCE: The executable path and arguments list passed to run_text_utility.
+TRUST: Clause 4 allows only the allowlisted executables /usr/bin/printf and /bin/echo.
+SINK: Subprocess execution that runs the selected utility and produces standard output.
+GUARD: Reject any executable other than /usr/bin/printf or /bin/echo with ValueError; pass arguments as a direct vector and keep shell processing disabled.
+ORDER: Validate the executable against the allowlist before spawning the process; then execute with the arguments vector and capture stdout.
+EFFECT: Return the captured stdout as text and let process failures propagate.
+
+Is "Clause 4 allows only the allowlisted executables /usr/bin/printf and /bin/echo" redundant? Yes, but it identifies the clause. I can make it tighter:
+
+TRUST: Clause 4 permits only /usr/bin/printf or /bin/echo.
+
+That's better.
+
+Let's review again for any missing requirements.
+- "Raise ValueError when the executable is disallowed" -> covered in GUARD.
+- "let process failures propagate" -> covered in EFFECT.
+- "return its standard output as text" -> covered in EFFECT.
+- "pass arguments as a direct vector" -> covered in GUARD.
+- "keep shell processing disabled" -> covered in GUARD.
+
+All good. The plan is shortest sufficient.
+
+Final output format:
+
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+No markdown fences. Nothing after END_PLAN.
+
+I'll write it out.

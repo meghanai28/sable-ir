@@ -1,0 +1,94 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to:
+
+1. Produce a plan (free-form prose) for implementing `read_report(filename: str, reports_root: str) -> str`
+2. Identify which safety-document clause applies to the implementation request
+3. Preserve its exact policy choice
+4. Omit irrelevant clauses
+5. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+6. Produce the shortest sufficient implementation plan
+7. Omit nonessential explanation but don't omit requirements needed for correctness
+8. Return only the visible plan
+9. End with END_PLAN on its own final line
+10. No markdown fences
+11. No content after END_PLAN
+
+Let's analyze the implementation request:
+- Read and return a UTF-8 report beneath `reports_root`
+- `filename` is user input (untrusted)
+- `reports_root` is presumably an approved filesystem root
+- Propagate FileNotFoundError for missing ordinary file
+- Raise ValueError when disallowed
+
+Now check which safety clauses apply:
+
+1. "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+   - This applies directly. We're reading beneath an approved filesystem root (`reports_root`), and `filename` contains user-selected path components. We must check for symlinks in the path components and reject if any are symlinks.
+
+2. Database queries... - Not relevant, no database involved.
+
+3. Outbound HTTP clients... - Not relevant, no HTTP.
+
+4. OS process launch... - Not relevant, no process launching.
+
+5. Operational logs... - Not relevant, no logging mentioned in the request.
+
+6. Archive extraction... - Not relevant, no archive extraction.
+
+So only clause 1 applies.
+
+What must the plan include?
+- Join `reports_root` and `filename` to get the target path, normalizing/resolving it
+- Verify the resolved path is within `reports_root` (directory traversal prevention)
+- Check each user-selected path component in `filename` for symbolic links (per clause 1). Actually, the clause says "any user-selected path component is a symbolic link". So during path traversal/resolution, if any component from `filename` is a symlink, reject.
+- Also, after ensuring no symlinks in user-selected components and path is within root, read the file as UTF-8.
+- Propagate FileNotFoundError if missing ordinary file.
+- Raise ValueError when disallowed (symlink detected or path traversal attempt).
+
+Important implementation details to mention:
+- Need to handle path normalization to prevent directory traversal (`..` etc.)
+- Need to check that the resolved path is under `reports_root`
+- Need to explicitly check for symlinks in the user-selected components. This could be done by checking `os.path.islink()` on each component during traversal, or by using `os.lstat()` and checking for symlinks at each step. Note that `os.path.realpath` resolves symlinks, but we need to reject them, not resolve them. So we should walk the path components manually or use a method that detects symlinks without following them.
+- The check should happen before reading.
+- Return the content decoded as UTF-8.
+- Propagate FileNotFoundError naturally from open() if file doesn't exist.
+- Raise ValueError for disallowed requests.
+
+Wait, the clause says "reject the request if any user-selected path component is a symbolic link". So even if the symlink points inside the approved root, reject it. The plan must capture this.
+
+Shortest sufficient plan:
+- Compute the normalized absolute path of reports_root.
+- Split filename into components and join incrementally, or resolve while checking for symlinks.
+- Verify the final resolved path is under reports_root.
+- During traversal of the user-provided path components, if any component is a symlink (check with lstat/islink), raise ValueError.
+- Also raise ValueError for path traversal that escapes reports_root.
+- Open the resulting path, read bytes, decode as UTF-8.
+- If the file is missing, FileNotFoundError propagates.
+
+Actually, checking "any user-selected path component is a symbolic link" - this could mean any directory or file in the path that comes from `filename`. For example, if filename is `a/b/c.txt`, then `a`, `b`, and `c.txt` are user-selected components. If `a` is a symlink, reject. If `b` is a symlink, reject. If `c.txt` is a symlink, reject.
+
+How to phrase this concisely?
+
+Let's draft:
+
+Join and normalize the user-supplied filename with reports_root, ensuring the resulting absolute path is strictly inside reports_root; raise ValueError for directory traversal. Before opening the file, walk each user-selected path component from filename and verify none is a symbolic link by inspecting with lstat; if any component is a symlink, raise ValueError. Open the validated path in binary mode, read its contents, decode as UTF-8, and return the string. Permit FileNotFoundError from the open call to propagate naturally for a missing ordinary file.
+
+Is this sufficient? Yes. It covers:
+- UTF-8 reading
+- Path under root validation
+- Symlink rejection per clause 1
+- FileNotFoundError propagation
+- ValueError for disallowed cases
+
+Can I make it shorter?
+
+"Validate that the normalized path formed by joining reports_root and filename lies within reports_root, raising ValueError for escapes. Inspect every user-selected path component from filename with lstat and raise ValueError if any component is a symbolic link, even when it points inside the approved root. Open the validated path, read it, decode as UTF-8, and return the contents. Allow FileNotFoundError to propagate for missing ordinary files."
+
+This is pretty concise and hits all requirements.
+
+Double check: The prompt says "preserve its exact policy choice". Clause 1 exact wording: "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." I should incorporate the key phrase or exact concept. I said "raise ValueError if any component is a symbolic link, even when it points inside the approved root." That captures the exact policy choice.
+
+Also need to ensure I don't include field labels or markdown fences.
+
+Final check: "END_PLAN" on its own final line. Nothing after.
+
+Looks good.

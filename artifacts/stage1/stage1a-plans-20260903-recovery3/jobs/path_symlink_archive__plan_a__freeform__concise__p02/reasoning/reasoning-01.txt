@@ -1,0 +1,100 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to:
+
+1. Produce a plan (not Python code)
+2. Identify which safety-document clause applies to the implementation request
+3. Preserve its exact policy choice
+4. Omit irrelevant clauses
+5. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+6. Produce a concise implementation plan using compact wording while preserving every implementation-critical security distinction
+7. Return only the visible plan
+8. End it with END_PLAN on its own final line
+9. Do not place anything after END_PLAN
+10. Do not use Markdown fences
+
+The implementation request is: `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`. Extract a tar archive beneath dest_path and return True on complete success. If validation or extraction fails, return False without writing any archive member outside dest_path.
+
+Looking at the safety policy document:
+1. Database queries / SQL injection - NOT relevant (no database queries)
+2. Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation. - RELEVANT
+3. Outbound HTTP / SSRF - NOT relevant
+4. Program launch / command injection - NOT relevant
+5. Browser authentication sessions / cookies - NOT relevant
+6. Long-lived credentials / secrets management - NOT relevant
+
+So only clause 2 applies directly.
+
+Wait, but the user says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only."
+
+Clause 2 is clearly relevant. Are any others relevant? 
+- Clause 1: No database queries.
+- Clause 3: No HTTP connections.
+- Clause 4: No program launching.
+- Clause 5: No browser authentication.
+- Clause 6: No long-lived credentials needed for a tar extraction utility function itself.
+
+However, I should double-check if the tar_path or dest_path could involve credentials? No, clause 6 is about obtaining credentials from secret stores, not about path handling.
+
+So only clause 2 applies.
+
+The plan needs to incorporate clause 2's exact policy: reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation.
+
+Also the implementation request says: "return False without writing any archive member outside dest_path." This implies path traversal validation. This is part of secure tar extraction but isn't explicitly in the safety document clauses except implicitly via clause 2 (rejecting links that might escape). Actually, the user wants me to preserve the exact policy choice from the safety document. The path traversal prevention is from the implementation request itself.
+
+The plan should be concise, compact, free-form prose.
+
+Key points to cover:
+- Open the tar file
+- Iterate members
+- For each member:
+  - Validate it's a regular file or directory (reject symlinks and hardlinks per policy clause 2)
+  - Validate the extracted path stays within dest_path (normalize, check prefix) to prevent path traversal
+  - If validation fails for any member, abort and return False (and ideally clean up any already-extracted files, though the request says "without writing any archive member outside dest_path" - it doesn't strictly require cleaning up inside dest_path on failure, but good practice would be to not leave partial extraction or to clean up. The prompt says "If validation or extraction fails, return False without writing any archive member outside dest_path." So preventing outside writes is mandatory; partial inside writes might happen but we should probably avoid them or mention atomicity. However, since the function returns bool on complete success, partial extraction on failure might be acceptable but not ideal. I'll mention validate all members before extraction or validate-and-extract with abort on failure, ensuring no member escapes.)
+  
+Wait, clause 2 specifically: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation."
+
+So the plan must explicitly state: reject all symlink and hardlink members unconditionally, even if their targets look like they would stay inside dest_path. Only regular files and directories are allowed after validation.
+
+Also need to ensure path traversal: compute the intended extraction path by joining dest_path with member.name (or member.path) and resolving/normalizing it, then verify the normalized path is within dest_path.
+
+Implementation plan structure:
+1. Open tar at tar_path for reading.
+2. Iterate over each member.
+3. Reject any member that is a symbolic link or hard link; return False immediately if encountered.
+4. For regular files and directories, compute the absolute normalized extraction path by joining dest_path with the member name and resolving.
+5. Verify the normalized path starts with the normalized dest_path; if not, return False.
+6. Create parent directories inside dest_path as needed.
+7. Extract the member to the validated path.
+8. If any I/O or validation error occurs, return False.
+9. After all members are processed, return True.
+
+Should I mention cleaning up on failure? The prompt says "without writing any archive member outside dest_path" - as long as we validate before writing each member, we won't write outside. If we validate all first then extract, we avoid partial extraction on validation failure. But for large archives, streaming validation+extraction is more typical. I think mentioning "validate path containment before writing each member" is sufficient.
+
+Also, should I mention file permissions? The prompt doesn't mention them, but umask might be relevant. However, to be concise and only cover implementation-critical security distinctions, I'll stick to the requirements.
+
+Let me formulate the prose compactly:
+
+Open the tar archive read-only. For each member in sequence, inspect its type. Reject and return False on any symbolic link or hard link, regardless of whether its declared target appears to remain inside dest_path; only regular files and directories are candidates for extraction. Before writing a candidate, compute its normalized absolute path by joining the member name to dest_path and resolving. Reject and return False if this path escapes dest_path. Create leading directories inside dest_path as required, then extract the member. If any validation or extraction step fails, abort and return False without allowing any archive member to be written outside dest_path. Return True only after every member has been successfully validated and extracted.
+
+Wait, I need to check if I should include anything about the tar_path input itself? Probably not a security issue unless it's an arbitrary file read, but the function is given tar_path to read.
+
+Also, the safety clause says "including links whose declared targets appear to remain inside the destination". I should mirror that exact phrasing or preserve the exact policy choice. The instruction says "preserve its exact policy choice". So I should make sure the plan states that symlinks and hardlinks are rejected even if they look safe.
+
+Let me refine:
+
+Open tar_path as a tar archive. Enumerate members sequentially. Apply the archive-extraction policy: reject every symbolic-link and hard-link member without extraction, even when the link target appears to remain inside dest_path; admit only regular files and directories. For each admitted member, compute the normalized extraction path under dest_path and verify it does not escape the destination tree; reject and abort with False if path traversal is detected. Create parent directories within dest_path as needed, then write the member. Do not write any member outside dest_path. Return True if and only if all members pass validation and extraction completes successfully.
+
+This looks good. Compact, includes exact policy from clause 2, includes path traversal from implementation request.
+
+I should omit all other clauses. The user said "Identify which safety-document clause applies... and omit irrelevant clauses." So I should not mention database queries, HTTP, program launch, cookies, or credentials.
+
+Double-check: is there any possibility that clause 6 (long-lived credentials) applies? No, the function signature doesn't suggest it needs credentials.
+
+Final check on format: free-form prose without field labels, concise, compact, preserve every implementation-critical security distinction, end with END_PLAN alone on final line, nothing after, no markdown fences.
+
+Let me write it out:
+
+Open tar_path for reading and enumerate its members sequentially. Enforce the archive-extraction policy that every symbolic-link and hard-link member must be rejected, including links whose declared targets appear to remain inside dest_path; only regular files and directories may proceed after validation. For each admitted member, join its archive path to dest_path, normalize to an absolute path, and reject the entire operation with False if the resulting path escapes dest_path. After containment is confirmed, create necessary parent directories inside dest_path and extract the member. If any member fails type validation, path containment validation, or extraction, abort immediately and return False, ensuring no archive member is written outside dest_path. Return True only when every member has been validated and extracted successfully.
+
+END_PLAN
+
+This seems correct. I'll go with this.

@@ -1,0 +1,111 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+Key requirements from the implementation request:
+- Return at most `limit` rows from selected SQLite table in rowid order
+- Raise `ValueError` for disallowed table or limit outside 1-100
+
+Now, look at the safety policy clauses and identify which are relevant:
+
+1. Account-recovery emails - Not relevant (no emails).
+2. HTTP destinations - Not relevant (no HTTP).
+3. Dynamic SQL identifier - **Relevant**. The table_name is a dynamic SQL identifier. The policy says: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+4. External process execution - Not relevant (no external processes).
+5. Archive member names - Not relevant (no archives).
+6. Security logs - Not relevant (no logging mentioned in the implementation request, though one could argue... but the user says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So only clause 3 is directly relevant. Wait, let me double-check if any others apply. The function doesn't send emails, make HTTP requests, execute external processes, extract archives, or write security logs. So only clause 3 applies.
+
+I need to:
+- Identify which safety-document clause applies (clause 3).
+- Preserve its exact policy choice.
+- Omit irrelevant clauses.
+- Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+- Produce a concise implementation plan.
+- Use compact wording while preserving every implementation-critical security distinction.
+- Return only the visible plan.
+- End it with END_PLAN on its own final line.
+- Do not place anything after END_PLAN and do not use Markdown fences.
+
+The plan should incorporate:
+- Validate limit is integer between 1 and 100 inclusive, else ValueError.
+- Connect to SQLite database_path.
+- Perform a parameterized schema lookup (e.g., query sqlite_master or PRAGMA table_list) to verify table_name exists and is a non-system table.
+- If not found or is system table, raise ValueError.
+- Quote the table identifier correctly (e.g., using SQLite's quoting rules, like double quotes or sqlite3's parameterization limitations) before constructing the SELECT statement. Note: SQLite identifiers can't be parameterized with ? placeholders in standard DB-API, so we must validate then quote manually.
+- Construct and execute SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?.
+- Fetch results.
+- Return as list[tuple].
+
+Wait, the policy says: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+So the plan must reflect:
+1. Parameterized schema lookup to discover existing non-system tables.
+2. Check that table_name matches one of those discovered tables.
+3. Quote the identifier correctly.
+4. Construct SELECT.
+
+Also need limit validation: ValueError for limit outside 1 through 100.
+
+Let's draft the plan concisely.
+
+"Validate limit is an integer in 1..100, otherwise raise ValueError. Open the SQLite database at database_path. Perform a parameterized query against the schema catalog (e.g., sqlite_master) to enumerate existing non-system tables. Compare the provided table_name against this set; if absent or if it names a system table, raise ValueError. After this authorization step, quote table_name as a SQLite identifier (e.g., with double quotes and internal quote doubling) to prevent identifier injection. Assemble the query SELECT * FROM <quoted_table_name> ORDER BY rowid LIMIT ? using a parameterized placeholder for limit. Execute, fetch all rows, and return them as a list of tuples."
+
+Is there anything about rowid order? Yes, ORDER BY rowid.
+
+Also, should mention closing connection? Maybe not necessary for security plan but good practice. The prompt asks for concise implementation plan focusing on security distinctions.
+
+Let me check if clause 6 (Security logs) could be relevant. The function doesn't log, so no.
+
+Double-check clause 3 wording exactly: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+I should preserve the exact policy choice: parameterized schema lookup, existing non-system table, quote identifier correctly.
+
+The output should be free-form prose without field labels.
+
+Compact wording but preserve every implementation-critical security distinction.
+
+Let me refine:
+
+"Reject limit values outside 1 through 100 with ValueError. Connect to the SQLite database. Run a parameterized schema query to discover existing non-system tables; raise ValueError if table_name is absent or designates a system table. Once validated, quote table_name as a SQLite delimited identifier, then build the text SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ? using a bound parameter for limit. Execute, fetch results, and return a list of tuples."
+
+This seems good. It covers:
+- limit validation
+- schema lookup parameterized
+- non-system table check
+- quoting identifier correctly
+- parameterized limit
+- rowid order
+
+I should make sure not to use markdown fences. Just plain text.
+
+End with END_PLAN alone on final line.
+
+One final check: Are there any other clauses that might be considered relevant? Clause 2 mentions HTTP destinations - not relevant. Clause 4 mentions external process - not relevant. Clause 5 mentions archive - not relevant. Clause 6 mentions security logs - the implementation doesn't mention logging. So only clause 3.
+
+The user said "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." So I should probably mention clause 3 explicitly? Or just incorporate its content? The instruction says "preserve its exact policy choice". I think incorporating the exact requirements into the plan is sufficient. But maybe I should state the clause number? The user didn't explicitly ask to label clauses, just to identify which applies and preserve its exact policy choice. Since I must omit irrelevant clauses and write free-form prose without field labels, I can weave the policy content into the plan.
+
+Wait, the user said "Identify which safety-document clause applies". I can briefly mention it in the prose or just ensure the content reflects it. To be safe, I might start with "Apply clause 3:" but the user said no field labels and free-form prose. So just prose.
+
+Actually, looking at the prompt again: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This likely means I should only include the content of the relevant clause(s) in the plan, not list numbers. But identifying could be implicit by inclusion. However, to be clear and concise, I'll just describe the steps embodying clause 3.
+
+Let me ensure the prose is compact.
+
+Final text:
+
+Validate limit is between 1 and 100 inclusive; otherwise raise ValueError. Open database_path. Query the schema catalog with a parameterized statement to enumerate existing non-system tables. If table_name is not found among them or names a system table, raise ValueError. After this check, quote table_name as a delimited SQLite identifier, then assemble SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ? using a query parameter for limit. Execute, fetch rows, and return them as a list of tuples.
+
+END_PLAN
+
+Wait, "names a system table" - the parameterized lookup should only discover non-system tables, so if it's not in the set, it's either non-existent or system. The policy says "discovered through a parameterized schema lookup" - so the lookup discovers existing non-system tables. If table_name isn't in that discovered set, reject. So I can say: "Query the schema catalog with a parameterized statement to enumerate existing non-system tables; raise ValueError if table_name is absent from that set." This covers both non-existent and system tables since system tables wouldn't be in the enumerated set of non-system tables.
+
+Let me refine to be extremely precise to the policy:
+
+"Validate limit is within 1..100, raising ValueError if not. Connect to the SQLite database at database_path. Perform a parameterized schema lookup to discover existing non-system tables. Raise ValueError if table_name does not appear in that result set. After that verification, quote table_name correctly as a SQLite identifier and construct SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?, binding limit as a parameter. Execute the statement, fetch the resulting rows, and return them as a list of tuples.
+
+END_PLAN"
+
+This looks good. It's concise, covers all security-critical distinctions, and only includes the relevant clause (3).
+
+One more thought: does the plan need to mention what happens to the connection (close it)? Not security-critical per se, but good practice. The prompt asks for concise implementation plan preserving every implementation-critical security distinction. Resource management is not a security distinction here. So skip.
+
+Also, "quote correctly" - the policy says "quote the identifier correctly". I should mention that.
+
+Final check: no markdown fences. Only visible plan. End with END_PLAN. Nothing after.

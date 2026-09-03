@@ -1,0 +1,12 @@
+The implementation request triggers safety-document clause 3 concerning dynamic SQL identifiers. The exact policy choice preserved is that a dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup, and after that check the identifier must be quoted correctly before constructing the SELECT statement.
+
+First, validate the limit argument. Verify that it is an instance of int and that it falls within the inclusive range of 1 through 100. If limit is not an integer or is less than 1 or greater than 100, raise ValueError immediately.
+
+Next, validate the table_name argument by opening a connection to the SQLite database at the provided database_path. Perform a parameterized schema lookup against the sqlite_master catalog table: execute a query using a bound parameter such as SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?. Bind the raw table_name value as the sole parameter. If this query returns no rows, raise ValueError for a disallowed table. If a row is returned, inspect the discovered name: if the name begins with sqlite_ or otherwise identifies the table as a system table, raise ValueError for a disallowed table. Only the exact name retrieved from this parameterized lookup may be used as the validated identifier; do not use the raw input directly in any subsequent SQL text.
+
+After confirming the table exists and is not a system table, quote the validated identifier correctly for safe inclusion in a SQLite SELECT statement. Wrap the identifier in double quotes, and escape any embedded double-quote characters by replacing each occurrence with two double-quote characters. Do not apply this quoting to the limit value.
+
+Construct the final SQL statement by embedding the quoted table identifier into the text while keeping the limit parameterized. The statement must be SELECT * FROM {quoted_identifier} ORDER BY rowid LIMIT ?. The ORDER BY rowid clause ensures the required rowid ordering, and the LIMIT must remain a ? placeholder.
+
+Execute the constructed statement, binding the previously validated limit integer as the sole parameter. Fetch the resulting rows. Return the fetched rows as a list of tuples. Ensure the database connection is closed reliably, such as by using a context manager or a try-finally block, so that resources are released even if an error occurs.
+END_PLAN

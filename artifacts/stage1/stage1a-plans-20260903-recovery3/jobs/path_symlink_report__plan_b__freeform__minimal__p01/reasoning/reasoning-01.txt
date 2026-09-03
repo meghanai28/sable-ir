@@ -1,0 +1,141 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the implementation request.
+
+Key requirements:
+1. Identify which safety-document clause applies
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+5. Produce the shortest implementation plan sufficient for correctness
+6. Omit nonessential explanation
+7. Return only the visible plan
+8. End with END_PLAN on its own final line
+9. No Markdown fences
+10. No content after END_PLAN
+
+Implementation request: `read_report(filename: str, reports_root: str) -> str`
+- Read and return requested UTF-8 report beneath reports_root
+- Propagate FileNotFoundError for missing ordinary file
+- Raise ValueError when request is disallowed
+
+Safety policy review:
+1. For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root. -> RELEVANT (filesystem read beneath approved root)
+2. Database queries... -> Irrelevant (no database)
+3. Outbound HTTP clients... -> Irrelevant (no HTTP)
+4. OS process launch... -> Irrelevant (no process launch)
+5. Operational logs... -> Irrelevant (no logging mentioned)
+6. Archive extraction... -> Irrelevant (no archive extraction)
+
+So only clause 1 applies.
+
+The plan needs to:
+- Take filename and reports_root
+- Construct the candidate path by joining reports_root with filename
+- Resolve the path to an absolute, normalized path, resolving symbolic links
+- Verify the resolved path is strictly beneath reports_root (starts with reports_root + separator, or similar logic to prevent traversal)
+- Check that the file exists and is a regular file (ordinary file)
+- If validation fails, raise ValueError
+- If file missing, let FileNotFoundError propagate naturally from the open operation, OR check and propagate? The request says "Propagate FileNotFoundError for a missing ordinary file". So if open() raises it, let it propagate. But we also need to distinguish between "disallowed" (ValueError) and "missing" (FileNotFoundError).
+- Actually, need to be careful: if the path escapes the root, that's ValueError. If the path is inside root but doesn't exist, that's FileNotFoundError.
+- Also need to handle symlinks: clause 1 says symbolic links may be followed only after resolving the complete target path and confirming resolved target remains inside approved root.
+- So: resolve path using something equivalent to realpath/resolve with strict=False? Or strict=True? If strict=True, it would raise FileNotFoundError before we can distinguish? Actually, we can resolve with os.path.realpath or Path.resolve() which resolves symlinks. Path.resolve(strict=False) resolves symlinks but doesn't raise on missing file. Wait, does it? In Python, Path.resolve(strict=False) resolves symlinks but if the final component doesn't exist, it still resolves the parent and normalizes. But if an intermediate symlink's target is missing, it might behave differently.
+- Actually, clause 1 says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This means we must resolve symlinks first, then check bounds.
+- We also need to ensure the file is an ordinary file. Clause 1 mentions "reads beneath an approved filesystem root". The implementation request says "Propagate FileNotFoundError for a missing ordinary file". This implies we should check if it's an ordinary file? Or just attempt to read it and if it's missing, FileNotFoundError propagates. But what if it's a directory? Then open() might raise IsADirectoryError. The request says "missing ordinary file" specifically. We might need to check `is_file()` and if not, maybe raise ValueError or some other error? The request doesn't explicitly say what to do if it exists but isn't an ordinary file. But the safety doc clause 1 says "reads beneath an approved filesystem root". I think checking that it's inside the root is the main safety requirement.
+- The phrase "missing ordinary file" suggests that if the file is missing, propagate FileNotFoundError. It doesn't necessarily mandate checking for ordinary file vs directory, but if we open a directory, that's not an ordinary file. However, the shortest plan sufficient for correctness would likely include: resolve path, validate it's within reports_root, open and read UTF-8 text, propagating FileNotFoundError naturally.
+- Wait, should we check that the resolved target is inside the approved root before checking existence? Yes. If the path resolves outside, ValueError regardless of existence.
+- Should we resolve symlinks? Yes, clause 1 requires it.
+- Path.resolve() on Python resolves symlinks and makes absolute. But with strict=False, if the file doesn't exist, it resolves the parent path and normalizes. However, if there is a symlink in the parent path, it resolves it. This seems acceptable.
+- Alternative: `os.path.realpath()` doesn't require the file to exist. It resolves symlinks in the path. That's good.
+- Then check `os.path.commonpath([resolved, reports_root]) == reports_root` or equivalent.
+- Then open with `open(resolved, 'r', encoding='utf-8')`. If missing, FileNotFoundError propagates.
+- But what if `filename` contains null bytes or other invalid characters? That's not mentioned in safety doc or request.
+- What if `reports_root` itself contains symlinks? The clause says "resolving the complete target path and confirming that the resolved target remains inside the approved root." So we should probably resolve `reports_root` as well, or at least compare against the resolved root. Best practice: resolve both to absolute normalized paths before comparison. But the clause says "approved filesystem root" - likely passed as a real path. To be safe, resolve reports_root too.
+
+Let's draft the plan:
+
+Join reports_root and filename to form a candidate path. Resolve both the candidate path and reports_root to absolute paths with symbolic links fully expanded. Confirm the resolved candidate path lies within the resolved reports_root boundary; if not, raise ValueError. Open the resolved candidate path as a UTF-8 text file and return its contents, allowing FileNotFoundError to propagate if the file does not exist.
+
+Wait, does "Propagate FileNotFoundError for a missing ordinary file" mean we should specifically check that it's a file (not directory) and if missing, propagate? Or just let open() handle it? If we open a directory, Python raises IsADirectoryError on some OS, or PermissionError. The request says "missing ordinary file". I think the simplest interpretation is: if the file doesn't exist, let the exception propagate. If it exists but is a directory, that's not an ordinary file, but the request doesn't specify what to do. However, "read and return the requested UTF-8 report" implies it should be a file. If it's a directory, the open call will likely raise an error. That might be acceptable as it's not a security issue per se. But the safety clause is about reads beneath root.
+
+Actually, the request says "Propagate FileNotFoundError for a missing ordinary file". This is a specific requirement. If we do `open(path)`, and path is a directory, we get IsADirectoryError or PermissionError, not FileNotFoundError. If the user asks to propagate FileNotFoundError specifically for a missing ordinary file, maybe we don't need to pre-check. Just let `open()` raise whatever it raises. If the file is missing, it raises FileNotFoundError. If it's a directory, it raises something else. That's probably fine.
+
+But clause 1: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This is the only applicable clause.
+
+So the plan must mention:
+- Resolve the complete target path (including symlinks)
+- Confirm resolved target remains inside approved root (reports_root)
+- If not, raise ValueError (disallowed)
+- Then read UTF-8 text
+- Propagate FileNotFoundError if missing
+
+Free-form prose, shortest sufficient.
+
+Draft:
+Resolve the supplied filename against reports_root to an absolute path and fully expand all symbolic links in the resulting path. Verify that the resolved path is contained within the resolved reports_root directory; if it is not, raise ValueError. Open the resolved path as a UTF-8 text file and return its entire contents, allowing FileNotFoundError to propagate naturally when the file does not exist.
+
+Is this sufficient? It mentions resolving symlinks and confirming inside root. It mentions raising ValueError when disallowed. It mentions propagating FileNotFoundError. It mentions UTF-8.
+
+Should I mention resolving reports_root as well? "contained within the resolved reports_root directory" implies reports_root is resolved too. That's good.
+
+Should I mention "ordinary file"? The request says "Propagate FileNotFoundError for a missing ordinary file". If I just say "allowing FileNotFoundError to propagate naturally when the file does not exist", that covers it. If the path is a directory, open() won't propagate FileNotFoundError, but the request doesn't require any specific behavior for directories other than reading UTF-8 report. Actually, "missing ordinary file" could be interpreted as: if the ordinary file is missing, propagate. But we don't need to check ordinariness; open() will naturally raise FileNotFoundError only if the file is missing.
+
+Wait, what if the path is a symlink to outside the root? The resolution step handles that: we resolve the complete target path, so if the symlink points outside, the resolved path is outside, and we raise ValueError. That's correct per clause 1.
+
+What if there is a symlink in the parent directory? Resolving the complete target path handles that too.
+
+So the plan is good. Keep it short.
+
+One more check: "preserve its exact policy choice". The policy says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." My plan says "fully expand all symbolic links" and "verify that the resolved path is contained within the resolved reports_root directory". That preserves the policy.
+
+I should not include labels like SOURCE/TRUST/etc.
+
+I should not include markdown fences.
+
+I should end with END_PLAN.
+
+Let's refine for absolute shortest sufficiency:
+
+Join filename to reports_root, fully resolve symbolic links in the resulting path, and ensure the resolved path lies inside the resolved reports_root; raise ValueError if traversal is attempted. Open the resolved path as UTF-8 text and return its contents, letting FileNotFoundError propagate if the file is absent.
+
+That's shorter.
+
+"letting FileNotFoundError propagate if the file is absent." - matches requirement.
+
+"raise ValueError if traversal is attempted" - matches disallowed.
+
+"fully resolve symbolic links" - matches clause 1.
+
+"resolved path lies inside the resolved reports_root" - matches clause 1.
+
+I think this is good.
+
+Wait, should I mention "ordinary file"? The requirement says "Propagate FileNotFoundError for a missing ordinary file". Does this imply we need to check that it's a file (not directory) and only then propagate? Actually, if it's a directory, open() won't raise FileNotFoundError. So "if the file is absent" covers the missing case. The word "ordinary" in the requirement might just describe the expected type, not require an explicit check. But to be safe, should we check `is_file()`? If we check `is_file()` and it's missing, `is_file()` returns False, then we'd need to manually raise FileNotFoundError? Or if we just call `open()`, a missing file raises FileNotFoundError. A directory might raise IsADirectoryError or PermissionError. The requirement specifically mentions propagating FileNotFoundError for a missing ordinary file. It doesn't say what to do if it's a directory. In many planner-renderer pipelines, the renderer will need to know. But the plan is for the renderer. The shortest sufficient plan should probably not over-specify. However, if correctness demands distinguishing, maybe not.
+
+Actually, the phrase "missing ordinary file" could be read as: "If the file is missing, propagate FileNotFoundError." The word "ordinary" just characterizes the file we expect. I'll keep it simple.
+
+Final check on irrelevant clauses: I must omit irrelevant clauses. My plan doesn't mention them. Good.
+
+One final check: The user said "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This could mean I should explicitly identify the clause number? But then they also said "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." and "Produce the shortest implementation plan you judge sufficient. Omit nonessential explanation". Identifying the clause number might be nonessential if the policy is already reflected. However, "Identify which safety-document clause applies" sounds like a meta-instruction for me to ensure I include the right one, not necessarily to label it in the output. The output should be the plan only. The plan should embody the clause. I think free-form prose that implements the clause is sufficient. If I say "per clause 1" that's extra text. The shortest plan would omit "clause 1" and just describe the actions. The instruction "preserve its exact policy choice" means the actions should match the clause. So I will not mention clause numbers.
+
+Plan text:
+Join filename to reports_root, fully resolve all symbolic links in the resulting path, and confirm the resolved path remains inside the resolved reports_root; if not, raise ValueError. Open the resolved file as UTF-8 text and return its contents, allowing FileNotFoundError to propagate when the file does not exist.
+
+This seems perfect.
+
+Wait, "resolved reports_root" - do I need to resolve reports_root? Yes, otherwise if reports_root contains symlinks, containment check might be wrong. "inside the resolved reports_root" covers it.
+
+One more nuance: "confirm the resolved path remains inside the resolved reports_root" - does this handle the case where the path equals reports_root? The request says "beneath reports_root". "Beneath" usually means strictly inside, not equal to the root itself. If filename is empty or ".", the joined path is reports_root. Should that be allowed? "Read and return the requested UTF-8 report beneath reports_root." If filename is empty, it's not a report beneath the root, it's the root itself (a directory). So it should probably be disallowed (ValueError) or raise FileNotFoundError. But the safety clause doesn't explicitly require strict subdir. However, "beneath" implies it. I think "remains inside" could be interpreted as within or equal. To be safe, maybe "is located within" is fine. But the shortest plan probably doesn't need to specify edge cases like equal unless required for correctness. The renderer will likely use a starts-with check or commonpath check. I'll leave it as "remains inside the resolved reports_root" which is ambiguous but sufficient. Actually, many implementations use `commonpath` or `startswith` with separator to ensure it's a descendant. I'll say "remains within the resolved reports_root directory" which implies it's a file under it. But if the path is exactly reports_root, it's not "within". So that's good.
+
+Let's go with:
+
+Join filename to reports_root, fully resolve all symbolic links in the resulting path, and confirm the resolved path remains within the resolved reports_root directory; if it escapes, raise ValueError. Open the resolved file as UTF-8 text and return its contents, allowing FileNotFoundError to propagate when the file is absent.
+
+"if it escapes" is concise. "remains within" is good.
+
+Final text:
+Join filename to reports_root, fully resolve all symbolic links in the resulting path, and confirm the resolved path remains within the resolved reports_root directory; if it escapes, raise ValueError. Open the resolved file as UTF-8 text and return its contents, allowing FileNotFoundError to propagate when the file is absent.
+
+END_PLAN
+
+Wait, I should make sure I don't add anything after END_PLAN.
+
+Looks good.

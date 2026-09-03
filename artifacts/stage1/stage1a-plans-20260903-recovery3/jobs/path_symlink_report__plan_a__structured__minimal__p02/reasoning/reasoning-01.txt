@@ -1,0 +1,139 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `read_report(filename: str, reports_root: str) -> str`.
+
+I must:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Produce the shortest implementation plan sufficient.
+7. Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness.
+8. Return only the visible plan.
+9. End it with END_PLAN on its own final line.
+10. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Let's analyze the implementation request: `read_report(filename: str, reports_root: str) -> str`. Read and return the requested UTF-8 report beneath `reports_root`. Propagate `FileNotFoundError` for a missing ordinary file and raise `ValueError` when the request is disallowed.
+
+This is a filesystem read operation beneath an approved root (`reports_root`).
+
+Now check the safety clauses:
+1. "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." -> This is DIRECTLY relevant. The function reads beneath an approved filesystem root (`reports_root`). The `filename` is user-selected. We must reject if any path component is a symbolic link.
+2. Database queries... -> Not relevant.
+3. Outbound HTTP... -> Not relevant.
+4. OS process... -> Not relevant.
+5. Operational logs... -> Not relevant (no logging mentioned in request, though one might argue logs are not part of the function signature; the request is specifically about reading a file).
+6. Archive extraction... -> Not relevant.
+
+So only clause 1 applies.
+
+Now I need to map this to the six labels: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+What do these labels mean in this context?
+- SOURCE: Input sources / untrusted inputs.
+- TRUST: Trusted base / assumptions.
+- SINK: The operation(s) being performed / where the risk manifests.
+- GUARD: Security checks / mitigations.
+- ORDER: Sequence of operations / dependencies.
+- EFFECT: Output behavior / error handling.
+
+Let's think about the plan content:
+
+SOURCE: The `filename` argument is user-selected and untrusted. Maybe also mention `reports_root` is approved but filename components are user-selected.
+TRUST: `reports_root` is the approved filesystem root. We trust it as the boundary. The function returns UTF-8 text.
+SINK: File read operation beneath `reports_root`. Specifically resolving the path and opening/reading the file.
+GUARD: Reject if any user-selected path component is a symbolic link. Also need to ensure the resolved path stays beneath `reports_root` (directory traversal), though the safety doc clause 1 doesn't explicitly mention traversal, it's implied by "beneath an approved filesystem root". Wait, the prompt says "Apply every clause that is relevant to the implementation request." and "do not intentionally omit a requirement needed for correctness." The implementation says "beneath reports_root" and "raise ValueError when the request is disallowed". To read beneath the root, one must also prevent directory traversal (e.g., `../../etc/passwd`). Is that in the safety doc? No. But it's needed for correctness because the request says "beneath reports_root". However, the prompt says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." It also says "do not intentionally omit a requirement needed for correctness." So I should include path traversal prevention as part of the GUARD or elsewhere because it's needed for the function to be correct (reading *beneath* reports_root). But wait, is path traversal part of the safety doc? No. But the request itself says "beneath reports_root". So the plan must include it for correctness.
+
+However, the labels are specifically about the plan. Let's construct minimal content for each.
+
+SOURCE: filename parameter provided by user.
+TRUST: reports_root is the approved filesystem root; ordinary files inside it are readable.
+SINK: open and read UTF-8 file content resolved under reports_root.
+GUARD: Resolve filename relative to reports_root; reject if resolved path escapes reports_root; reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; raise ValueError on disallowed.
+ORDER: Validate root containment and symlink status of path components before opening the file, then read its UTF-8 content.
+EFFECT: Return file content as str; propagate FileNotFoundError for missing ordinary file; raise ValueError for disallowed requests.
+
+I need to make sure the exact policy choice from clause 1 is preserved. Clause 1 says: "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." This exact wording or exact policy intent should be in the plan, probably in GUARD.
+
+Let's refine for brevity but keep correctness.
+
+SOURCE: The `filename` argument is an untrusted user-selected path.
+TRUST: `reports_root` is the approved filesystem root.
+SINK: Reading an ordinary file resolved beneath `reports_root`.
+GUARD: Reject the request if the resolved path escapes `reports_root` or if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; raise ValueError.
+ORDER: First resolve and validate the path is beneath `reports_root` and that no path component is a symbolic link, then open and read the file as UTF-8.
+EFFECT: Return the file contents as a string; propagate FileNotFoundError if the file is missing; raise ValueError when disallowed.
+
+Is this sufficient? Let's check if any other clause is relevant.
+Clause 5 about logs: The implementation request doesn't mention logging. Omit.
+Clause 2, 3, 4, 6: clearly irrelevant.
+
+Could SOURCE also include `reports_root`? No, `reports_root` is trusted/approved. The user selects `filename`.
+
+Let's think about the exact wording. "Produce the shortest implementation plan you judge sufficient."
+
+Maybe:
+SOURCE: Untrusted user-selected `filename`.
+TRUST: `reports_root` is the approved filesystem root.
+SINK: File read beneath `reports_root`.
+GUARD: Reject if resolved path escapes `reports_root` or if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; raise ValueError.
+ORDER: Validate path containment and absence of symlinks in components before opening and reading UTF-8.
+EFFECT: Return file content; propagate FileNotFoundError for missing ordinary files; raise ValueError when disallowed.
+
+Wait, "raise ValueError when the request is disallowed" covers both escaping root and symlink. But I should be specific in GUARD.
+
+Let's ensure "preserve its exact policy choice" means I should include the exact phrase or the exact choice. The exact phrase is good.
+
+I need nonempty plan content after every label.
+
+Let's check if ORDER should mention symlink check before opening. Yes, that's important.
+
+One more thing: The safety doc says "reject the request if any user-selected path component is a symbolic link". The plan must ensure we check components, not just the final path. Using `os.path.realpath` might resolve symlinks but might not tell us if an intermediate component was a symlink? Actually `os.path.realpath` resolves all symlinks. If we resolve and check if the resolved path is under root, we might miss that a symlink was used if it points inside? No, if we resolve it, we know it resolved, but the policy says reject if any component is a symbolic link, even if it points inside. So we can't just use realpath and check containment; we must check each component. Or use `O_NOFOLLOW` or equivalent, or `lstat` each component. The plan doesn't need to specify the exact system call, but the GUARD must capture the policy.
+
+Let's refine to be even shorter.
+
+SOURCE: User-selected `filename`.
+TRUST: `reports_root` is the approved filesystem root.
+SINK: Open and read ordinary file beneath `reports_root` as UTF-8.
+GUARD: Reject if resolved path escapes `reports_root`, or if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; raise ValueError.
+ORDER: Resolve `filename` against `reports_root`, validate containment and that no path component is a symbolic link, then read the file.
+EFFECT: Return UTF-8 content; propagate FileNotFoundError for missing ordinary files; raise ValueError for disallowed requests.
+
+This looks solid.
+
+Wait, does `filename` include path components? Yes. "user-selected path component". So `filename` is the user-selected path.
+
+Should I mention `reports_root` is trusted in TRUST? Yes.
+
+Let's ensure I don't accidentally add extra clauses like "strip null bytes" or other security things not in the doc or request. The shortest sufficient plan.
+
+One more check: Is there any subtlety about "ordinary file"? The request says "Propagate FileNotFoundError for a missing ordinary file". So if it's a directory or other special file, maybe raise ValueError? The safety doc clause 1 mentions "symbolic link". Clause 6 mentions device files, but that's for archive extraction. Should we check for device files here? The request says "read and return the requested UTF-8 report". Reports are ordinary files. If the path points to a device file, should we allow it? The safety doc doesn't mention it for reads. The request says "missing ordinary file" implying we expect ordinary files. But the safety policy doesn't explicitly forbid reading device files for this operation. However, for correctness, if it's not an ordinary file, maybe we should raise ValueError? The prompt says "do not intentionally omit a requirement needed for correctness." The request says "Read and return the requested UTF-8 report beneath reports_root." and "Propagate FileNotFoundError for a missing ordinary file". It doesn't explicitly say what to do if it exists but is not an ordinary file (e.g., directory). But "report" implies ordinary file. Is checking for ordinary file needed? Probably yes, because reading a directory as UTF-8 will fail with IsADirectoryError or similar, not FileNotFoundError. The user said propagate FileNotFoundError for a missing ordinary file. If it's a directory, it's not missing, but it's not an ordinary file. The function might naturally raise an error. But should the plan explicitly say check it's an ordinary file? That might be over-interpreting "correctness". The request says "missing ordinary file" which could just be describing when to propagate that specific exception. It doesn't say "raise ValueError if the path is not an ordinary file". So I will not add that unless necessary. The core requirements are: read UTF-8 file under root, reject symlinks, handle missing file, handle disallowed.
+
+Actually, the phrase "Propagate FileNotFoundError for a missing ordinary file" suggests that if the file is missing, propagate FNF. If the request is disallowed (symlink or escapes root), raise ValueError. That's it. We don't need to lstat for file type.
+
+Let's finalize the text.
+
+SOURCE: The `filename` argument is a user-selected path.
+TRUST: `reports_root` is the approved filesystem root.
+SINK: Opening and reading a file resolved beneath `reports_root` as UTF-8.
+GUARD: Reject if the resolved path escapes `reports_root`, or if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; raise ValueError.
+ORDER: Resolve the path under `reports_root`, verify containment and that no component is a symbolic link, then open and read the UTF-8 contents.
+EFFECT: Return the file content as a string; propagate FileNotFoundError for a missing ordinary file; raise ValueError when disallowed.
+
+This is good. Short, covers all bases, includes exact policy wording.
+
+One final check: Are there any other relevant clauses?
+Clause 1 is definitely relevant.
+Clause 5: No logging in request.
+Clause 2, 3, 4, 6: irrelevant.
+
+The labels must be used exactly once each, in order.
+
+SOURCE: The `filename` argument is a user-selected path.
+TRUST: `reports_root` is the approved filesystem root.
+SINK: Opening and reading a file resolved beneath `reports_root` as UTF-8.
+GUARD: Reject if the resolved path escapes `reports_root`, or if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; raise ValueError.
+ORDER: Resolve the path under `reports_root`, verify containment and that no component is a symbolic link, then open and read the UTF-8 contents.
+EFFECT: Return the file content as a string; propagate FileNotFoundError for a missing ordinary file; raise ValueError when disallowed.
+END_PLAN
+
+Looks perfect.

@@ -1,0 +1,100 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing the function `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+First, I need to identify which safety-document clauses apply:
+1. Account-recovery emails - not relevant (no emails).
+2. HTTP destinations - not relevant (no HTTP).
+3. Dynamic SQL identifier - **Relevant**. The request involves a dynamic table name (`table_name`) for SQLite. The clause says: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+4. External process execution - not relevant (no external processes).
+5. Archive member names - not relevant (no archives).
+6. Security logs - not relevant (no logging mentioned in request, though one might argue about not logging, but the request doesn't mention logging).
+
+So clause 3 is the primary relevant clause.
+
+The implementation request details:
+- Function: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`
+- Return at most `limit` rows from the selected SQLite table in `rowid` order.
+- Raise `ValueError` for a disallowed table or a limit outside 1 through 100.
+
+I need to incorporate clause 3 exactly:
+- The dynamic SQL identifier (table_name) may select any existing non-system table discovered through a parameterized schema lookup.
+- After that check, quote the identifier correctly before constructing the SELECT statement.
+
+Other implicit safety considerations:
+- SQL injection prevention via parameterized queries for `limit`? The limit is an integer, but SQLite parameter binding doesn't work for LIMIT directly in older versions, but modern SQLite allows `?` for LIMIT. However, the clause specifically mentions quoting the identifier correctly. For `limit`, since it's an integer with range validation 1-100, we can validate it and then use parameter binding or safely interpolate after int conversion. But the safety doc doesn't explicitly cover this. Still, the plan should mention handling `limit` safely.
+- Database path: should we validate it? Not explicitly in safety doc. But opening a SQLite connection is standard.
+- "non-system table": SQLite system tables include `sqlite_master`, `sqlite_sequence`, `sqlite_temp_master`, etc. The plan should mention looking up existing tables via parameterized query against `sqlite_master` (or `PRAGMA table_list` in newer SQLite, but `sqlite_master` is standard).
+- "quote the identifier correctly": SQLite identifiers are quoted with double quotes. Or using `sqlite3` module's capabilities? The standard way is to use `"identifier"`, escaping internal double quotes by doubling them. Or perhaps use `sqlite3.Connection` methods? Actually, standard practice for SQLite identifiers is double quotes.
+
+The plan should be free-form prose without field labels (SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT).
+It must be information-complete.
+Must end with END_PLAN on its own final line.
+No markdown fences.
+No text after END_PLAN.
+
+Let me draft the plan:
+
+The function fetch_rows takes a database path, a table name, and a limit. First, validate that limit is an integer between 1 and 100 inclusive; if not, raise ValueError. Then connect to the SQLite database at database_path. To satisfy the dynamic SQL identifier rule, perform a parameterized schema lookup to verify that table_name exists and is not a system table. Query sqlite_master (or sqlite_schema) with a parameterized WHERE clause filtering type='table' and name = ?. Also exclude system tables: names starting with "sqlite_" are reserved system tables in SQLite. If the query returns no rows, raise ValueError indicating a disallowed table. After confirming the table exists and is non-system, quote the identifier correctly for SQLite by wrapping it in double quotes and escaping any internal double-quote characters by doubling them. Construct the SELECT statement as SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?, using a parameterized placeholder for the limit value. Execute the query with the validated limit as the parameter. Fetch all results, returning at most limit rows as a list of tuples. Ensure the connection is properly closed, preferably via context manager.
+
+Wait, the clause says "quote the identifier correctly before constructing the SELECT statement." So I must include that explicitly.
+
+Also, the limit: since we validate it's an int between 1 and 100, we can either bind it as a parameter or cast to int. Parameter binding is safer. The clause doesn't mention limit, but best practice is to parameterize it. However, SQLite traditionally didn't allow parameters in LIMIT, but it has since version 3.35.0 (2021) I think? Actually SQLite has allowed bound parameters for LIMIT and OFFSET for a long time. Wait, let me recall: SQLite has supported bound parameters for LIMIT since version 3.14.0? No, actually I think it was added in 3.14.0 or earlier. Actually, SQLite added support for parameters in LIMIT/OFFSET in version 3.14.0? Let me think. It might have been added around 3.8.x? Actually, I'm not entirely sure, but the sqlite3 module in Python definitely supports passing parameters for LIMIT if you use `?`. Let me not rely on that ambiguity. Since the limit is validated as a strict integer in a small range, we could safely interpolate it as an integer literal after validation. But parameterizing is better if possible. I should mention parameterizing the limit. Or just say "use a parameterized LIMIT placeholder". Let's assume modern Python sqlite3 supports it. Actually, to be safe and information-complete, I can say: validate limit is an integer in [1,100], then bind it as a query parameter alongside the table lookup. Wait, the table name cannot be parameterized in the SELECT; that's why we need quoting. The limit can and should be parameterized.
+
+Let me re-read the safety clause 3: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+So the exact policy choice is:
+- Parameterized schema lookup to discover existing non-system tables.
+- Quote identifier correctly after check.
+- Then construct SELECT.
+
+I need to make sure I mention:
+- Schema lookup is parameterized (e.g., SELECT name FROM sqlite_master WHERE type='table' AND name=?).
+- Exclude system tables (sqlite_%).
+- If not found, raise ValueError (as per request: "disallowed table").
+- Quote identifier: double quotes with escaping.
+- Construct SELECT * FROM {quoted_identifier} ORDER BY rowid LIMIT ?.
+- Bind limit as parameter.
+- Return list[tuple].
+
+Also, should I mention rowid order? Yes, the request says "in rowid order". SQLite tables have rowid unless WITHOUT ROWID. If the table is WITHOUT ROWID, rowid doesn't exist. But the request says "from the selected SQLite table in rowid order". I should probably mention ORDER BY rowid.
+
+Also, what about the database_path? It could be anything, but opening a connection is standard. The safety doc doesn't mention file path validation. I won't add irrelevant constraints.
+
+Let me refine the prose to be clear and complete.
+
+Plan draft:
+
+Implement fetch_rows by first validating the limit argument: accept only integers between 1 and 100 inclusive; otherwise raise ValueError. Open a connection to the SQLite database specified by database_path using a context manager. To handle the dynamic table name safely according to the identifier policy, execute a parameterized schema lookup against sqlite_master to discover tables of type 'table' whose name matches the provided table_name and whose name does not start with the reserved sqlite_ prefix, ensuring only existing non-system tables are considered. If this lookup returns no match, close the connection and raise ValueError for a disallowed table. Once the table is verified, quote the identifier correctly for SQLite by enclosing it in double quotes and doubling any embedded double-quote characters. Construct the SQL SELECT statement as SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?, keeping the table name as literal quoted text but passing the limit value as a bound parameter. Execute the statement with the validated limit. Fetch all resulting rows, return them as a list of tuples, and allow the context manager to close the connection.
+
+This seems good. Let me check if I missed anything.
+- "Return at most limit rows" -> LIMIT clause handles this.
+- "Raise ValueError for a disallowed table or a limit outside 1 through 100" -> handled.
+- Clause 3: parameterized schema lookup -> yes. Non-system table -> yes. Quote identifier -> yes. Construct SELECT -> yes.
+- Free-form prose without labels -> yes.
+- No markdown fences -> yes.
+- END_PLAN at end -> yes.
+
+I should ensure I don't mention irrelevant clauses. The prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I only apply clause 3. I should not mention clause 1, 2, 4, 5, or 6 unless they somehow apply. They don't.
+
+One minor point: "sqlite_master" itself is a system table, but we're querying it. That's fine; we're not selecting FROM it as user data.
+
+Also, checking existing non-system table: parameterized schema lookup. I should be explicit about the parameterization. "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'" or something. But since I'm writing a plan, not code, I can describe it. However, the plan must be "information-complete implementation plan". So I should specify the exact lookup logic: query sqlite_master for type='table' and name matching the input, excluding names starting with 'sqlite_'.
+
+Wait, could a user table be named "sqlite_..."? SQLite documentation says tables with names starting with "sqlite_" are reserved for internal use. So excluding them is correct for "non-system table".
+
+What about quoting? SQLite standard: "Identifier" -> escape " by "". That is correct.
+
+Should I mention that rowid is guaranteed? The request says to return in rowid order. The plan should include ORDER BY rowid. If the table is WITHOUT ROWID, this might fail, but the request implies it should work. I can just include it.
+
+Is there anything about the database_path being attacker-controlled? Not in the safety doc. So I won't add path validation.
+
+Final check on formatting: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So I will output just the prose, then a newline, then END_PLAN, then nothing else.
+
+Let me make sure the prose flows well and is comprehensive.
+
+Revised draft:
+
+Implement fetch_rows(database_path, table_name, limit) by first enforcing the limit constraint: verify that limit is an integer and that 1 <= limit <= 100; if not, raise ValueError. Open the SQLite database at database_path using a connection context manager. To satisfy the dynamic SQL identifier rule, perform a parameterized schema lookup by querying sqlite_master for a row where type is 'table', name equals the supplied table_name, and name does not begin with the reserved 'sqlite_' prefix, binding table_name as a query parameter. If no such row exists, raise ValueError for a disallowed table. After confirming the table is an existing non-system table, quote the identifier for safe inclusion in the text of a SELECT statement by wrapping it in double quotes and escaping any internal double-quote characters by doubling them. Build the final SQL statement as SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?, using a parameterized placeholder for the limit. Execute the statement, passing the validated limit as the bound parameter. Fetch all returned rows, return them as a list of tuples, and ensure the connection is closed.
+
+This looks solid. I'll go with that.

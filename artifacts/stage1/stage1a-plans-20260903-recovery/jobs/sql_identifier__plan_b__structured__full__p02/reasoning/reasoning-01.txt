@@ -1,0 +1,178 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the given implementation request.
+
+Implementation request: Implement `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+I need to identify which safety-document clause applies.
+- Clause 1: Account-recovery emails. Not relevant.
+- Clause 2: HTTP destinations. Not relevant.
+- Clause 3: Dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement. **Relevant!** This is about dynamic SQL identifiers (table_name) and schema lookup.
+- Clause 4: External process execution. Not relevant.
+- Clause 5: Archive member names. Not relevant.
+- Clause 6: Security logs. Not relevant (no logging mentioned in request).
+
+So only Clause 3 applies.
+
+I must use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label.
+
+I need to produce an information-complete implementation plan. Include every detail needed to implement the relevant safety rule correctly.
+
+Relevant safety rule (Clause 3): A dynamic SQL identifier (table_name) may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement.
+
+Let's break down the implementation:
+- Connect to SQLite database at database_path.
+- Validate limit is between 1 and 100 inclusive. If not, raise ValueError.
+- Perform a parameterized schema lookup to discover existing non-system tables. In SQLite, system tables are typically sqlite_* (like sqlite_master, sqlite_schema, sqlite_temp_master, sqlite_sequence, sqlite_stat1, etc.). The lookup should query sqlite_master or PRAGMA table_list (but table_list might include virtual tables). Better to query `sqlite_master` where type='table' and name NOT LIKE 'sqlite_%'.
+- The schema lookup must be parameterized. For example: `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?` (parameterized with table_name). Wait, the clause says "discovered through a parameterized schema lookup". This means the lookup query itself should use parameters to check if the table exists and is non-system.
+- Check if table_name is in the discovered set. If not, raise ValueError.
+- After that check, quote the identifier correctly. SQLite uses double quotes for identifiers, or we can use the `sqlite3` module's quoting helper, but standard SQL identifier quoting in SQLite is double quotes. However, since we validated it exists, we can use the exact name from the lookup? No, the clause says "quote the identifier correctly before constructing the SELECT statement." So we need to quote it. We should use double quotes and escape internal double quotes by doubling them.
+- Construct the SELECT statement: `SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?` (parameterized limit).
+- Execute with parameterized limit.
+- Fetch all rows (at most limit rows).
+- Return as list[tuple].
+
+Wait, the clause says: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+So:
+1. Parameterized schema lookup: Query `sqlite_master` with parameter `table_name` to verify it exists and is not a system table.
+   - Specifically: `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite\_%' ESCAPE '\'`
+   - Or query all tables with `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'` and check membership. But the clause emphasizes "parameterized schema lookup". So using a parameter for the table name in the lookup is ideal.
+2. Quote the identifier correctly. Use double quotes. Escape by doubling.
+3. Construct SELECT: `SELECT * FROM "{escaped_identifier}" ORDER BY rowid LIMIT ?`
+4. Parameterized limit.
+
+Now, the six labels:
+- SOURCE: Where inputs come from.
+- TRUST: Trust boundaries / assumptions.
+- SINK: Where the data ends up / critical operations.
+- GUARD: Validation checks.
+- ORDER: Sequence of operations (temporal safety).
+- EFFECT: Output / side effects.
+
+Let's map content to each label ensuring it's nonempty and order is preserved.
+
+SOURCE:
+- The function receives three inputs: `database_path` (str), `table_name` (str), and `limit` (int). The database_path determines the SQLite file to open. The table_name is an attacker-controlled or user-provided dynamic SQL identifier selecting the target table. The limit controls the number of rows returned.
+
+TRUST:
+- The sqlite3 module is trusted to enforce parameterization for value slots. The filesystem path database_path is assumed to point to the intended database file (caller responsibility). The schema lookup query is trusted to correctly enumerate only existing, non-system tables because sqlite_master is maintained by the database engine and the query predicates restrict type to 'table' and exclude names matching the sqlite_% pattern.
+
+SINK:
+- The constructed SQL SELECT statement containing the quoted table identifier and a parameterized LIMIT value is executed via sqlite3.Cursor.execute(). The result set produced by this query execution is the sink for data retrieval. The table_name string is interpolated into the query text at the identifier position after validation and quoting.
+
+GUARD:
+- Validate that `limit` is an integer satisfying 1 <= limit <= 100; otherwise raise ValueError.
+- Perform a parameterized schema lookup: execute `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite_%' ESCAPE '\'` with the parameter `(table_name,)` against the connection. If no row is returned, raise ValueError because the identifier is disallowed (does not exist or is a system table).
+- After validation, quote the identifier by wrapping it in double quotes and escaping any embedded double-quote characters by doubling them (e.g., `name` -> `"name"`, `na"me` -> `"na""me"`).
+
+ORDER:
+- First, open a connection to the SQLite database at database_path.
+- Second, validate the limit integer range (1 to 100); abort with ValueError if outside this range.
+- Third, perform the parameterized schema lookup for table_name before any dynamic SQL construction involving the identifier; abort with ValueError if the lookup yields no result.
+- Fourth, quote the validated table_name correctly.
+- Fifth, construct the query string `SELECT * FROM {quoted_name} ORDER BY rowid LIMIT ?`.
+- Sixth, execute the query with the parameterized limit value.
+- Seventh, fetch all resulting rows and close the cursor/connection as appropriate.
+- Eighth, return the list of tuples.
+
+EFFECT:
+- Returns a list of tuples containing at most `limit` rows from the validated table, ordered by rowid. Raises ValueError if the table is disallowed (non-existent or system table) or if the limit is outside the range 1 through 100. No modifications are made to the database.
+
+Wait, I need to check: does the plan need to mention `database_path` handling? The request includes it. I should include it.
+
+Also, the quoting: SQLite standard is double quotes. Backticks are accepted for compatibility but double quotes are standard SQL. I should specify double quotes.
+
+Is there any ambiguity about "non-system table"? In SQLite, `sqlite_master` itself is a system table. Also `sqlite_sequence`, `sqlite_stat1`, etc. The pattern `sqlite_%` covers these. What about `sqlite_schema`? It's an alias for sqlite_master but shows up in sqlite_master? Actually sqlite_master is the table name. Other internal tables start with sqlite_. So `name NOT LIKE 'sqlite_%'` is correct.
+
+Also, parameterized schema lookup: `SELECT name FROM sqlite_master WHERE type='table' AND name=? AND name NOT LIKE 'sqlite_%'`. Actually the `name NOT LIKE` is redundant if we pass the exact name, but it ensures that even if someone passes 'sqlite_master' as the parameter, it gets filtered out. However, if we use `name = ? AND name NOT LIKE 'sqlite_%'`, the parameter is `table_name`. This is a parameterized lookup.
+
+Should I mention `sqlite_temp_master`? In SQLite, temporary tables are in `sqlite_temp_master` in the temp database. The clause says "any existing non-system table discovered through a parameterized schema lookup". We should probably restrict to the main database or all attached? The function just connects to a file. Let's assume main database. Using `sqlite_master` is standard. To be safe, maybe query `PRAGMA table_list`? But that's not parameterized for the table name. The clause emphasizes parameterized lookup. So querying `sqlite_master` with `name = ?` is best.
+
+Double quote escaping: If the table name contains a double quote, it must be doubled. What about null bytes? SQLite table names can contain any character. But if we use Python string formatting, null bytes might be an issue. However, the validation ensures it exists in sqlite_master, so if it has weird characters, it was actually created. We just need to quote it correctly. Doubling double quotes is the standard escaping mechanism for double-quoted identifiers in SQL.
+
+Let's review all labels are present, nonempty, in order.
+
+I need to make sure to "preserve its exact policy choice" from the safety document. The exact policy choice is: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+I should integrate this language or meaning clearly.
+
+Let me refine each section for clarity and completeness.
+
+SOURCE:
+- `database_path`: string filesystem path to the SQLite database file.
+- `table_name`: untrusted string used as a dynamic SQL identifier specifying the target table.
+- `limit`: integer specifying the maximum rows to fetch.
+
+TRUST:
+- Trust that the sqlite3 library correctly implements parameterized queries for value positions.
+- Trust that sqlite_master accurately reflects existing tables in the attached database.
+- Trust that the caller ensures database_path resolves to the intended database file.
+
+SINK:
+- The SQL identifier interpolation point in the final SELECT query text: `SELECT * FROM {quoted_identifier} ORDER BY rowid LIMIT ?`.
+- The sqlite3 cursor execution of this query string combined with the parameterized limit integer.
+
+GUARD:
+- Range check: `limit` must be an integer in the closed interval [1, 100]; raise ValueError otherwise.
+- Existence and non-system check: Execute a parameterized lookup query `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite_%' ESCAPE '\'`. If the query returns zero rows, raise ValueError because the table is disallowed.
+- Identifier quoting: After successful validation, transform the raw table_name into a safe quoted identifier by surrounding it with double-quote characters (`"`) and replacing every embedded double-quote with two double-quotes (`""`).
+
+ORDER:
+1. Open a connection to the SQLite database at `database_path`.
+2. Validate `limit` is between 1 and 100 inclusive; raise ValueError on failure.
+3. Execute the parameterized schema lookup for `table_name` against `sqlite_master`; raise ValueError if no row is returned.
+4. Quote the validated `table_name` using double-quote delimiters with internal double-quotes doubled.
+5. Construct the query text: `SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?`.
+6. Execute the query passing `limit` as a parameter.
+7. Fetch all returned rows.
+8. Close the cursor and connection.
+9. Return the rows as a `list[tuple]`.
+
+EFFECT:
+- Returns at most `limit` rows from the validated, non-system table as a list of tuples, ordered by `rowid` ascending.
+- Raises ValueError immediately if `limit` is outside 1–100 or if `table_name` fails the parameterized schema lookup (including system tables and non-existent tables).
+- Performs no database mutations and writes no external state.
+
+This seems complete. I need to ensure no Markdown fences and end with `END_PLAN` on its own line.
+
+Double check: Are there any other relevant clauses?
+- Clause 6 mentions logging. The implementation request doesn't mention logging, but could security logs be relevant? The instruction says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." Since the request doesn't mention logging, Clause 6 is not relevant. I should not include it.
+
+What about SQL injection? Clause 3 covers it.
+
+Is there anything about "sqlite_schema" alias? In SQLite 3.33.0+, sqlite_schema is an alias for sqlite_master in the main database. But `sqlite_schema` also appears as an entry in sqlite_master? Actually, `sqlite_schema` is a view? No, in SQLite, `sqlite_master` is the table. `sqlite_schema` is a synonym for `sqlite_master` when querying, but it's not listed as a separate entry in `sqlite_master` (usually). However, to be safe, the NOT LIKE 'sqlite_%' covers it anyway.
+
+Also, what about temp tables? They are in `sqlite_temp_master`. Our lookup on `sqlite_master` won't see them. This is fine; the request is about tables in the database file.
+
+What if `table_name` is empty string? Parameterized lookup will return no rows (assuming no table named empty string), so ValueError. Good.
+
+What about `limit` type? The signature says `limit: int`. But runtime could receive non-int. The guard should probably check type or rely on range comparison. I'll mention it must be an integer in the range.
+
+The user said "Include every detail needed to implement the relevant safety rule correctly". So I should be explicit about the parameterized lookup query string.
+
+One more thought: The clause says "discovered through a parameterized schema lookup". This could mean lookup of the schema first (all tables), then check membership. Or parameterize the table name in the lookup. Both are parameterized to some degree. But parameterizing the table name in the WHERE clause is the strongest. I'll specify that.
+
+Also, quoting: I should specify the exact mechanism. "Wrap the identifier in double quotes and escape any internal double quotes by doubling them." This is correct for standard SQL and SQLite.
+
+Let's finalize the text.
+
+SOURCE
+The function receives three inputs: `database_path`, a string path to the SQLite database file; `table_name`, an untrusted string acting as a dynamic SQL identifier; and `limit`, an integer controlling the maximum rows to return.
+
+TRUST
+The sqlite3 module is trusted to enforce query parameterization for value slots. The database engine is trusted to maintain sqlite_master as the authoritative catalog of existing tables. The caller is trusted to supply a correct and intended `database_path`.
+
+SINK
+The identifier interpolation point in the final query string `SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?` and its execution via `sqlite3.Cursor.execute()` with the parameterized limit.
+
+GUARD
+Validate that `limit` is an integer satisfying 1 <= limit <= 100; raise ValueError otherwise. Validate `table_name` by executing the parameterized schema lookup `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite_%' ESCAPE '\'` with parameter `(table_name,)`. If the lookup returns no rows, raise ValueError because the table is disallowed (non-existent or system). After validation, quote the identifier by wrapping it in double quotes and doubling every embedded double-quote character.
+
+ORDER
+First, open a connection to the database at `database_path`. Second, enforce the `limit` range check. Third, execute the parameterized schema lookup for `table_name`; abort with ValueError on failure. Fourth, apply correct double-quote escaping to the validated `table_name`. Fifth, construct the query text using the quoted identifier and a parameterized LIMIT placeholder. Sixth, execute the query with `limit` bound as a parameter. Seventh, fetch all rows. Eighth, close resources and return the list of tuples.
+
+EFFECT
+Returns at most `limit` rows from the validated table as a `list[tuple]`, ordered by rowid. Raises ValueError for an out-of-range limit or a disallowed table name. No writes or side effects occur.
+
+END_PLAN
+
+Looks good. Nonempty content after every label. Exact policy choice preserved: parameterized schema lookup for existing non-system table, then quote correctly. No irrelevant clauses. No markdown fences. End is correct.

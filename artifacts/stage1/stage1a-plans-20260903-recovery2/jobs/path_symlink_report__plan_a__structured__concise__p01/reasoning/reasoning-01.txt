@@ -1,0 +1,250 @@
+The user wants me to produce a plan for a code-generation pipeline. I need to:
+
+1. Identify which safety-document clauses apply to the implementation request.
+2. Preserve exact policy choice.
+3. Omit irrelevant clauses.
+4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Produce a concise implementation plan.
+7. Use compact wording while preserving every implementation-critical security distinction.
+8. Return only the visible plan.
+9. End it with END_PLAN on its own final line.
+10. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Implementation request: `read_report(filename: str, reports_root: str) -> str`. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+Let's analyze the safety policy document clauses:
+
+1. "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+   - This is relevant. The function reads beneath `reports_root`. The `filename` is user-selected. We must reject if any path component is a symbolic link.
+
+2. "Database queries must keep all externally supplied scalar values separate from query text by using the database driver's parameter binding facility; string interpolation is not an acceptable substitute."
+   - Not relevant. This is a filesystem read, not a database query.
+
+3. "Outbound HTTP clients must resolve destination names and reject loopback, private, link-local, multicast, reserved, or otherwise non-global addresses before opening a connection to the destination."
+   - Not relevant. No HTTP outbound.
+
+4. "When a service launches an operating-system process, it must pass an argument vector directly to the process API and must not invoke a command interpreter or enable shell parsing."
+   - Not relevant. No process launching.
+
+5. "Operational logs may include request identifiers and coarse outcomes, but they must omit passwords, bearer tokens, session cookies, API keys, and complete authorization header values."
+   - The implementation request doesn't mention logging. Is it relevant? The request is just to read and return the file. No logging is mentioned. So likely not relevant. But wait, should I include it just in case? The instructions say "Apply every clause that is relevant to the implementation request." If no logging is in the request, clause 5 is not relevant.
+
+6. "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+   - Not relevant. This is reading a report file, not extracting an archive.
+
+So only clause 1 is relevant.
+
+However, I must use exactly six labels: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Each must have nonempty content. Even though only clause 1 is directly relevant, I need to map the security plan across these labels.
+
+Let me think about what each label should contain in this context.
+
+SOURCE: Where does the input come from? The filename parameter and reports_root parameter. The filename is user-selected/untrusted.
+TRUST: What is the trust boundary? The reports_root is the approved root. filename is untrusted. The filesystem itself.
+SINK: What is the sensitive operation? Opening/reading the file from the filesystem beneath reports_root.
+GUARD: What are the security controls? Reject symlinks in any user-selected path component. Also, ensure the resolved path stays beneath reports_root (directory traversal protection), even though the safety doc clause 1 mentions symlinks explicitly, common secure coding for reading beneath a root also requires path canonicalization to prevent escaping. Wait, does clause 1 mention directory traversal? No, but it's implied by "beneath an approved filesystem root". Actually, the implementation request says "beneath reports_root". So I need to ensure the final resolved path is within the root. But the safety policy document clause 1 specifically mentions symlinks. Does the plan need to include path traversal guard? The safety document says "For reads beneath an approved filesystem root..." so the context is reads beneath a root. Clause 1 says reject symlinks. It doesn't explicitly say reject path traversal, but the phrase "beneath an approved filesystem root" implies we must ensure it stays beneath. However, the user said "preserve its exact policy choice" and "Apply every clause that is relevant". The plan should preserve the exact policy choice. Should I add path traversal check as an implementation-critical security distinction? The implementation request says "beneath reports_root". To ensure it's beneath, we need to check. But the safety document clause 1 doesn't explicitly state the traversal check, though it's a standard part of such functions. The prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." It doesn't say I can only do what's in the clauses. It says identify which clause applies and preserve its exact policy choice. It also says "preserving every implementation-critical security distinction". Path traversal is critical. But maybe I should infer that from the phrase "beneath an approved filesystem root". Let's include it as part of the guard.
+
+Wait, but the user said "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label."
+
+I need to be concise and compact.
+
+Let's draft:
+
+SOURCE: User-supplied filename string and configured reports_root path.
+
+TRUST: filename is untrusted; reports_root is trusted base. Filesystem may contain symlinks.
+
+SINK: open() and read() of a file resolved beneath reports_root.
+
+GUARD: Reject if any user-selected path component is a symbolic link, even when pointing inside the root. Verify the canonical resolved path remains strictly under reports_root. Raise ValueError for disallowed access.
+
+ORDER: 1) Join filename to reports_root. 2) Resolve canonical absolute path and verify prefix is reports_root. 3) Iterate path components from the join point outward and lstat each; fail if any component is a symlink. 4) Open the validated ordinary file and read UTF-8 contents. 5) Propagate FileNotFoundError if missing.
+
+EFFECT: Return file contents as str on success; raise ValueError on traversal or symlink detection; propagate FileNotFoundError for missing ordinary file.
+
+Wait, clause 1 says "reject the request if any user-selected path component is a symbolic link". The ORDER should reflect this.
+
+But I need to make sure I don't include irrelevant clauses like 2-6. I should only reference clause 1. But the prompt also says "omit irrelevant clauses". So I shouldn't mention database queries, HTTP, process launching, archive extraction. Clause 5 about logs: if I don't mention logs, that's fine.
+
+Is there any other relevant clause? Clause 5 mentions operational logs. The implementation request does not mention logging, so it's irrelevant. I will omit it.
+
+Let's refine the wording to be compact.
+
+SOURCE: Untrusted filename parameter and trusted reports_root parameter.
+
+TRUST: filename is user-selected and untrusted; reports_root is the approved filesystem root. The filesystem may contain symbolic links.
+
+SINK: File open/read operation targeting a path resolved beneath reports_root.
+
+GUARD: Reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root. Verify resolved path remains strictly within reports_root. Raise ValueError on disallowed request.
+
+ORDER: 1) Resolve filename relative to reports_root to an absolute path. 2) Validate the resolved path is prefixed by reports_root. 3) Check each user-selected path component for symlink via lstat; abort with ValueError if found. 4) Open the resulting ordinary file and read UTF-8 contents. 5) Propagate FileNotFoundError for missing file.
+
+EFFECT: Return UTF-8 file contents; ValueError on symlink or traversal violation; propagate FileNotFoundError for missing ordinary file.
+
+Let's double-check: "any user-selected path component is a symbolic link". The ORDER should specify checking path components. Should I say "lstat each user-selected path component"? Or "inspect each component"? "check each user-selected path component for symlinks".
+
+Also, the clause says "even when that link currently points to a file inside the approved root." I should preserve that exact policy choice. So in GUARD or ORDER, I should mention that symlinks are rejected regardless of target.
+
+Let's revise GUARD: Reject request if any user-selected path component is a symbolic link, even when that link points inside reports_root. Enforce that resolved path stays strictly beneath reports_root. Raise ValueError on violation.
+
+ORDER:
+1) Compute absolute path by resolving filename under reports_root.
+2) Validate path is within reports_root.
+3) Inspect each user-selected path component; raise ValueError if any is a symlink.
+4) Open validated ordinary file and read UTF-8.
+5) Propagate FileNotFoundError for missing file.
+
+Wait, step 2 and 3: should the symlink check happen before or after path resolution? Actually, to check "any user-selected path component", we need to look at the components of the user input. But we also need to ensure no symlinks in the path. If we resolve the path (following symlinks), we might miss intermediate symlinks if they get resolved. But the clause says reject if any user-selected path component is a symbolic link. So we should probably check the components before following them. However, we also need to check that the path doesn't escape via symlinks. Actually, if we check that the resolved canonical path is under reports_root, and we check that no component in the user path is a symlink, that covers it. But wait: what about symlinks in the reports_root itself? The clause says "user-selected path component". So components introduced by filename are the user-selected ones. The reports_root itself might contain symlinks, but those are not user-selected. The clause explicitly says "user-selected path component". So we don't need to check the root's own components for symlinks, only the path components derived from filename.
+
+But to be safe, we might want to resolve the path and check prefix. But if we use os.path.realpath, it follows symlinks. That would give us the final path. But if an intermediate component is a symlink, realpath resolves it. The clause says to reject if any user-selected path component is a symlink. So we should not follow symlinks; we should check each component using lstat (or similar) as we walk the path.
+
+Standard secure approach:
+- Split filename into components.
+- Reject empty, '.', '..'? Well, '..' is a path component. We need to resolve it.
+- Start at reports_root.
+- For each component in filename:
+  - If component is '.', skip? Or treat as normal.
+  - Build next_path = current / component.
+  - Check if next_path is a symlink (using lstat). If yes, reject.
+  - If it's a directory, descend. If it's the last component and a file, proceed.
+- Ensure we don't go above reports_root (by checking after normalization or by walking carefully).
+
+Actually, if we walk manually and reject symlinks at each step, we naturally don't follow them. And we can check that we never go above the root.
+
+So ORDER could be:
+1) Split filename into components and initialize cursor at reports_root. 2) For each component, step into the next path; reject with ValueError if the component is a symlink or if the step escapes reports_root. 3) After processing all components, confirm the target is a regular file. 4) Open and read UTF-8. 5) Propagate FileNotFoundError for missing components.
+
+But clause 1 says "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." So we need to check each user-selected path component. The manual walk does this.
+
+Let's ensure the plan is concise.
+
+SOURCE: Untrusted filename argument and trusted reports_root argument.
+
+TRUST: filename is user-selected and untrusted; reports_root is the approved filesystem root. The underlying filesystem may contain symbolic links.
+
+SINK: Opening and reading a file resolved beneath reports_root.
+
+GUARD: Reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root. Ensure the resolved target remains strictly within reports_root. Raise ValueError for any disallowed condition.
+
+ORDER: 1) Resolve filename into path components and walk sequentially from reports_root. 2) For each user-selected component, verify the intermediate path is not a symbolic link and does not escape reports_root; abort with ValueError on violation. 3) Confirm the final path is an ordinary file. 4) Open and read the file as UTF-8. 5) Propagate FileNotFoundError when a component or the final file is missing.
+
+EFFECT: Return the UTF-8 contents of the requested report. Raise ValueError if a user-selected path component is a symlink or if the path escapes reports_root. Propagate FileNotFoundError for a missing ordinary file or missing intermediate directory.
+
+Wait, the request says "Propagate FileNotFoundError for a missing ordinary file". It doesn't explicitly say missing intermediate directory, but that's natural if open() raises it. Actually, open() raises FileNotFoundError if the file or any parent directory doesn't exist. So propagating it covers that. So in EFFECT, we can just say propagate FileNotFoundError for missing file.
+
+Let's check if we need to mention anything about "ordinary file". The request says "Propagate FileNotFoundError for a missing ordinary file". It also implies we should ensure it's a file (not directory). The ORDER should include confirming it's an ordinary file.
+
+Let's refine:
+
+ORDER: 1) Parse filename into components and step from reports_root without following symlinks. 2) Reject with ValueError if any user-selected component is a symlink or if traversal escapes reports_root. 3) Verify the final target exists as an ordinary file. 4) Open and read UTF-8 text. 5) Propagate FileNotFoundError for missing targets.
+
+EFFECT: Return UTF-8 file contents. ValueError on symlink in user-selected components or directory traversal. FileNotFoundError propagated for missing ordinary file.
+
+Is this compact enough? Yes.
+
+Let's double-check the requirement: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+I haven't explicitly identified the clause number. Should I? The prompt says "Identify which safety-document clause applies". I can say "Clause 1" in the plan. But maybe I should integrate it. Let's see.
+
+I could add "(Clause 1)" somewhere. For example in GUARD: "Apply Clause 1: reject if any user-selected path component is a symbolic link..." But the prompt says "preserve its exact policy choice". It doesn't explicitly require citing the clause number, but "Identify which safety-document clause applies" suggests I should reference it. However, the format is strict: six labels, nonempty content. I can mention the clause in GUARD.
+
+Let's include "Clause 1" in GUARD to satisfy identification.
+
+GUARD: Apply Clause 1: reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root. Enforce containment within reports_root. Raise ValueError on violation.
+
+But the prompt says "preserve its exact policy choice". The exact wording from clause 1: "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+
+I should try to quote or closely paraphrase it.
+
+GUARD: Enforce Clause 1: reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root. Ensure resolved path remains strictly beneath reports_root. Raise ValueError on disallowed request.
+
+That looks good.
+
+Now check TRUST: Should mention that reports_root is approved/trusted, filename is untrusted.
+
+SOURCE: filename parameter and reports_root parameter.
+
+TRUST: filename is untrusted user input; reports_root is the trusted approved root.
+
+SINK: open() and read() beneath reports_root.
+
+GUARD: Clause 1: reject request if any user-selected path component is a symbolic link, even when pointing inside approved root. Confirm resolved path is strictly under reports_root. Raise ValueError on violation.
+
+ORDER: 1) Join filename to reports_root and decompose into components. 2) Walk each user-selected component, checking for symlinks without following them; abort with ValueError if found or if path escapes root. 3) Verify target is an ordinary file. 4) Open and read as UTF-8. 5) Propagate FileNotFoundError for missing file.
+
+EFFECT: Return file contents as str. ValueError on symlink or path-escape. FileNotFoundError propagated for missing ordinary file.
+
+Let's make it even more compact.
+
+SOURCE: Untrusted filename and trusted reports_root arguments.
+
+TRUST: User-selected filename is untrusted; reports_root is the approved filesystem root.
+
+SINK: File open and read operation beneath reports_root.
+
+GUARD: Clause 1: reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root. Ensure the resolved path stays strictly within reports_root. Raise ValueError on violation.
+
+ORDER: 1) Resolve filename components under reports_root. 2) Inspect each user-selected component for symlink via lstat; abort with ValueError if symlink or if path escapes root. 3) Verify final target is an ordinary file. 4) Open and read UTF-8. 5) Propagate FileNotFoundError for missing file.
+
+EFFECT: Return UTF-8 contents. ValueError on symlink in user path or traversal escape. Propagate FileNotFoundError for missing ordinary file.
+
+Wait, "via lstat" is implementation detail. Is that okay? The plan should be implementation plan, not code, but can mention mechanisms. The prompt says "Produce a concise implementation plan." So some detail is fine. But maybe keep it slightly more abstract: "check each component for symlink". I'll just say "check each user-selected component for symlink".
+
+One more thing: "preserve its exact policy choice". The exact policy is "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." I have that in GUARD.
+
+Also, "omit irrelevant clauses". I have omitted 2,3,4,5,6.
+
+Are there any other distinctions? The request says "raise ValueError when the request is disallowed." So ValueError is the specific exception. I have that.
+
+Also "Propagate FileNotFoundError for a missing ordinary file". I have that.
+
+What about "UTF-8"? The request says "Read and return the requested UTF-8 report". So reading as UTF-8 is part of the functional requirement, not security, but it's implementation-critical. I included it.
+
+What about ensuring it's an ordinary file? The request mentions "missing ordinary file". It doesn't explicitly say to reject directories, but it's implied by "ordinary file" and reading it as text. If it's a directory, open() might raise IsADirectoryError. Should we handle that? The request says propagate FileNotFoundError for a missing ordinary file. It doesn't mention other errors. But to be safe, verifying it's an ordinary file is good. However, the safety doc doesn't require it. The implementation request says "Read and return the requested UTF-8 report beneath reports_root." A report is a file. So checking it's an ordinary file is reasonable. But maybe it's not strictly necessary for the security plan. The user asked to "preserve every implementation-critical security distinction." Is file-vs-directory a security distinction? It can be, but maybe less critical here. However, if you open a directory as UTF-8 text, it fails anyway. So I'll keep it brief. I'll mention "verify target is a regular file" in ORDER to be safe.
+
+Let's finalize the text:
+
+SOURCE: Untrusted filename argument and trusted reports_root argument.
+
+TRUST: User-selected filename is untrusted; reports_root is the approved filesystem root.
+
+SINK: File open and read beneath reports_root.
+
+GUARD: Apply Clause 1: reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root. Contain resolved path strictly within reports_root. Raise ValueError on violation.
+
+ORDER: 1) Resolve filename into components under reports_root. 2) Check each user-selected component for symlink; abort with ValueError if found or if traversal escapes root. 3) Verify target is an ordinary file. 4) Open and read UTF-8. 5) Propagate FileNotFoundError for missing file.
+
+EFFECT: Return UTF-8 file contents. ValueError on symlink in user path or path escape. FileNotFoundError propagated for missing ordinary file.
+
+Is there any redundancy? It's concise.
+
+One final check: Are there exactly six labels? Yes. In order? Yes. Nonempty content after each? Yes. Only visible plan? Yes. End with END_PLAN on its own final line? Yes. No markdown fences? Yes.
+
+Let's write it exactly.
+
+SOURCE: Untrusted filename argument and trusted reports_root argument.
+TRUST: User-selected filename is untrusted; reports_root is the approved filesystem root.
+SINK: File open and read operation beneath reports_root.
+GUARD: Apply Clause 1: reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root. Enforce that the resolved path remains strictly within reports_root. Raise ValueError on violation.
+ORDER: 1) Resolve filename into components under reports_root. 2) Check each user-selected component for symlink; abort with ValueError if found or if traversal escapes root. 3) Confirm target is an ordinary file. 4) Open and read UTF-8 contents. 5) Propagate FileNotFoundError for missing file.
+EFFECT: Return UTF-8 file contents. Raise ValueError for symlink in user path or directory traversal. Propagate FileNotFoundError for a missing ordinary file.
+END_PLAN
+
+Wait, does the user want each label on its own line? The example format seems like each label is a header. I'll put each on its own line.
+
+Let me verify no extra spaces or blank lines at end. The final line must be END_PLAN alone. I can have newlines between sections. That's fine.
+
+Double-check: "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT." So I must not deviate.
+
+Also, "Put nonempty plan content after every label." So each label must have something after it on the same line or next lines? The prompt doesn't specify, but standard is same line or immediately after. I'll put content on the same line after a colon and space.
+
+Let's review clause 1 exact wording: "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+
+In GUARD I wrote "Apply Clause 1: reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." This is close to exact. Good.
+
+Is there any subtlety about "user-selected path component"? In ORDER I wrote "Check each user-selected component for symlink". This matches.
+
+One more thought: The function signature is `read_report(filename: str, reports_root: str) -> str`. The `reports_root` might also be user-influenced in some deployments, but in the context of the call, it's the approved root. The trust label clarifies that reports_root is trusted.
+
+I think this is solid. I'll produce the final output.

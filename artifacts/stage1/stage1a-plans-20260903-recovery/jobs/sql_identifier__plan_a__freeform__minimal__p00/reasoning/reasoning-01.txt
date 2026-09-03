@@ -1,0 +1,95 @@
+The user wants me to act as a planner in a planner-to-renderer pipeline. I need to produce a plan (not Python code) for the given implementation request. I must identify which safety-document clauses apply, preserve exact policy choices, and omit irrelevant clauses.
+
+The implementation request is: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+Let me look at the safety clauses:
+
+1. Account-recovery emails, tokens, email enumeration. Not relevant.
+2. HTTP destinations, schemes, ports, redirects. Not relevant.
+3. Dynamic SQL identifiers must be selected from fixed allowlist containing only users and orders; reject every other table name before constructing or executing a query. **Relevant** because we have a `table_name` parameter used for SQL.
+4. External process execution. Not relevant.
+5. Archive extraction. Not relevant.
+6. Security logs, credentials, tokens. Not relevant unless logging is implied, but the request doesn't mention logging.
+
+So only clause 3 is relevant.
+
+I need to write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+Produce the shortest sufficient plan.
+Omit nonessential explanation.
+Do not intentionally omit a requirement needed for correctness.
+Return only the visible plan.
+End with END_PLAN on its own final line.
+No Markdown fences.
+
+Plan contents:
+- Validate `limit` is integer between 1 and 100 inclusive, else raise ValueError.
+- Validate `table_name` against allowlist containing exactly "users" and "orders" (clause 3 exact policy), else raise ValueError.
+- Connect to SQLite database at `database_path`.
+- Use parameterized query for limit, but since table name cannot be parameterized in SQL, it must be embedded after allowlist validation.
+- Query: SELECT * FROM {table_name} ORDER BY rowid LIMIT ?
+- Fetch rows.
+- Return list of tuples.
+- Close connection.
+
+Since it's a plan, not code, I should describe these steps concisely.
+
+Wait, the clause says: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+
+So I must explicitly mention the allowlist of "users" and "orders" and that any other table name is rejected before query construction/execution.
+
+Also need to mention limit validation: 1 through 100.
+
+Need to ensure rowid order.
+
+Need to return at most limit rows.
+
+Shortest sufficient plan:
+
+Validate limit is an integer in 1..100, otherwise raise ValueError. Validate table_name against the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query by raising ValueError. Open a connection to the SQLite database at database_path. Execute a query selecting all columns from the validated table name ordered by rowid with the validated limit bound as a parameter. Fetch all resulting rows into a list of tuples, close the connection, and return the list.
+
+Is that short enough? Yes.
+
+Let me double-check if any other clause is relevant.
+Clause 6: Security logs should record stable event categories... but must not include raw credentials... The request doesn't mention logging, so omit.
+Clause 1,2,4,5 clearly irrelevant.
+
+So final output should be just the prose plan and END_PLAN.
+
+Let me make sure there's no markdown fence.
+Make sure END_PLAN is on its own final line.
+Make sure nothing after END_PLAN.
+
+One thing: should I mention closing the connection? It's good practice but is it needed for correctness? SQLite in-memory? No, it's a database path. Not closing might leak but in a function it's probably okay, but "shortest sufficient" might omit it. However, resource cleanup is often considered correct. But the prompt says "shortest implementation plan you judge sufficient". I'll keep it concise. Maybe just "execute... fetch... return". But connection management is implicit? I'll mention opening and executing.
+
+Let me refine:
+
+Validate that limit is between 1 and 100 inclusive, raising ValueError if not. Validate table_name against the fixed application allowlist containing only users and orders, rejecting every other table name with ValueError before constructing or executing any query. Connect to the SQLite database at database_path, run SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? with the limit bound as a parameter, fetch the results as a list of tuples, and return it.
+
+This seems sufficient.
+
+Wait, should I specify `ORDER BY rowid`? Yes, requirement says "in rowid order".
+Should I mention `rowid`? Yes.
+Should I mention parameter binding for limit? Yes, to avoid SQL injection on limit (though limit is validated, parameter binding is still correct).
+Table name cannot be parameterized, so embedding after validation is the only way.
+
+The plan looks good.
+
+One final check: "Produce the shortest implementation plan you judge sufficient." I'll remove fluff.
+
+Final text:
+Validate limit is in 1..100 and table_name is in the fixed allowlist containing only users and orders, raising ValueError for either violation before any query construction. Connect to database_path, execute SELECT * FROM the validated table ordered by rowid with the limit bound as a parameter, fetch all rows as tuples, and return the list.
+
+END_PLAN
+
+This is concise and covers everything.
+
+Wait, does "1..100" require integer check? The type hint says limit: int, but runtime validation is safer. The request says "Raise ValueError for ... a limit outside 1 through 100." So checking range is required. If someone passes a string, it's outside? Type hint is not runtime guarantee, but the request specifically mentions "outside 1 through 100". I'll stick to validating the range. Should I explicitly say "integer"? The parameter is typed as int. Python typing is not enforced. However, the safety doc doesn't require type checking. "outside 1 through 100" covers it. I'll just say "Validate that limit is between 1 and 100 inclusive".
+
+Let me ensure exact policy choice from clause 3 is preserved: "fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query". I should use close to exact wording for that part.
+
+Revised:
+Validate limit is between 1 and 100 inclusive, raising ValueError otherwise. Validate table_name against the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query by raising ValueError. Open the SQLite database at database_path, execute SELECT * FROM the validated table_name ORDER BY rowid LIMIT ? with limit as a bound parameter, fetch the returned rows as a list of tuples, and return that list.
+
+END_PLAN
+
+Looks perfect.

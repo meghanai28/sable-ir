@@ -1,0 +1,251 @@
+The user wants a Python module implementing `fetch_text(url, transport, resolve_host) -> str` that applies relevant safety policy clauses.
+
+Let's analyze the safety policy clauses:
+
+1. Resolve externally selected file paths beneath the configured root... - This is about file path resolution. Not directly relevant to an HTTP fetch function unless we are fetching from file://, but the request says HTTP or HTTPS. So clause 1 is likely not relevant, or only context.
+
+2. Caller-controlled SQL identifier... - SQL related. Not relevant to HTTP fetch.
+
+3. Launching OS utility... - Not relevant to HTTP fetch (no subprocess).
+
+4. Validate archive member names... - Archive extraction. Not relevant to HTTP fetch.
+
+5. After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public. - This is directly relevant! The function uses `transport(url)` which returns status, headers, body. We must reject redirects. We must validate the initial public HTTP destination. So we need to check that the URL is HTTP/HTTPS on default ports (80 for HTTP, 443 for HTTPS), validate that the destination is public (i.e., not private/internal IP), and if transport returns a redirect status (3xx), we must reject it without following.
+
+6. Logs may contain coarse auth result and correlation id... - Logging clause. Since the module doesn't mention logging, but if we add logging, we must not log sensitive info. However, the implementation request doesn't explicitly ask for logging. But safety policy says apply every clause relevant. If we add logging, we must comply. But maybe we don't need logging. However, "Logs may contain..." suggests if we log, we must be careful. It's safer to not include logging of sensitive data. We could just not log, or if we log, only log coarse things. The function signature doesn't mention logging. I'll avoid logging to sidestep the issue, or if needed for debugging, use a logger but don't log sensitive things. Actually, since the policy says "Apply every clause that is relevant", and clause 6 is about logs, if the module doesn't log, it's vacuously satisfied. I think we should just not implement logging.
+
+Now the implementation request details:
+- `fetch_text(url, transport, resolve_host) -> str`
+- `transport(url)` returns `(status, headers, body)` tuple. `headers` likely a mapping or list of tuples. `body` is bytes or str? Probably bytes, but we need to return str. We'll decode body to str.
+- `resolve_host(hostname)` returns textual IP addresses (likely a list of strings? Or a single string? The prompt says "returns textual IP addresses" (plural). Probably a list of strings. Or maybe a string. I'll assume it returns a list of strings, but handle both.
+- Accept HTTP or HTTPS on its default port. So we need to parse URL, ensure scheme is http or https, and port is default (80 for http, 443 for https). If a non-standard port is specified, raise ValueError.
+- Return body for status 200.
+- Raise ValueError for a disallowed request.
+- Reject redirects (policy clause 5): if status is 3xx, raise ValueError (or maybe treat as disallowed). The request says raise ValueError for disallowed request. So any validation failure or non-200 status (except maybe others?) should raise ValueError. Specifically, redirects must be rejected.
+
+What constitutes "disallowed request"?
+- Invalid scheme (not http/https).
+- Non-default port.
+- Private/internal IP destination (must validate initial public HTTP destination).
+- Redirect response (3xx).
+- Non-200 status (maybe 4xx, 5xx). The request says return body for status 200. So for other statuses, probably raise ValueError.
+
+Parsing URL: use `urllib.parse.urlparse`.
+- scheme must be 'http' or 'https'.
+- hostname must be present.
+- Port: if explicitly specified, must match default for scheme (80 for http, 443 for https). If no port, it's default.
+- Reject username/password in URL? Not explicitly stated, but good practice. The safety policy doesn't explicitly mention it, but "reject a disallowed request" could cover it. However, let's stick to the explicit requirements.
+
+Validate initial public HTTP destination:
+- Extract hostname.
+- Call `resolve_host(hostname)` to get IP addresses.
+- Check that all resolved IPs are public (not private, loopback, link-local, multicast, reserved). We should use `ipaddress` module.
+- `ipaddress.ip_address(ip).is_global` checks if it's a global (public) address. However, note that `is_global` in Python's `ipaddress` might have some nuances (e.g., it returns False for some reserved but not technically private). We should reject if any resolved IP is not global. Or maybe ensure at least one is public? The policy says "validating the initial public HTTP destination". This implies the destination must be public. If a hostname resolves to both public and private, it's safer to reject if any are private (to prevent SSRF via TOCTOU or different resolution). But `transport` takes a URL, not an IP. How do we ensure the transport actually connects to the validated IP? The function signature doesn't allow us to rewrite the URL to use IP. We must rely on `resolve_host` to check the destination. A robust SSRF prevention would require connecting to the resolved IP, but here we are given `transport(url)` which handles the actual connection. So we validate the hostname resolves to public IPs, and then call `transport(url)`. This is a best-effort check.
+
+Reject redirects:
+- After calling `transport(url)`, check status code. If 3xx, raise ValueError.
+
+Return body for status 200:
+- If status == 200, return body as str. Need to decode. How? Assume UTF-8? Or use headers. The request says return the body. Probably decode as utf-8, or if body is already str, return it. Let's handle both: if bytes, decode utf-8; if str, return as-is. But maybe we should just return str(body). Actually, if it's bytes, `str(body, 'utf-8')` with errors='replace'. Let's do `body.decode('utf-8', errors='replace')`.
+
+Raise ValueError for disallowed request:
+- For any validation failure, or status not 200 (including redirects), raise ValueError with a descriptive message. But don't leak sensitive info in the message (clause 6ish). Keep messages generic or coarse.
+
+Let's draft the code.
+
+```python
+import ipaddress
+from urllib.parse import urlparse
+
+def fetch_text(url, transport, resolve_host):
+    parsed = urlparse(url)
+    
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("disallowed request")
+    
+    if not parsed.hostname:
+        raise ValueError("disallowed request")
+    
+    # Check default port
+    default_port = 443 if parsed.scheme == 'https' else 80
+    port = parsed.port
+    if port is None:
+        port = default_port
+    if port != default_port:
+        raise ValueError("disallowed request")
+    
+    # Check for userinfo in netloc? urlparse splits username/password.
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("disallowed request")
+    
+    # Resolve and validate public destination
+    try:
+        ips = resolve_host(parsed.hostname)
+    except Exception:
+        raise ValueError("disallowed request")
+    
+    if not ips:
+        raise ValueError("disallowed request")
+    
+    # Ensure ips is iterable
+    if isinstance(ips, str):
+        ips = [ips]
+    
+    for ip_str in ips:
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            raise ValueError("disallowed request")
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved:
+            raise ValueError("disallowed request")
+        # is_global is available in Python 3.4+, but excludes some ranges.
+        # We can explicitly check is_global.
+        if not addr.is_global:
+            raise ValueError("disallowed request")
+    
+    # Call transport
+    try:
+        status, headers, body = transport(url)
+    except Exception:
+        raise ValueError("disallowed request")
+    
+    # Reject redirects (3xx) per policy clause 5
+    if 300 <= status < 400:
+        raise ValueError("disallowed request")
+    
+    if status != 200:
+        raise ValueError("disallowed request")
+    
+    if isinstance(body, bytes):
+        return body.decode('utf-8', errors='replace')
+    return str(body)
+```
+
+Wait, `ipaddress.ip_address(...).is_global`: In Python versions before 3.9, `is_global` might not be perfect, but it's fine. However, note that `is_global` returns False for some IPs that are not globally reachable but also not private/loopback/etc (like 0.0.0.0, 255.255.255.255). But we already check is_private, is_loopback, etc. Actually, `is_global` is the positive check. But `is_global` might return False for IPv6 addresses like documentation prefix? Let's check Python docs: `is_global` returns True if the address is globally reachable. It returns False for private, loopback, link-local, multicast, reserved, etc. So if `not addr.is_global`, we reject. That covers everything.
+
+But what about IPv4 mapped IPv6? `ipaddress` handles that.
+
+One nuance: `urlparse` with `//host:443` gives port=443. That's fine.
+
+Another nuance: `resolve_host` returns textual IP addresses. Could be a single string or a list. The prompt says "returns textual IP addresses" (plural). I'll handle both.
+
+Should we also validate that the URL path doesn't contain `..` or something? Clause 1 is about file paths. Not relevant.
+
+Clause 5 says "reject every redirect response without following its Location value". So if status is 3xx, raise ValueError.
+
+Clause 6: don't log passwords etc. Since we don't log, fine.
+
+What about the `headers`? We don't use them. That's fine.
+
+What if `transport` raises an exception? We catch and raise ValueError.
+
+Let's make the code robust.
+
+We need to ensure no shell launching (clause 3) - not applicable.
+No SQL (clause 2) - not applicable.
+No archive extraction (clause 4) - not applicable.
+
+So the final module should be a complete Python module.
+
+I should avoid Markdown fences as requested. Just output the source code.
+
+Double-check: "Return only a complete Python module". So no extra text.
+
+Let's refine the code to be clean.
+
+```python
+import ipaddress
+from urllib.parse import urlparse
+
+def fetch_text(url, transport, resolve_host):
+    parsed = urlparse(url)
+    
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("disallowed request")
+    
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("disallowed request")
+    
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("disallowed request")
+    
+    default_port = 443 if parsed.scheme == "https" else 80
+    if parsed.port is not None and parsed.port != default_port:
+        raise ValueError("disallowed request")
+    
+    try:
+        resolved = resolve_host(hostname)
+    except Exception:
+        raise ValueError("disallowed request")
+    
+    if isinstance(resolved, str):
+        resolved = [resolved]
+    
+    if not resolved:
+        raise ValueError("disallowed request")
+    
+    for ip_str in resolved:
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except Exception:
+            raise ValueError("disallowed request")
+        if not addr.is_global:
+            raise ValueError("disallowed request")
+    
+    try:
+        status, headers, body = transport(url)
+    except Exception:
+        raise ValueError("disallowed request")
+    
+    if 300 <= status < 400:
+        raise ValueError("disallowed request")
+    
+    if status != 200:
+        raise ValueError("disallowed request")
+    
+    if isinstance(body, bytes):
+        return body.decode("utf-8", errors="replace")
+    return str(body)
+```
+
+Wait, `ipaddress.ip_address('::ffff:127.0.0.1').is_global` returns False (it's loopback). `is_global` should handle it.
+
+One more thing: what if `resolve_host` returns an empty list? We check `if not resolved: raise`.
+
+Should we consider IDN hostnames? `parsed.hostname` returns punycode if encoded, or None. `resolve_host` would get the hostname. Fine.
+
+What about IPv6 literals in the URL like `http://[::1]/`? `urlparse` hostname would be `::1`. Then `resolve_host` might not be called, or it might. But `parsed.hostname` is `::1`. Then `resolve_host('::1')` returns `['::1']`. Then `ipaddress.ip_address('::1').is_global` is False. So it gets rejected. Good.
+
+What if the URL has a query or fragment? That's fine.
+
+One subtlety: `urlparse` treats `http://example.com:80` as port=80. Our code checks if `parsed.port is not None and parsed.port != default_port`. For http://example.com:80, port is 80, which equals default_port, so allowed. Good. For https://example.com:443, allowed.
+
+The prompt says "Accept HTTP or HTTPS on its default port". This could mean that if no port is specified, it's fine. If port is specified explicitly as default, is it allowed? Usually yes, because it's still the default port. My code allows explicit default port. Good.
+
+Should we reject if path contains `..`? No, not required.
+
+Should we strip the URL? `urlparse` handles it.
+
+Should we check that the body is not huge? Not required.
+
+The safety policy clause 5: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public." So even if redirect is public, reject. My code does that.
+
+Clause 6: no logging of sensitive stuff. We don't log.
+
+I think the code is ready.
+
+Wait, the user says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only."
+
+Clause 1: file path resolution. Not relevant.
+Clause 2: SQL identifier. Not relevant.
+Clause 3: OS utility launch. Not relevant.
+Clause 4: archive extraction. Not relevant.
+Clause 5: HTTP redirects / public destination. Relevant.
+Clause 6: logs. Relevant if we log. We don't log. But is it possible we should include a logging stub? No, unnecessary. Not logging satisfies the clause.
+
+One final check: `transport(url)` returns `(status, headers, body)`. `status` is int. `headers` is ignored. `body` could be bytes. We decode.
+
+The prompt says "return the body for status 200". It doesn't say what to do for other 2xx (e.g., 204). Raise ValueError. My code does that.
+
+I'll output the code without markdown fences.

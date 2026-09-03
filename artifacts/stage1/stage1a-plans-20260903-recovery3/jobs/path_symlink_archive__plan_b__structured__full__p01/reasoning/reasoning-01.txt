@@ -1,0 +1,365 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Produce an information-complete implementation plan.
+7. Include every detail needed to implement the relevant safety rule correctly.
+8. No word limit.
+9. Return only the visible plan.
+10. End with END_PLAN on its own final line.
+11. No Markdown fences.
+
+Safety policy document analysis:
+1. Database queries / SQL injection - NOT relevant.
+2. Archive extraction / symbolic links and hard links / normalized link target inside destination / validate every member and link before extracting any archive content - RELEVANT.
+3. Outbound HTTP / SSRF - NOT relevant.
+4. Launching programs / command injection - NOT relevant.
+5. Browser authentication / cookies - NOT relevant.
+6. Long-lived credentials / secret store - NOT relevant.
+
+So only clause 2 applies. Let me read it carefully:
+"Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+Exact policy choice to preserve:
+- Symbolic-link and hard-link members may be created ONLY when each normalized link target remains inside the destination.
+- Must validate every member and link BEFORE extracting ANY archive content.
+- Also implicitly, must not write any archive member outside dest_path (from the implementation request).
+
+Implementation request details:
+- Function: `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`
+- Extract a tar archive beneath `dest_path`
+- Return True on complete success
+- If validation or extraction fails, return False without writing any archive member outside `dest_path`.
+
+Plan structure required:
+SOURCE
+TRUST
+SINK
+GUARD
+ORDER
+EFFECT
+
+Each must have nonempty content.
+
+I need to plan the implementation details. Let's think about what needs to happen:
+
+1. Open the tar file.
+2. Iterate through all members.
+3. For each member, validate:
+   a. The member's extraction path (normalized absolute path) is within dest_path.
+   b. For symlinks: the target path (normalized, relative to dest_path if relative, or absolute but must resolve within dest_path) must remain inside dest_path.
+   c. For hard links: the link target path (normalized, resolved within dest_path context) must remain inside dest_path.
+4. Validation must happen BEFORE any extraction/writing.
+5. If any member fails validation, return False and do NOT extract anything.
+6. If all pass, then extract all members.
+7. Must handle path traversal attacks (e.g., `../../etc/passwd`).
+8. Must use normalization (like `os.path.normpath` or `pathlib.Path.resolve`) carefully to prevent bypasses.
+
+Let's map to labels:
+
+SOURCE: What are the inputs? The tar_path and dest_path. Also the contents of the tar archive (members, their names, types, link targets). Need to specify that tar_path is an external file path, dest_path is the destination directory, and the tar archive contents are externally supplied data.
+
+TRUST: What is trusted? The dest_path boundary. The python tarfile module (but with caveats). The underlying OS path normalization. The filesystem state at validation time vs extraction time (TOCTOU). Need to mention that the validation result is trusted only if extraction proceeds atomically after validation, but TOCTOU might be unavoidable. Actually, for a plan, I should mention that we trust the path normalization logic and that the filesystem doesn't change between validation and extraction, but note the limitation.
+
+SINK: Where does the data go? The filesystem under dest_path. Specifically, file writes, directory creation, symlink creation, hard link creation that happen during extraction. Also the return value bool.
+
+GUARD: The validation logic. This is the core of clause 2.
+- Validate every member before extracting any.
+- For regular files/directories: compute the normalized absolute path of the member's extraction location. Ensure it is literally inside (or equal to a subdirectory of) dest_path.
+- For symbolic links: read the link target. Compute the normalized absolute path of the target. If the target is relative, resolve it relative to the member's directory within dest_path. If absolute, normalize it. Check that it remains inside dest_path. IMPORTANT: The policy says "normalized link target remains inside the destination". Also must check the symlink's own path is inside dest_path.
+- For hard links: read the link target path. Compute normalized absolute path. Resolve relative to dest_path or normalize absolute. Ensure it remains inside dest_path.
+- Reject member types that are dangerous or unneeded (e.g., device files, fifos) unless explicitly allowed? The safety clause says "may create symbolic-link and hard-link members only when..." implying other types might be okay, but the request says "beneath dest_path". To be safe, probably reject unknown/dangerous types (devices, etc.) or at least ensure their paths are within dest_path. The clause specifically mentions symlinks and hard links. But the request says "without writing any archive member outside dest_path". So for ALL members, the extraction path must be inside dest_path.
+- Must define "inside": The normalized path must start with the normalized dest_path followed by a path separator (or be dest_path itself for a directory, but we shouldn't extract the archive root as dest_path itself? Actually extracting "beneath" dest_path means members should go into dest_path, not overwrite dest_path itself. Usually extraction joins member name to dest_path. So the resulting path must be strictly under dest_path, or at least not escape it. Let's say: normalized extraction path must be equal to normalized dest_path or a descendant. But since we extract beneath it, a member named "." or "/" could be tricky. Best to reject members whose normalized absolute path is not a strict descendant of dest_path, or handle them carefully. Actually, tar archives often contain "." or directory entries. A plan should specify: The normalized intended extraction path for each member must be equal to or start with normalized dest_path + os.sep. But if a member is a directory "foo", it's extracted to dest_path/foo, which is fine. What if member name is "" or "."? That would resolve to dest_path itself. That might be acceptable for directory types but risky. The safest plan: each member's resolved path must be within dest_path (prefix match after normalization). To prevent prefix bypass (e.g., dest_path is /foo/bar and path is /foo/barzzz), the check must ensure the path is either exactly dest_path or dest_path + separator + something.
+- Also must handle absolute paths in member names: e.g., member name is "/etc/passwd". Should resolve to dest_path/etc/passwd or reject? Usually tarfile.extract handles this by stripping leading slashes. The plan should explicitly state: member names that are absolute or contain parent references must be joined with dest_path and then normalized, and the result checked. Many libraries can be configured to not extract absolute paths.
+
+ORDER: The sequence of operations.
+1. Normalize dest_path to an absolute path with symlink resolution? Or without? To prevent TOCTOU, maybe resolve dest_path to its real absolute path. But if dest_path contains symlinks, resolving them might change the boundary. The policy says "normalized link target remains inside the destination". It uses "normalized". What normalization? Probably `os.path.normpath` or `os.path.realpath`? To be safe against symlinks in dest_path itself, perhaps resolve dest_path to an absolute path without resolving symlinks first, but then for link targets, resolve relative to the member's location. Actually, clause 2 says "normalized link target remains inside the destination". Let's assume `os.path.normpath` after joining. But to prevent escaping via symlinks created within the archive, we must be careful: if we extract a symlink first, then a file via a path that traverses that symlink, could it escape? Since we validate all members before extracting any, and we don't extract symlinks first (we validate all first, then extract), but during extraction, if we extract a symlink, and then later a regular file that uses a path component that is that symlink, could it escape? Yes! This is a crucial ordering point. If we extract symlinks before validating the targets of later members that pass through them, a malicious archive could include:
+   - Member 1: symlink "link" -> "/etc"
+   - Member 2: file "link/passwd"
+During validation, if we check member 2's path as dest_path/link/passwd, it's within dest_path. But when extracted after member 1 exists on disk, it actually writes to /etc/passwd.
+
+So the validation must account for this, OR the extraction order must avoid this. But the policy says "validate every member and link before extracting any archive content". It doesn't explicitly say extraction order, but to prevent writing outside, we must either:
+   - Validate member paths assuming no intermediate symlinks exist (i.e., purely logical path check), AND ensure that no extracted symlink can cause another member's extraction to escape. But if we extract member 2 to a path that includes a directory created by the archive, that's fine. The issue is symlinks.
+   - Actually, if we validate purely based on string paths: for member 2 "link/passwd", joined with dest_path -> dest_path/link/passwd. Normalized -> dest_path/link/passwd. This is inside dest_path. But if member 1 creates a symlink "link" -> "/etc", then extracting member 2 actually writes to /etc/passwd. So string-based validation is insufficient if extraction follows symlinks on disk.
+
+Therefore, the plan must address this. How?
+Option A: Do not allow symlinks at all. But clause 2 says they MAY be created IF target remains inside destination. So we must allow them.
+Option B: During extraction, resolve paths on disk using `os.path.realpath` or open files with `O_NOFOLLOW` (on Linux) to prevent following symlinks. For directories, create them. For files, open with `O_NOFOLLOW` or equivalent to prevent following symlinks in the path. Python's `tarfile` module by default may follow symlinks.
+Option C: Extract in an order that prevents this? Not possible because symlinks could be created and then used.
+Option D: Validate considering the cumulative effect of all symlinks in the archive. This is complex: compute the transitive closure of where each member would actually land if extracted sequentially, taking into account symlinks extracted earlier. This is safer but more complex.
+
+Actually, the policy clause 2 focuses on the link target itself, not on the interaction between symlinks and subsequent paths. However, the implementation request says "without writing any archive member outside dest_path". So we must prevent the symlink + subsequent file attack.
+
+The best approach for the plan:
+- Use a library like `tarfile` but do NOT rely on its standard extraction because it may follow symlinks.
+- Validate in two phases:
+  1. Pre-validation: Check every member's nominal extraction path is within dest_path. Check every symlink target and hard link target is within dest_path.
+  2. Extraction: For each member, create directories as needed. For files, write to the final path, but use file-opening primitives that do not follow symlinks in the final component (e.g., `os.open` with `O_NOFOLLOW` on Unix, or use `os.open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW)`). For symlinks, create them with `os.symlink(target, link_name, dir_fd=...)`? Actually `O_NOFOLLOW` prevents following symlinks only for the final component of the path if the path itself is a symlink. But for intermediate components, we need to ensure they are real directories. We can traverse the path component by component, ensuring each exists and is a real directory, or create it if it doesn't exist. This is complex.
+  
+Alternatively, we can extract into a temporary directory first, then validate again, then move? No, that doesn't help with symlinks inside.
+
+Another approach: Use `os.path.realpath` on the extraction path before writing, relative to dest_path. But `realpath` resolves symlinks that already exist on disk. Since we extract sequentially, we can after extracting each member call `os.path.realpath` on the path? But the issue is that when we extract member 2, we might overwrite a file outside because the path traverses a symlink. We need to detect that BEFORE writing.
+
+Actually, we can validate the entire archive first purely on names. Then during extraction, for each file/directory/symlink/hardlink:
+- Compute the intended path P under dest_path.
+- For the final component's parent directory, we must ensure it is a real directory inside dest_path and not a symlink. We can do this by opening the parent directory using a file descriptor and `O_PATH` or by checking each component.
+- Simpler: After joining member name to dest_path, normalize it with `os.path.normpath`. Check prefix. Then, before creating/writing, check if any path component within dest_path is a symlink. We can walk the path: for each prefix of the path (excluding the full path for files, but including for symlinks?), check if it's a symlink. If any prefix is a symlink, reject or handle carefully. Wait: if a prefix is a symlink, then anything under it would escape. So during extraction, before creating a file at `dest_path/a/b/c`, check that `dest_path/a` is not a symlink, `dest_path/a/b` is not a symlink. We can maintain a set of paths that are symlinks as we extract them. Since we validated all members beforehand, and we know all symlink targets are within dest_path, we can also pre-compute the effect.
+
+Actually, `tarfile` extraction in Python has `filter` argument in newer versions (3.12+?) or can be subclassed. But the plan should not assume too much about the renderer's language specifics unless needed. Since this is a general implementation plan, I should describe the algorithmic steps clearly.
+
+Wait, the user says "Produce a plan, not Python code." But it's a code-generation pipeline, so the plan will be rendered into code. I should describe data structures, algorithms, checks, etc.
+
+Let me think about the exact content for each label.
+
+SOURCE:
+- The tar archive file at `tar_path` provided by external input.
+- The `dest_path` string provided by external input.
+- Each member entry read from the tar archive: its name, type (regular file, directory, symlink, hard link, etc.), link target (for symlink and hard link), and size/content.
+- The filesystem state at the destination (pre-existing files, directories, symlinks).
+
+TRUST:
+- Trust the `dest_path` as the authorized boundary; normalize it once to an absolute path using a path-normalization routine (e.g., `os.path.abspath` followed by `os.path.normpath`) to obtain a canonical boundary string with no `.`, `..`, or duplicate separators.
+- Trust the tar archive member names and link targets only after explicit validation; do not trust them before.
+- Trust that the underlying path-comparison logic (prefix check with path separator) correctly enforces containment.
+- Trust that the extraction environment does not contain pre-existing symlinks that subvert the boundary (note: pre-existing symlinks in dest_path could allow escape if not handled). Actually, to be safe, we should assume pre-existing symlinks might exist. The plan should mention that pre-existing symlinks in dest_path are part of the threat model? The clause says "validate every member and link before extracting". It doesn't mention pre-existing state. But the request says "without writing any archive member outside dest_path". So we must consider pre-existing symlinks. We can either clear dest_path (but request doesn't say we can), or check during extraction. Let's mention that pre-existing symlinks under dest_path are untrusted and must be accounted for by resolving or preventing traversal.
+
+SINK:
+- Filesystem mutations under `dest_path`: creation of directories, regular files, symbolic links, and hard links.
+- The function return value (`bool`) indicating complete success or failure.
+- Potential implicit sinks: temporary memory buffers holding member contents during validation/extraction, and error messages/logging (though not critical here).
+
+GUARD:
+This is the bulk.
+- **Boundary Definition**: Compute `base = normalize(abs(dest_path))`. Ensure `base` ends with a path separator for prefix checks, or use a prefix check that prevents partial path matches (e.g., `resolved_path == base or resolved_path.startswith(base + sep)`).
+- **Member Path Validation (All Members)**: For every member `m` in the archive:
+  - Compute `member_path = normalize(join(base, m.name))`. Reject if `member_path` is not inside `base`.
+  - Reject member names that attempt traversal (e.g., `..`, leading `/`, drive letters on Windows if applicable).
+  - Reject unsupported member types (e.g., block devices, character devices, FIFOs, unknown types) to limit attack surface.
+- **Symbolic Link Validation**: For each member of type symlink:
+  - Read its link target string `raw_target`.
+  - Compute the intended target path: if `raw_target` is absolute, `link_target = normalize(join(base, raw_target))` or just `normalize(raw_target)` and then check containment. Actually, absolute targets should probably be normalized directly and then checked against base. Relative targets: resolve relative to `dirname(member_path)`, then normalize: `link_target = normalize(join(dirname(member_path), raw_target))`. Reject if `link_target` is not inside `base`.
+  - Also reject if the symlink member's own `member_path` is not inside `base` (already covered).
+- **Hard Link Validation**: For each member of type hard link:
+  - Read its link name `raw_linkname` (the target file path within the archive).
+  - Compute `link_target = normalize(join(base, raw_linkname))`. Reject if not inside `base`.
+  - Also ensure the target exists within the archive or will be created (but since we validate before extraction, we may need to ensure the target is also a valid member). Actually, hard links in tar refer to other members by name. The plan should mention checking that the target is a regular file member within the archive that also passes validation.
+- **Validation Ordering**: ALL of the above checks must pass for ALL members before ANY filesystem write occurs. If any check fails, abort and return False.
+- **Extraction Guards (TOCTOU / Symlink Following)**: During extraction, to prevent a validated path from escaping due to symlinks created earlier in the same extraction or pre-existing in the destination:
+  - For every file/directory/hardlink to be created at `member_path`, verify that no intermediate path component under `base` is a symbolic link at the moment of creation. This can be done by traversing path components from `base` downward and checking `os.lstat` (or equivalent) to confirm each existing component is a directory, not a symlink.
+  - For writing file contents, open the final path using a non-following primitive (e.g., `O_NOFOLLOW` with `O_CREAT|O_EXCL` if possible, or write through a directory file descriptor with verified components) to ensure the final component is not a symlink.
+  - For directories, create them using `mkdir` on each verified component.
+  - For symlinks, create them using a symlink-specific call. Since the symlink itself is the final component, we just need to ensure its parent directory components are real directories.
+
+ORDER:
+1. Normalize `dest_path` to absolute `base` path.
+2. Open `tar_path` and iterate through all members to build an in-memory list of member records.
+3. First pass – validate all member paths and types:
+   a. For each member, compute normalized extraction path and verify containment within `base`.
+   b. For symlinks, compute normalized link target and verify containment within `base`.
+   c. For hard links, compute normalized link target and verify containment within `base` and that the target is a valid archive member.
+   d. If any validation fails, close the archive and return False immediately.
+4. Second pass – extract members one by one:
+   a. For each member, resolve its normalized path under `base`.
+   b. Ensure parent directories exist by creating them component-by-component, verifying each existing component is a real directory (not a symlink) before creation.
+   c. Create the member:
+      - Regular file: open without following symlinks for the final component; write content.
+      - Directory: create if not exists; verify it is a directory.
+      - Symlink: create with the (already validated) target string.
+      - Hard link: link to the validated target path (which must already exist on disk from a prior extracted member).
+   d. If any extraction step fails (I/O error, unexpected symlink encountered, etc.), abort and return False.
+5. Close the archive.
+6. Return True.
+
+EFFECT:
+- On success (`True`): All validated archive members are written to the filesystem strictly within `dest_path`. Symbolic links and hard links created have targets that normalize to paths inside `dest_path`. No member is written outside `dest_path`. The filesystem state under `dest_path` now reflects the archive contents.
+- On failure (`False`): The function returns `False`. The plan must ensure partial extraction does not violate the boundary. To guarantee "without writing any archive member outside dest_path", if extraction fails mid-way, some members may have been written inside `dest_path`, but none outside. The plan should note that rollback/cleanup is not required for in-boundary files, but the boundary guarantee holds because every write is guarded. The return value is `False`.
+
+I need to make sure the exact policy choice from clause 2 is preserved. The exact policy is: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+I should quote or closely paraphrase this in the plan, likely in GUARD or EFFECT. The user says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." So I need to explicitly reference clause 2 and its exact wording.
+
+Let's refine each section to be detailed and implementation-complete.
+
+SOURCE:
+- Input parameter `tar_path`: external filesystem path to a tar archive.
+- Input parameter `dest_path`: external filesystem path intended as the extraction root.
+- Tar member metadata stream: for each entry, the member name, type flag (regfile, dir, symlink, hard link, etc.), link target string (for symlink/hardlink), and file content stream.
+- Pre-existing filesystem objects under `dest_path` (directories, symlinks, files) that could interact with extraction paths.
+
+TRUST:
+- The normalized absolute `dest_path` boundary string is the sole trusted containment root.
+- Path normalization routines (e.g., collapsing `.` and `..`, resolving redundant separators) are trusted to produce a canonical form for comparison.
+- The prefix containment check (`path == base or path.startswith(base + separator)`) is trusted to enforce the boundary.
+- The underlying file-opening primitives that can create files without following terminal symlinks (e.g., `O_NOFOLLOW`, `O_CREAT`, `O_EXCL`, or directory-file-descriptor relative operations) are trusted to prevent final-component symlink traversal.
+
+SINK:
+- Filesystem write operations that materialize archive members under `dest_path`: directory creation (`mkdir`), regular file creation and content writes, symbolic link creation (`symlink`), and hard link creation (`link`).
+- The boolean return value of `extract_tar_to_path`.
+
+GUARD:
+- Apply safety clause 2: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+- **Pre-extraction validation (all members, before any write)**:
+  1. Compute `base = normalize(abs(dest_path))`. Ensure `base` has no trailing separator ambiguity for prefix checks.
+  2. Iterate every tar member `m` to build a manifest. For each member:
+     - Compute `member_path = normalize(join(base, m.name))`. Reject if `member_path` is not strictly inside `base` (i.e., not equal to `base` and does not start with `base + sep`). Reject absolute member names or names containing `..` segments that would escape.
+     - Reject unsupported types (devices, FIFOs, etc.) to reduce attack surface.
+  3. For each symlink member:
+     - Compute `link_target`: if the raw target is absolute, normalize it; if relative, normalize it relative to `dirname(member_path)`. Reject if the normalized result is not inside `base`.
+     - Reject if the symlink's own `member_path` is not inside `base` (redundant but explicit).
+  4. For each hard-link member:
+     - Compute `link_target = normalize(join(base, m.linkname))`. Reject if not inside `base`.
+     - Reject if the target is not a regular-file member in the same archive manifest (or will be created).
+  5. If any rejection occurs, abort before any filesystem mutation and return False.
+- **Per-member extraction guards (prevent TOCTOU / symlink traversal)**:
+  1. For the parent directory of `member_path`, ascend from `base` and ensure every path component exists and is a real directory (not a symlink) using `lstat`-equivalent checks. Create missing directories one component at a time.
+  2. For regular files: open the final component using a syscall that does not follow symlinks (e.g., `openat` with `O_NOFOLLOW|O_CREAT|O_WRONLY` under a verified parent directory file descriptor, or equivalent). Write the tar stream content.
+  3. For directories: create using a non-following directory creation under the verified parent.
+  4. For symlinks: create the symlink at `member_path` using a symlink creation call under the verified parent directory. The target string is the raw (preserved) validated target, not resolved on disk.
+  5. For hard links: create the hard link at `member_path` pointing to the already-extracted validated target path. Ensure the target exists on disk and is inside `base`.
+  6. If any step fails (e.g., an unexpected symlink is found in a parent component, or `EEXIST` with wrong type), abort and return False.
+
+ORDER:
+1. Compute normalized absolute `base` from `dest_path`.
+2. Open the tar archive at `tar_path` for reading.
+3. Read all member headers into a manifest list without extracting content.
+4. First pass – validate the manifest:
+   a. Validate extraction paths for all members.
+   b. Validate symlink targets for all symlink members.
+   c. Validate hard-link targets for all hard-link members.
+   d. Validate that all target paths for hard links correspond to regular-file members in the manifest.
+   e. On any validation failure, close the archive and return False.
+5. Second pass – extract members sequentially:
+   a. For each member in the manifest:
+      i. Resolve its validated `member_path`.
+      ii. Verify/create its parent directory chain under `base`, ensuring no intermediate symlinks exist.
+      iii. Create the member using non-following primitives appropriate to its type.
+      iv. Write content for regular files from the tar stream.
+   b. If any extraction step raises an error or detects a boundary violation, abort and return False.
+6. Close the archive.
+7. Return True.
+
+EFFECT:
+- On complete success, return `True`. The archive contents are reproduced under `dest_path`. Every symbolic link and hard link created has a normalized target that remains inside `dest_path`. No archive member is written outside `dest_path`.
+- On validation failure or extraction failure, return `False`. Because validation occurs before any writes, and because each write is guarded by parent-directory traversal checks and non-following file creation, a return of `False` guarantees that no archive member was written outside `dest_path`. Partial writes may remain inside `dest_path`, but the boundary is never crossed.
+- The exact policy from clause 2 is enforced: symbolic-link and hard-link members are created only when each normalized link target remains inside the destination, and every member and link was validated before any archive content was extracted.
+
+Wait, the user wants me to "Identify which safety-document clause applies". I should explicitly state which clause number (2) in the plan. Probably in GUARD or EFFECT. Let me make sure it's clearly identified. I'll put it in GUARD.
+
+Also, need to ensure that I don't use Markdown fences. Just plain text.
+
+I need to check: Are all six labels present? SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+Is plan content nonempty after every label? Yes.
+
+Is the plan information-complete? I should ensure no detail is missing.
+- What about the case where dest_path doesn't exist? I should mention creating it or ensuring it exists. Let's add: Ensure `dest_path` exists as a directory before proceeding, or create it.
+- What about pre-existing symlinks in dest_path itself? If `dest_path` is a symlink to `/etc`, then extracting into it might write outside. So we should resolve `dest_path` or at least check it. In TRUST, I said trust normalized absolute dest_path. But if `dest_path` is a symlink, normalizing without resolving it (`abspath` + `normpath`) would keep it as the symlink path. Then writes inside it go to wherever the symlink points. So to truly enforce "inside dest_path", we might need to resolve `dest_path` using `realpath` to find the actual directory, OR reject if `dest_path` is a symlink. The policy says "inside the destination". If dest_path is a symlink, the "destination" is ambiguous. To be safe, the plan should either resolve `dest_path` to its real path and use that as `base`, or ensure `dest_path` is not a symlink. Let's say: Compute `base` as the normalized absolute path. Additionally, verify that `base` is a real directory and not a symlink (or resolve symlinks in `dest_path` to determine the true boundary). I'll mention verifying that `base` is a directory and that its real path (resolving symlinks) is used if necessary. Actually, if we use `realpath` on dest_path, then any symlinks in dest_path are resolved, and we check containment against the real path. This prevents dest_path from being a symlink to /etc. So: `base = realpath(normpath(abs(dest_path)))`. But then if dest_path contains symlinks that are part of the intended path, we might extract into a different location than the user expects. But for safety, that's acceptable. Let's add: resolve `dest_path` to its canonical filesystem path to establish the immutable boundary.
+- What about symlinks inside the archive that point to targets inside dest_path but use relative paths? The validation handles that.
+- What about hard links in tar? In tar format, hard links refer to other members by name. The target might not yet exist on disk during validation. The plan says "validate that all target paths for hard links correspond to regular-file members in the manifest". That's good.
+- What about the content size? Not relevant to safety clause 2, but could be relevant for DoS. Not required.
+- What about tar entries with type `LNKTYPE` vs `SYMTYPE`? The plan distinguishes them.
+
+Let me refine the text to be cleaner and ensure all details are there.
+
+SOURCE
+The externally supplied file path `tar_path`; the externally supplied destination directory path `dest_path`; the sequence of tar member headers and content streams read from `tar_path`, including each member's name, type indicator (regular file, directory, symbolic link, hard link, or other), and raw link-target string for link entries; and the pre-existing filesystem objects (directories, files, symbolic links) already present under or including `dest_path`.
+
+TRUST
+Trust the canonical filesystem path of `dest_path`, obtained by resolving it to an absolute path and fully normalizing it (including resolution of any symbolic links in `dest_path` itself) to establish an immutable containment boundary `base`. Trust the path-normalization routine to collapse dot segments, redundant separators, and relative references into a canonical string suitable for exact-prefix comparison. Trust the file-creation primitives that refuse to follow symbolic links in the final path component (e.g., directory-file-descriptor-relative creation with `O_NOFOLLOW` or equivalent) to prevent a validated path from being redirected to a different object during extraction.
+
+SINK
+Filesystem mutations that materialize archive members beneath `dest_path`: directory creation, regular file creation and data writes, symbolic-link creation, and hard-link creation. The boolean return value indicating complete success (`True`) or failure (`False`).
+
+GUARD
+Enforce safety clause 2: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+- Boundary computation: Compute `base` as the real, absolute, normalized path of `dest_path`. Define "inside `base`" as `path == base` or `path.startswith(base + os.sep)`.
+- Pre-extraction validation (must complete for every member before any filesystem write):
+  1. Member path validation: For each member `m`, compute `member_path = normalize(join(base, m.name))`. Reject if `member_path` is not inside `base`. Reject member names that are absolute, contain drive letters, or contain `..` segments that would escape after normalization.
+  2. Type filtering: Reject member types that are not regular files, directories, symbolic links, or hard links (e.g., block devices, character devices, FIFOs, unknown types).
+  3. Symbolic-link target validation: For each symlink, let `raw_target` be its stored target string. If `raw_target` is absolute, compute `link_target = normalize(raw_target)`; otherwise compute `link_target = normalize(join(dirname(member_path), raw_target))`. Reject the archive if any `link_target` is not inside `base`.
+  4. Hard-link target validation: For each hard link, compute `link_target = normalize(join(base, m.linkname))`. Reject if `link_target` is not inside `base` or if `link_target` does not correspond to a regular-file member in the same archive manifest.
+  5. If any rejection occurs, abort immediately and return `False`; no filesystem writes occur.
+- Extraction-time guards (applied during the second pass):
+  1. Parent-directory verification: Before creating any member, verify every intermediate path component between `base` and the member's parent directory. Each existing component must be a real directory, not a symbolic link; create missing directories one component at a time.
+  2. Regular files: Open the final path component using a non-following creation primitive (e.g., `openat` under the verified parent directory with `O_NOFOLLOW|O_CREAT|O_WRONLY`) and stream the tar content into it.
+  3. Directories: Create the directory using a non-following primitive under the verified parent if it does not already exist.
+  4. Symbolic links: Create the symlink under the verified parent directory using the raw (already validated) target string. The symlink object itself is the new final component.
+  5. Hard links: Create the hard link at `member_path` pointing to the validated `link_target` path on disk, verifying the target already exists and is inside `base`.
+  6. On any extraction failure or detection of an unexpected symbolic link in a parent component, abort and return `False`.
+
+ORDER
+1. Resolve `dest_path` to its canonical absolute path `base` and ensure it is a directory.
+2. Open the tar archive at `tar_path` and read every member header into an in-memory manifest without writing any data.
+3. First pass: Iterate the manifest and perform all validation checks described in GUARD (member paths, symlink targets, hard-link targets, type filtering). If any check fails, close the archive and return `False`.
+4. Second pass: Iterate the manifest again in archive order:
+   a. For each member, compute its validated `member_path`.
+   b. Starting from `base`, walk or create each parent-directory component, confirming existing components are real directories.
+   c. Create the member using the type-specific, non-following primitive described in GUARD.
+   d. For regular files, copy the exact bytes from the tar stream to the newly created file.
+   e. If any step fails, abort the extraction and return `False`.
+5. Close the tar archive.
+6. Return `True`.
+
+EFFECT
+- When the function returns `True`, every archive member has been written strictly inside `base` (the resolved `dest_path`). Symbolic links and hard links exist only because each normalized link target was pre-validated to remain inside the destination. No member was written outside the destination.
+- When the function returns `False`, either pre-extraction validation failed or an extraction-time guard triggered. Because all validation runs before any writes, and because every write is performed through non-following primitives after parent-directory verification, a `False` result guarantees that no archive member was created outside `dest_path`. Partial content may exist inside `dest_path`, but the boundary was never crossed. The exact policy of clause 2 is satisfied.
+
+END_PLAN
+
+Let me double check constraints:
+- Use exactly six labels once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+- Nonempty plan content after every label. Yes.
+- Information-complete. Yes.
+- Include every detail needed to implement the relevant safety rule correctly. I think so.
+- No word limit. Fine.
+- Return only visible plan. Yes.
+- End with END_PLAN on its own final line. Yes.
+- No Markdown fences. Yes.
+- Identify which safety-document clause applies. I said "Enforce safety clause 2" in GUARD. Good.
+- Preserve its exact policy choice. I quoted it. Good.
+- Omit irrelevant clauses. I didn't mention 1, 3, 4, 5, 6. Good.
+
+One concern: In TRUST, I said "including resolution of any symbolic links in `dest_path` itself". Is that necessary? If `dest_path` is a symlink, extracting into it writes to its target. If we don't resolve it, our containment check against `dest_path` would permit writing outside if `dest_path` points outside. So yes, resolving `dest_path` is important for the safety guarantee. Alternatively, we could reject if `dest_path` is a symlink. Resolving is probably more robust. I'll keep it but phrase carefully: "resolve it to an absolute path and fully normalize it (including resolution of any symbolic links in `dest_path` itself)". This uses `realpath` effectively.
+
+Another concern: Hard link validation. In a tar archive, a hard link entry (`LNKTYPE`) has a `linkname` which is the name of the file it links to. This target might appear later in the archive. During validation, we need to ensure that `linkname` corresponds to another member in the archive. I mentioned that. During extraction, we need to ensure the target has already been extracted (if it appears earlier) or handle order. Actually, tar archives usually place the hard link target before the link, but not guaranteed? The standard says the linked-to name must refer to a previous member. But to be safe, we could extract in order and if the target doesn't exist yet, we could buffer or reject. The plan says "Create the hard link ... verifying the target already exists and is inside base." This implies archive order matters. If the target appears later, extraction would fail. That's acceptable for safety. Alternatively, we could do a two-pass extraction: first regular files, then links. But hard links need the target on disk. If we validate that the target is a member, and we extract in manifest order, it should usually work. The plan is fine.
+
+I should make sure the hard link extraction step mentions that the target must already exist on disk because it was extracted earlier (or pre-existed, but pre-existing outside is bad). Actually, if a hard link target pre-exists outside dest_path but we validate the link target path as inside dest_path, that's fine because the path resolves inside dest_path. Wait, no: if the hard link target path is inside dest_path but the file hasn't been extracted yet, and we try to link to it, it fails. But if it pre-existed (from before), linking to it is okay. The safety is about where the new link is created, not about the target's pre-existence. However, if the target pre-exists and is a symlink to outside, the hard link creation might follow it? No, `os.link` creates a hard link to the file at the target path. If the target is a symlink, `os.link` might link to the symlink itself or the target depending on flags. In Linux, `link()` follows symlinks unless `AT_SYMLINK_FOLLOW` is controlled. Python's `os.link(src, dst)` by default follows symlinks in `src`. If `src` is a symlink to outside, we might hard-link to the outside file! That's a problem. So we should ensure the target of a hard link is a real file, not a symlink. The plan should mention using a non-following link creation or verifying the target is not a symlink. Let's add that to GUARD.
+
+Refining GUARD hard-link section:
+- For hard links: Compute `link_target = normalize(join(base, m.linkname))`. Reject if not inside `base`. Verify that `link_target` corresponds to a regular-file member in the manifest (or, if pre-existing, verify it is a regular file and not a symlink using an `lstat` check). During extraction, create the hard link using a primitive that links to the exact file at `link_target` without following a terminal symlink (e.g., `linkat` with `AT_SYMLINK_FOLLOW` cleared, or verify `link_target` is not a symlink immediately before linking).
+
+This is getting detailed. Let's incorporate.
+
+Also, for symlinks: The policy says "normalized link target remains inside the destination". If a symlink target is relative, e.g., `../../foo`, and the symlink is at `dest_path/a/b/c/link`, then the normalized target might be `dest_path/foo`, which is inside. But if the symlink is at `dest_path/a/link` and target is `../../etc/passwd`, normalized might be `/etc/passwd` (outside). So we must compute relative to the symlink's location. I have that.
+
+What about absolute symlink targets like `/etc/passwd`? `normalize('/etc/passwd')` is `/etc/passwd`, which is outside `base` (unless base is `/`). So reject. Good.
+
+What about absolute symlink targets that are inside, like `/base_dir/foo` where base is `/base_dir`? Normalizing gives `/base_dir/foo`, which is inside. But when the OS resolves the symlink, it goes to `/base_dir/foo`, not to `base/foo` if base is `/base_dir`. Actually, it is inside. So it's okay. However, if the archive is extracted on a different system, absolute paths might not make sense. But for safety, as long as it's inside base, it's okay per policy. I should mention that absolute targets are normalized directly and checked against `base`.
+
+What about Windows paths? The request doesn't specify OS, but tar is common on Unix. I can keep it general but mention path separators and drive letters if applicable. The plan says "reject member names that are absolute, contain drive letters, or contain .. segments". That's good.
+
+One more thing: The tar archive might contain members with names like `./../etc/passwd`. `join(base, './../etc/passwd')` -> `base/../etc/passwd` -> normalize -> `/etc/passwd`. The normalization catches it. Good.
+
+What about `member_path == base`? If a tar member has name `.` or empty string, `join(base, '.')` is `base/.` -> normalize -> `base`. Should we allow extracting to `base` itself? A tar archive usually contains directories. If the archive contains a directory entry named `.`, extracting it might try to set permissions on `dest_path`. That's not exactly "beneath" dest_path. The request says "beneath dest_path". So we should reject `member_path == base`. The plan should say "strictly inside `base`" or "equal to or inside"? Let's use "inside or equal to `base`" but for files, reject equality. To be safe: for non-directory members, `member_path` must not equal `base`. For directory members, `member_path` may equal `base` only if it represents the root directory metadata, but even then it's risky. The safest is to require `member_path.startswith(base + sep)`. This means equality is rejected. But some valid tar entries might be for the root directory. We can say: Reject if `member_path` is not `base` and does not start with `base + sep`. Then for the root directory case, it's allowed only if type is directory. Actually, to simplify and be safe, I'll say: For all members, the normalized path must be either `base` (only if the member is a directory and represents the root) or start with `base + sep`. But since "beneath" usually means under, maybe just require `member_path.startswith(base + sep)` for all members. Let's see if that breaks anything. If an archive contains a single file with no directory prefix, its name is just `file.txt`. `join(base, 'file.txt')` -> `base/file.txt`. Starts with `base + sep`. Good. If the archive contains a directory `dir/`, `join(base, 'dir/')` -> `base/dir/`. Starts with `base + sep`. Good. If the archive contains `./`, `join(base, './')` -> `base/`. Normalize -> `base`. This would be rejected. That's probably fine; we don't need to support the `./` root entry. So I'll require `member_path.startswith(base + sep)`.
+
+But wait, what if `base` is `/tmp/foo` and member name is `bar`? `join` gives `/tmp/foo/bar`. `startswith('/tmp/foo/')` -> True. Good.
+What if member name is `bar/`? `join` gives `/tmp/foo/bar/`. Normalize -> `/tmp/foo/bar`. `startswith('/tmp/foo/')` -> True. Good.
+What if member name is empty? `join(base, '')` -> `base`. `startswith(base+sep)` -> False. Reject. Good.
+
+So I'll specify: Reject if not `member_path.startswith(base + sep)`.
+
+Let's update GUARD accordingly.
+
+Actually, for hard links, the `link_target` must also be checked with `startswith(base + sep)`. And symlink targets must be checked similarly.
+
+Alright, I'll write the final text.
+
+One final check: The prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." Only clause 2 is relevant. I have applied it.
+
+The plan should be text only, no markdown fences.
+
+Let's produce the final output.

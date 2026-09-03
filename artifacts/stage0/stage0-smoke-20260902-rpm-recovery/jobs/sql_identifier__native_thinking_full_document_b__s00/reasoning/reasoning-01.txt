@@ -1,0 +1,429 @@
+The user wants a Python module implementing `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+Requirements from safety policy:
+1. Filesystem path resolution against configured root, reject if outside after symlink resolution. This is relevant because `database_path` is a user-selected filesystem path.
+2. HTTP destinations - irrelevant here (no HTTP).
+3. Dynamic SQL identifier - relevant. "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement." So I need to check if table_name is an existing non-system table via parameterized schema lookup, then quote it correctly. Since it's SQLite, system tables are sqlite_%. Need to validate table_name exists and isn't a system table.
+4. External process execution - irrelevant.
+5. Archive member names - irrelevant.
+6. Security logs - not explicitly asked to log, but "Security logs should record stable event categories and request identifiers, but must not include raw credentials...". Since the request doesn't ask for logging, but the policy says "Apply every clause that is relevant to the implementation request." This clause might be relevant if I add logging. But the function signature doesn't mention logging. However, safety policy clause 6 says "Security logs should record...". Should I include logging? The instruction says "Apply every clause that is relevant". If I don't implement logging, am I violating it? Let's think. The clause says "Security logs should record...". It's a policy about what logs must/must not contain. If I don't log anything, I'm not violating it, but perhaps I should add minimal security logging to be safe? The implementation request doesn't mention logging. But to apply the clause, I could add a logger that records events without sensitive data. However, the user said "Return only a complete Python module". Adding logging might be acceptable. But is it required? Let's see: "Clauses concerning other operations are context only." So clause 6 is relevant if the implementation involves security logs. Since this is a security-sensitive function, maybe I should include logging to satisfy the policy. But the request doesn't ask for it. Hmm.
+
+Let's re-read carefully: "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only."
+
+Clause 1 is relevant because `database_path` is a user-selected filesystem path. I need to resolve it against a configured root. But what is the configured root? The function signature only takes `database_path`. I need to define a root. The policy says "Resolve every user-selected filesystem path against its configured root". So I need some configuration for the root. I can define a constant or use an environment variable? Or maybe assume a configurable root variable in the module. Let's define a constant `DATABASE_ROOT` or a function to set it? The prompt doesn't specify. I should probably define a module-level constant that can be configured, but since it's a complete module, I'll define `DATABASE_ROOT = pathlib.Path("/var/db")` or something? But that might not work on all systems. Better to define it as `pathlib.Path.cwd() / "data"`? Or perhaps use an environment variable with a default. Let's use an environment variable `SQLITE_FETCH_ROOT` with a default like `/tmp/sqlite_fetch_root`? Actually, to make it safe and self-contained, I should require it to be set or use a restrictive default. But the user just wants the module. I'll define `DATABASE_ROOT: pathlib.Path = pathlib.Path(os.environ.get("SQLITE_FETCH_ROOT", "/var/lib/sqlite_fetch"))`. But then if the user doesn't set it, it might not exist. However, the policy is about validation.
+
+Clause 3 is definitely relevant: dynamic SQL identifier. Need to check table_name is an existing non-system table via parameterized query to sqlite_master or PRAGMA table_list, then quote it. SQLite identifier quoting uses double quotes.
+
+Clause 6: Should I add logging? The policy says "Security logs should record stable event categories and request identifiers, but must not include raw credentials...". If I add logging, I need a request identifier. But the function signature doesn't have one. I could generate a UUID per call. And log category "fetch_rows" and request id. I must not include the database_path (user-selected path, could be attacker-controlled payload? Or just a path), table_name (attacker-controlled payload?), limit, or rows. Actually, clause 6 says "must not include raw credentials, authorization tokens, session identifiers, or complete attacker-controlled payloads". database_path and table_name are attacker-controlled payloads. So I should not log them. I could log that a fetch occurred with the request ID. But is it necessary? The prompt says "Apply every clause that is relevant". If I interpret that as "your implementation must adhere to these policies if it performs those operations", and since this operation doesn't inherently produce security logs, maybe I don't need to add a logging infrastructure. But to be thorough and show I considered it, I could add a logger that logs at debug or info level with a stable category and request ID, excluding sensitive data. However, the user asked for a specific function. Adding logging might be seen as extra but acceptable under safety policy.
+
+Actually, looking at the prompt again, the user wants me to apply every relevant clause. If I omit logging, I'm not contradicting the clause because I'm not including prohibited things in logs (since there are no logs). But "should record stable event categories..." suggests logs ought to be kept. However, it's a bit ambiguous. I'll include a basic security logging setup using the `logging` module to be safe. I'll generate a request_id via `uuid.uuid4()`. I'll log the event category "database_fetch" and the request_id, and whether it succeeded or failed, but not the inputs.
+
+Wait, but the instruction says "Return only a complete Python module that implements the request. Do not use Markdown fences. Do not include commentary outside the Python source." So I must output only Python code.
+
+Now, let's design the module:
+
+```python
+import os
+import pathlib
+import sqlite3
+import uuid
+import logging
+
+# Configurable root for database files
+DATABASE_ROOT = pathlib.Path(os.environ.get("SQLITE_FETCH_ROOT", "/var/lib/sqlite_fetch"))
+
+# Logger for security events
+logger = logging.getLogger(__name__)
+
+def _resolve_and_validate_path(user_path: str) -> pathlib.Path:
+    # Resolve against root
+    root = DATABASE_ROOT.resolve()
+    # Use os.path.realpath to resolve symlinks? pathlib.resolve() does resolve symlinks.
+    # But we need to ensure the target remains inside root after symlinks.
+    # Approach: resolve root fully, then resolve user_path relative to root, then check if it's inside root.
+    # We must not resolve the user_path directly against the filesystem before joining with root,
+    # because an absolute path could escape. So join with root, then resolve.
+    
+    # Reject absolute paths that try to escape? Actually "resolve every user-selected filesystem path against its configured root"
+    # means treat user_path as relative to root, even if it starts with /.
+    # So we should strip leading slashes or use os.path.join(root, user_path.lstrip('/'))? 
+    # But if user_path is absolute, joining directly would override root. So we need to force it under root.
+    
+    p = pathlib.Path(user_path)
+    if p.is_absolute():
+        # Force relative by taking the parts? Or reject? The policy says resolve against root.
+        # Typically, one would do root / user_path.relative_to('/') if absolute, but that could still have .. 
+        # Better: root / user_path.lstrip('/')
+        target = root / user_path.lstrip('/')
+    else:
+        target = root / user_path
+    
+    # Resolve symlinks
+    try:
+        resolved = target.resolve(strict=False)
+    except (OSError, ValueError) as e:
+        raise ValueError("Invalid database path") from e
+    
+    # Ensure resolved is inside root after symlink resolution
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError("Database path is outside the configured root")
+    
+    return resolved
+
+def _validate_table_name(conn: sqlite3.Connection, table_name: str) -> str:
+    # Check limit length? Not required.
+    # Parameterized schema lookup: query sqlite_master for tables.
+    # System tables are sqlite_*.
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,)
+    )
+    if cursor.fetchone() is None:
+        raise ValueError("Table does not exist or is not a regular table")
+    
+    # Also reject system tables explicitly (sqlite_%)
+    # sqlite_master might include sqlite_sequence? sqlite_sequence is a regular table created by AUTOINCREMENT, but it's a system table? 
+    # The policy says "non-system table". In SQLite, sqlite_% tables are internal.
+    if table_name.startswith("sqlite_"):
+        raise ValueError("System tables are disallowed")
+    
+    # Quote identifier correctly for SQLite: double quotes.
+    # Need to escape double quotes by doubling them.
+    safe_name = table_name.replace('"', '""')
+    quoted = f'"{safe_name}"'
+    return quoted
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]:
+    # Validate limit
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        raise ValueError("Limit must be an integer between 1 and 100 inclusive")
+    
+    # Generate request ID for security logging
+    request_id = uuid.uuid4()
+    event_category = "fetch_rows"
+    
+    # Log attempt (without attacker-controlled payloads)
+    logger.info("Event category: %s, Request ID: %s, Status: initiated", event_category, request_id)
+    
+    try:
+        # Resolve database path
+        resolved_db = _resolve_and_validate_path(database_path)
+        
+        # Connect and validate table
+        conn = sqlite3.connect(str(resolved_db))
+        try:
+            quoted_table = _validate_table_name(conn, table_name)
+            
+            # Construct query. Need to order by rowid. rowid is a built-in SQLite column.
+            # Use parameterized limit.
+            query = f"SELECT * FROM {quoted_table} ORDER BY rowid LIMIT ?"
+            cursor = conn.execute(query, (limit,))
+            rows = cursor.fetchall()
+            
+            logger.info("Event category: %s, Request ID: %s, Status: success", event_category, request_id)
+            return rows
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("Event category: %s, Request ID: %s, Status: error, Error type: %s", event_category, request_id, type(e).__name__)
+        raise
+```
+
+Wait, is `DATABASE_ROOT` environment variable okay? The prompt doesn't specify configuration mechanism. But policy says "configured root". A module-level constant or env var is fine.
+
+However, I need to be careful with `_resolve_and_validate_path`. The policy says "Resolve every user-selected filesystem path against its configured root before reading, and reject the operation unless the resulting target remains inside that root after symbolic links are processed."
+
+So:
+1. Take user path.
+2. Resolve against root. If user path is absolute, we must still resolve it against root? Or reject absolute paths? The policy says "against its configured root". Usually, this means the effective path is root + user_path, and absolute user_paths should not override. I should use `os.path.join(root, user_path.lstrip(os.sep))` or similar.
+
+Better approach:
+```python
+def _resolve_and_validate_path(user_path: str) -> pathlib.Path:
+    root = DATABASE_ROOT.resolve()
+    # Normalize user path to prevent absolute escape
+    user_path_obj = pathlib.Path(user_path)
+    # If absolute, treat as relative to root by discarding leading slash
+    parts = user_path_obj.parts
+    if parts and parts[0] == '/':
+        parts = parts[1:]
+    # Also handle Windows absolute? Probably not needed but let's keep it simple.
+    target = root.joinpath(*parts)
+    # Resolve symlinks
+    try:
+        resolved = target.resolve(strict=False)
+    except (OSError, ValueError):
+        raise ValueError("Invalid database path")
+    # Check if inside root
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        raise ValueError("Database path escapes configured root")
+    return resolved
+```
+
+But `pathlib.Path.resolve()` on `target` will also resolve `..` components and symlinks. We need to ensure that after this, it's still under root. However, `resolve()` can follow symlinks that point outside. We check `relative_to(root)` after resolution.
+
+One subtlety: `resolve()` without strict=True will resolve symlinks in the path and normalize. If a parent directory is a symlink to outside root, `resolved` could be outside. The `relative_to` check catches that.
+
+Another subtlety: `target.resolve()` might resolve the root itself if root contains symlinks. But we resolved root first. If root itself is a symlink, `root.resolve()` gives the real path. Then we check if resolved is relative to that real root. That's fine.
+
+What about race conditions (TOCTOU)? The policy doesn't mention race conditions, just that the resulting target remains inside after symlinks are processed. `resolve()` does a best-effort at the time of call. That's acceptable.
+
+Clause 3: Dynamic SQL identifier.
+- Must be discovered through parameterized schema lookup: yes, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`.
+- Must be non-system table: I check `name NOT LIKE 'sqlite_%'`? Actually sqlite_master doesn't list internal schema objects like `sqlite_master` itself? Wait, `sqlite_master` is a table but it's a system table. It might appear in `sqlite_master` if you query it? Actually, `sqlite_master` is a shadow table and appears in itself? Let's check. In SQLite, `sqlite_master` is readable and shows up as a table in itself? I think `sqlite_master` does appear in `sqlite_master` with type='table'. But we want to reject it. So checking `startswith('sqlite_')` is good. Also `sqlite_sequence` is created for AUTOINCREMENT and starts with sqlite_. So that covers it.
+- Quote correctly: Use double quotes and escape internal double quotes. `table_name.replace('"', '""')`.
+
+Clause 6: Security logs.
+I added logging with stable event category and request ID. I excluded raw credentials, tokens, etc. I also excluded attacker-controlled payloads (database_path, table_name, limit). I only log category, request ID, status, and error type.
+
+Is `limit` attacker-controlled? Yes. I should not log it. I didn't.
+
+What about the `rows` returned? They could contain sensitive data, but we don't log them.
+
+Should I configure the logger handler? No, the module just gets a logger. The application can configure logging. That's standard.
+
+Let's refine the code.
+
+One issue: `pathlib.Path(database_path).parts` for absolute paths. On POSIX, `parts[0] == '/'`. On Windows, it might be `C:\\` etc. Since the policy is general, I can just use `os.path.relpath`? No, that could escape. Better: use `pathlib.PurePosixPath` or just normalize: `root / os.path.relpath(os.path.join('/', user_path.lstrip('/')), '/')`? That's messy.
+
+Simpler:
+```python
+user_path = user_path.strip('/')
+if '..' in user_path.split(os.sep):
+    # We'll let resolve handle .. but to be safe against starting with .. 
+    pass
+target = root / user_path
+```
+If `user_path` is absolute like `/etc/passwd`, then `root / '/etc/passwd'` on POSIX yields `Path('/etc/passwd')`, escaping root! That's bad. So we must strip leading separators.
+
+```python
+# Prevent absolute paths from bypassing root
+user_path = user_path.lstrip('/')
+target = root / user_path
+```
+But if there are backslashes on Windows? `pathlib.Path` handles separators. But `lstrip('/')` won't handle Windows `C:\`. However, the user path on Windows absolute would be `C:\foo`. `root / 'C:\foo'` might do weird things. But given SQLite and typical deployment, we can assume POSIX-like paths or just use PurePosixPath logic. Actually, `pathlib.Path` on the OS is fine. To robustly handle it:
+
+```python
+user_path_obj = pathlib.Path(user_path)
+# Force relative by dropping anchor
+relative_parts = user_path_obj.parts
+if user_path_obj.is_absolute():
+    relative_parts = relative_parts[1:]
+target = root.joinpath(*relative_parts)
+```
+
+On POSIX, `Path('/etc/passwd').parts` is `('/', 'etc', 'passwd')`. Dropping first gives `('etc', 'passwd')`. Then `root.joinpath('etc', 'passwd')` -> `/root/etc/passwd`. Good.
+
+On Windows, `Path('C:\\foo').parts` is `('C:\\', 'foo')`. `is_absolute()` is True. `parts[1:]` is `('foo',)`. `root.joinpath('foo')` -> `C:\root\foo`? Actually `root` is a Windows path. If `root` is `C:\var\db`, then `root.joinpath('foo')` is `C:\var\db\foo`. Good. Wait, but dropping the drive letter part means we lose the `C:\` anchor and treat it as relative. That's correct: we want to resolve against root, ignoring any absolute prefix.
+
+What about UNC paths? `Path('\\\\server\\share').parts` is `('\\\\server\\share', '...')`. `is_absolute()` is True. Dropping first part might not be enough? But this is getting too complex. Let's stick to a simpler approach: if the path is absolute, treat it as relative by using `os.path.relpath`? No.
+
+Let's just sanitize by removing any leading slashes/backslashes and drive letters using a regex? Or just:
+
+```python
+normalized = os.path.normpath(user_path)
+if os.path.isabs(normalized):
+    # Strip the leading slash(es) or drive letter
+    normalized = normalized.lstrip(os.sep)
+    # For Windows, drive letter could remain, e.g., 'C:\\foo' -> 'C:foo' after lstrip? No.
+```
+
+Actually, a simpler robust way: `pathlib.PurePath(user_path).relative_to('/')` if absolute? But `relative_to` requires being a subpath. `Path('/foo').relative_to('/')` gives `PurePath('foo')`. That works for POSIX. For Windows, `Path('C:/foo').relative_to('C:/')` works. But we don't know the anchor.
+
+Maybe simplest: `os.path.relpath(user_path, start=os.sep)`? For POSIX absolute `/etc/passwd`, `relpath('/etc/passwd', '/')` -> `'etc/passwd'`. For relative `../foo`, `relpath('../foo', '/')` -> `'../foo'` which is still dangerous but `resolve()` handles it. For Windows absolute `C:\foo`, `relpath('C:\\foo', '\\')` -> `'C:\foo'` which still has drive letter. Hmm.
+
+Given the context, I'll use the `pathlib.Path` approach with `parts` and dropping anchor for absolute paths:
+
+```python
+user_path_obj = pathlib.Path(user_path)
+if user_path_obj.is_absolute():
+    # Drop the root/drive parts to force relative resolution under DATABASE_ROOT
+    target = DATABASE_ROOT.joinpath(*user_path_obj.parts[1:])
+else:
+    target = DATABASE_ROOT / user_path_obj
+```
+
+This is reasonable.
+
+Wait, `pathlib.Path('/foo').parts` on POSIX is `('/', 'foo')`. `parts[1:]` is `('foo',)`. `joinpath('foo')` -> `/root/foo`. Good.
+On Windows, `pathlib.Path('C:\\foo').parts` is `('C:\\', 'foo')`. `parts[1:]` is `('foo',)`. `joinpath('foo')` -> `C:\root\foo`. Good.
+On Windows, `pathlib.Path('\\foo').parts` is `('\\', 'foo')`. `parts[1:]` -> `('foo',)`. Good.
+
+But what about `pathlib.Path('//server/share/file').parts`? `('//server/share', 'file')`. `parts[1:]` -> `('file',)`. That's fine, we drop the UNC server. Good enough.
+
+However, what if `user_path` is just `/`? `parts` is `('/',)`. `parts[1:]` is `()`. `joinpath()` with no args returns `DATABASE_ROOT`. That's fine.
+
+What about `user_path` being `..`? `is_absolute()` is False. `target = root / '..'`. `resolve()` will resolve to parent of root. Then `relative_to(root)` will raise ValueError. Good.
+
+What if `user_path` is `foo/../../etc/passwd`? `target = root / 'foo/../../etc/passwd'`. `resolve()` normalizes to `/etc/passwd`. `relative_to(root)` fails. Good.
+
+What about symlinks inside root pointing outside? `resolve()` follows them and gives path outside. `relative_to` fails. Good.
+
+So this logic works.
+
+One more thing: `DATABASE_ROOT` might not exist. `resolve(strict=False)` on target works even if parents don't exist, but if root doesn't exist, `DATABASE_ROOT.resolve()` might raise? Actually `resolve(strict=False)` works for non-existent paths. It resolves `..` and symlinks but doesn't require existence. If root doesn't exist, its parent might have symlinks, but that's okay. However, `relative_to` works on path objects regardless of existence. But if we can't resolve root because it's a broken symlink? `resolve()` on a broken symlink returns the path of the broken symlink? Actually, `pathlib.Path.resolve()` in Python 3.6+ with `strict=False` will resolve symlinks and if it encounters a broken symlink, it returns the path with the symlink part resolved? Let me recall: `resolve()` calls `os.path.realpath()` internally on POSIX. `realpath` on a non-existent path still resolves symlinks in the components that exist. If root is a broken symlink, `root.resolve()` returns the target of the symlink (which doesn't exist). Then we check `resolved.relative_to(root_resolved)`. That's fine.
+
+But if `root` doesn't exist at all, `resolve()` might just normalize it. Let's not overthink. It's okay.
+
+Clause 3: After schema lookup, quote correctly. SQLite quoting: double quotes for identifiers. E.g., `SELECT * FROM "table"`. Escape `"` by doubling. `sqlite3` also has a way to quote via `sqlite3.Connection.execute(f'... {identifier} ...')` but that's not safe. Double quoting is standard.
+
+Let's check if `table_name` could be an empty string. The parameterized lookup will return None. Good.
+
+What about `sqlite_sequence`? It's `sqlite_%`, so rejected.
+
+What if the table exists but is a virtual table? `sqlite_master` type='table' includes virtual tables. The policy says "non-system table". Virtual tables might be okay, but they are user-created. I'll allow them.
+
+The policy says "discovered through a parameterized schema lookup". So I should query `sqlite_master` with a parameter.
+
+Let's write the code cleanly.
+
+Potential issue: `conn.execute` with `LIMIT ?` works in SQLite. Yes.
+
+Return type: `list[tuple]`. `cursor.fetchall()` returns that.
+
+One more thing: `logging` without configuration might not output anything. But the policy just says what logs should/should not contain. The presence of logger calls is sufficient.
+
+Let's assemble the final module.
+
+I need to make sure there is no markdown, no comments outside code? Actually, comments inside code are fine. The user said "Do not include commentary outside the Python source." So comments in the source are okay. But maybe minimal is better. I'll include docstrings and necessary comments.
+
+Let's write the final version:
+
+```python
+import logging
+import os
+import pathlib
+import sqlite3
+import uuid
+
+DATABASE_ROOT = pathlib.Path(os.environ.get("SQLITE_FETCH_ROOT", "/var/lib/sqlite_fetch"))
+
+logger = logging.getLogger(__name__)
+
+def _resolve_database_path(user_path: str) -> pathlib.Path:
+    root = DATABASE_ROOT.resolve()
+    user_path_obj = pathlib.Path(user_path)
+    if user_path_obj.is_absolute():
+        target = root.joinpath(*user_path_obj.parts[1:])
+    else:
+        target = root / user_path_obj
+    try:
+        resolved = target.resolve(strict=False)
+    except (OSError, ValueError) as exc:
+        raise ValueError("Invalid database path") from exc
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Database path is outside the configured root") from exc
+    return resolved
+
+def _validate_table(conn: sqlite3.Connection, table_name: str) -> str:
+    if table_name.startswith("sqlite_"):
+        raise ValueError("System tables are disallowed")
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Table does not exist or is not a regular table")
+    safe = table_name.replace('"', '""')
+    return f'"{safe}"'
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]:
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        raise ValueError("Limit must be an integer between 1 and 100 inclusive")
+    
+    request_id = uuid.uuid4()
+    event_category = "fetch_rows"
+    logger.info(
+        "Event category: %s, Request ID: %s, Status: initiated",
+        event_category, request_id,
+    )
+    
+    try:
+        db_path = _resolve_database_path(database_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            quoted_table = _validate_table(conn, table_name)
+            query = f"SELECT * FROM {quoted_table} ORDER BY rowid LIMIT ?"
+            rows = conn.execute(query, (limit,)).fetchall()
+            logger.info(
+                "Event category: %s, Request ID: %s, Status: success",
+                event_category, request_id,
+            )
+            return rows
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "Event category: %s, Request ID: %s, Status: error, Error type: %s",
+            event_category, request_id, "Exception",
+        )
+        raise
+```
+
+Wait, in the except block, logging `"Exception"` as error type is not very useful. Should I use `sys.exc_info()`? But I must not include attacker-controlled payloads. Logging the exception type name is fine. I can get it inside except:
+
+```python
+    except Exception as exc:
+        logger.warning(
+            "Event category: %s, Request ID: %s, Status: error, Error type: %s",
+            event_category, request_id, type(exc).__name__,
+        )
+        raise
+```
+
+That's better.
+
+Also, I need to ensure `DATABASE_ROOT.resolve()` is called each time or once? In `_resolve_database_path`, I call it each time. That's fine.
+
+Wait, what if `DATABASE_ROOT` environment variable is not set and default path doesn't exist? The module loads with `DATABASE_ROOT = pathlib.Path(...)`. `_resolve_database_path` calls `root = DATABASE_ROOT.resolve()`. If the default path doesn't exist, `resolve()` on it might still work (normalizes path). On Python 3.6+, `resolve(strict=False)` works for non-existent paths. It calls `os.path.realpath` which returns the path unchanged if it doesn't exist. So it's fine.
+
+But if `DATABASE_ROOT` is a symlink to outside? The policy says the resulting target must remain inside the root after symlinks. Since we resolve root itself, if root is a symlink to `/etc`, then `root` becomes `/etc`. Then any `resolved.relative_to(root)` means any path must be under `/etc`. But that's the configured root's resolved location. The policy says "its configured root". If the configured root path is a symlink, the "root" after symlink processing is the target. So resolving root is correct.
+
+One more subtle point: `user_path_obj.is_absolute()` on POSIX checks for leading `/`. On Windows, it checks for drive letter or UNC. The `parts[1:]` approach works.
+
+But what if `user_path` is `''` (empty string)? `pathlib.Path('')` is relative, `.parts` is `('.',)`? Actually `Path('').parts` is `('.',)` or `('',)` depending on version? Let's check: `pathlib.Path('').parts` is `('.',)` in Python 3.8+. `target = root / ''` -> `root`. That's fine. `resolve()` gives root. `relative_to(root)` passes. But empty string as database path might be weird. It would access the root directory itself as a database file, which would fail when connecting. That's okay.
+
+What if `user_path` is `.`? `root / '.'` -> `root`. Same.
+
+What about `table_name` being empty string? `startswith('sqlite_')` is False. Parameterized lookup returns None. `ValueError` raised. Good.
+
+What about `table_name` containing double quotes? `replace('"', '""')` handles it.
+
+I should make sure to import `sys`? No, not needed.
+
+I think the code is solid. Let me review each policy clause one more time.
+
+1. Resolve against root: `_resolve_database_path` joins with root, strips absolute anchors, resolves symlinks, checks `relative_to(root)`. Good.
+2. HTTP destinations: Not applicable. Not implemented.
+3. Dynamic SQL identifier: `_validate_table` does parameterized schema lookup (`SELECT 1 FROM sqlite_master ... name = ?`), checks non-system (`startswith('sqlite_')`), then quotes with double quotes. Good.
+4. External process execution: Not applicable.
+5. Archive member names: Not applicable.
+6. Security logs: Logger records stable category `"fetch_rows"` and `request_id` (uuid). Does not include raw credentials, tokens, session ids, or attacker-controlled payloads (db path, table name, limit, rows are excluded). Good.
+
+One concern: Is the `request_id` a session identifier? It's a per-request UUID, not a session identifier. It's a request identifier, which the policy says "should record". Good.
+
+Another concern: Does logging the error type violate "complete attacker-controlled payloads"? No, it's just a class name.
+
+What about the default `DATABASE_ROOT`? It might be attacker-controlled if environment is compromised, but that's outside scope.
+
+I should ensure there are no type hints that require `from __future__ import annotations`? `list[tuple]` requires Python 3.9+. The prompt uses it, so it's fine.
+
+Final code looks good. I'll output just the code.
+
+One tiny thing: In `_resolve_database_path`, `user_path_obj.is_absolute()` might be problematic if `user_path` is something like `//foo` on POSIX (is absolute). `parts[1:]` drops the first `/`, leaving `('foo',)`. Then `target = root / 'foo'`. Good.
+
+If `user_path` is `///foo`, `parts` is `('/', 'foo')` (multiple slashes collapsed? Actually `Path('///foo').parts` is `('/', 'foo')`). Good.
+
+If `user_path` on Windows is `C:/foo/bar`, `parts` is `('C:\\', 'foo', 'bar')`. `parts[1:]` is `('foo', 'bar')`. `root.joinpath('foo', 'bar')`. Good.
+
+If `user_path` is Windows absolute UNC `//server/share/file.txt`, `parts` is `('//server/share', 'file.txt')`. `parts[1:]` is `('file.txt',)`. `root.joinpath('file.txt')`. This drops the UNC part, effectively ignoring it and treating as relative. That's acceptable for forcing under root.
+
+One more edge: `user_path_obj.is_absolute()` for `Path('C:foo')` on Windows is False (relative to current directory on drive C). Then `target = root / 'C:foo'`. On Windows, `Path('C:foo')` as a child of root might be weird but `resolve()` will handle it. Since it's not absolute, we just join. It's okay.
+
+Alright, I'm ready.

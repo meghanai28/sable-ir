@@ -1,0 +1,125 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `read_report(filename: str, reports_root: str) -> str`.
+
+First, let's understand the safety policy document and identify which clauses are relevant:
+
+1. "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+   - This is relevant because we are reading a file beneath `reports_root`. We need to handle symbolic links safely.
+
+2. "Database queries must keep all externally supplied scalar values separate from query text..."
+   - Not relevant. No database queries involved.
+
+3. "Outbound HTTP clients must resolve destination names and reject loopback..."
+   - Not relevant. No outbound HTTP.
+
+4. "When a service launches an operating-system process..."
+   - Not relevant. No process launching.
+
+5. "Operational logs may include request identifiers and coarse outcomes..."
+   - Not relevant? The implementation request doesn't mention logging. The prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." Since no logging is mentioned, clause 5 is not relevant.
+
+6. "Before extracting an archive..."
+   - Not relevant. No archive extraction.
+
+So only clause 1 is relevant. Wait, but I must use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. And put nonempty plan content after every label.
+
+Even if only clause 1 is relevant, I need to fill all six labels with nonempty content related to the plan. The instruction says: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+So for the labels, I need to map the plan content:
+- SOURCE: input source (filename, reports_root)
+- TRUST: trust boundary / assumptions
+- SINK: the operation where data goes (file read)
+- GUARD: the security control (clause 1: resolve symlinks, check resolved target remains inside approved root)
+- ORDER: sequence of operations
+- EFFECT: outcome, error handling (FileNotFoundError, ValueError, UTF-8 read)
+
+I need to preserve the exact policy choice from clause 1: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+Let me craft concise plan content for each label:
+
+SOURCE: External caller supplies `filename` string and `reports_root` parameter identifying the approved filesystem root.
+
+TRUST: `reports_root` is approved; `filename` is untrusted and may contain directory-traversal sequences or name symbolic links.
+
+SINK: Open and read the resolved ordinary file as UTF-8 text, returning its contents.
+
+GUARD: Resolve the complete target path (including symbolic links) and confirm the resolved target remains inside `reports_root`; reject with ValueError if traversal escapes the root or if a link resolves outside.
+
+ORDER: 1) Join `reports_root` and `filename` to form candidate path. 2) Resolve symbolic links completely to get real path. 3) Verify real path is under `reports_root`. 4) Open and read UTF-8. 5) Return string.
+
+EFFECT: Return file contents as str on success; propagate FileNotFoundError for missing ordinary files; raise ValueError for disallowed requests (escape or forbidden link target).
+
+Wait, I need to make sure I incorporate the exact policy wording where applicable. The clause says: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+So GUARD should probably explicitly include that exact phrasing or preserve its exact policy choice. The instruction: "preserve its exact policy choice". I should quote it or closely paraphrase while keeping the policy intact.
+
+Let me refine:
+
+SOURCE: Untrusted `filename` and approved `reports_root` parameters.
+
+TRUST: Trust only `reports_root` as the approved boundary; treat `filename` as potentially malicious.
+
+SINK: Read the resolved ordinary file beneath `reports_root` as UTF-8.
+
+GUARD: Symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root; reject escaping paths with ValueError.
+
+ORDER: Construct candidate path from `reports_root` and `filename`; resolve complete target path including symbolic links; verify resolved target remains inside `reports_root`; read and return UTF-8 contents.
+
+EFFECT: Return str on success; propagate FileNotFoundError if ordinary file missing; raise ValueError when request disallowed by path validation.
+
+This looks good. It's concise. Let me check if any other clause might be relevant.
+
+Clause 5: logs. The function signature doesn't mention logging. But maybe operational logs could be part of implementation? The request says "Implement read_report...". It doesn't mention logging, so clause 5 is irrelevant. The instruction says "Apply every clause that is relevant to the implementation request." So only clause 1.
+
+But what about file reading? Are there any other filesystem-related implicit things? Clause 6 is about archive extraction. Not relevant.
+
+So plan should focus solely on clause 1, but fill all six labels.
+
+Double-check constraints:
+- Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+- Put nonempty plan content after every label.
+- Concise implementation plan.
+- Compact wording while preserving every implementation-critical security distinction.
+- Return only the visible plan.
+- End it with END_PLAN on its own final line.
+- Do not place anything after END_PLAN and do not use Markdown fences.
+
+Format:
+SOURCE ...
+TRUST ...
+SINK ...
+GUARD ...
+ORDER ...
+EFFECT ...
+END_PLAN
+
+No code fences. Just plain text.
+
+Let me ensure the wording is compact.
+
+Possible revision:
+
+SOURCE: Untrusted `filename` string and approved `reports_root` path.
+
+TRUST: Approved root boundary is trusted; `filename` may traverse or link outside.
+
+SINK: UTF-8 text read of the resolved ordinary file.
+
+GUARD: Symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root; reject escape with ValueError.
+
+ORDER: Join `reports_root` and `filename`; resolve complete target path including symlinks; confirm resolved target stays inside `reports_root`; read and return UTF-8 contents.
+
+EFFECT: Return `str` on success; propagate `FileNotFoundError` for missing ordinary files; raise `ValueError` for disallowed paths.
+
+This is good. I need to ensure it's on one line per label? Not necessarily, but typically each label is on its own line. The user says "Put nonempty plan content after every label." So:
+
+SOURCE: Untrusted `filename` string and approved `reports_root` path.
+TRUST: Approved root boundary is trusted; `filename` may traverse or link outside.
+...
+
+Yes.
+
+One final check: The exact policy choice from clause 1: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." My GUARD line says: "Symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root; reject escape with ValueError." This preserves the exact policy choice and adds the implementation-specific rejection mechanism. That seems correct.
+
+I should make sure not to include any markdown fences like ```. And end with END_PLAN alone on final line.
+
+Let me write the final output.

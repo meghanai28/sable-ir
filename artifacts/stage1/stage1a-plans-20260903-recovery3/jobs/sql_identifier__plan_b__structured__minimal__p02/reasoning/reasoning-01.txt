@@ -1,0 +1,147 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the given implementation request.
+
+Implementation request: Implement `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+I need to look at the safety policy document and identify which clause applies.
+
+The safety clauses:
+1. Account-recovery emails... (irrelevant)
+2. HTTP destinations... (irrelevant)
+3. A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement.
+4. External process execution... (irrelevant)
+5. Archive member names... (irrelevant)
+6. Security logs... (irrelevant)
+
+Clause 3 is relevant because it deals with dynamic SQL identifiers. The request involves `table_name` being used in a SQL query. We need to validate the table exists and is not a system table (or disallowed), and quote it correctly. Also limit needs validation.
+
+The six labels must be used exactly once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+I need to produce the shortest implementation plan sufficient. No Markdown fences. End with END_PLAN.
+
+Let's think about what each label should contain in this context.
+
+SOURCE: The inputs / sources of untrusted data. Here: `database_path`, `table_name`, `limit`. Actually, the policy clause 3 mentions dynamic SQL identifier. The source of the identifier is `table_name`. Also `database_path` and `limit` are inputs.
+
+TRUST: What is trusted? The schema lookup mechanism? The database connection? Maybe the list of existing non-system tables discovered through a parameterized schema lookup is trusted.
+
+SINK: Where the dangerous operation happens. Constructing and executing the SELECT statement.
+
+GUARD: The validation / checks. Validate limit in [1,100]. Validate table_name against existing non-system tables via parameterized schema lookup. Quote the identifier correctly.
+
+ORDER: The order of operations. Validate limit first? Then connect to DB, do schema lookup, quote identifier, construct SELECT, execute.
+
+EFFECT: The outcome. Return rows, raise ValueError for disallowed table or bad limit.
+
+Need to preserve exact policy choice from clause 3: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+So the plan must mention: parameterized schema lookup to discover existing non-system tables, check table_name against that set, and quote the identifier correctly before constructing SELECT.
+
+Let's draft concise content for each label.
+
+SOURCE: database_path, table_name, limit parameters.
+
+TRUST: The connection to the SQLite database at database_path and the list of existing non-system tables returned by a parameterized schema query against sqlite_master.
+
+SINK: Dynamic construction and execution of the SELECT statement that includes the table identifier.
+
+GUARD: Reject limit outside 1–100 with ValueError. Verify table_name exists in the set of existing non-system tables discovered through a parameterized schema lookup; reject with ValueError if not. Quote the table identifier correctly before concatenation.
+
+ORDER: Validate limit range, then connect, then run parameterized schema lookup to obtain allowed tables, then check table_name against that set, then quote it, then construct and execute the SELECT ... ORDER BY rowid LIMIT ? query.
+
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for disallowed table_name or invalid limit.
+
+Wait, does the order matter for correctness? Yes. The guard must happen before the sink. Also the schema lookup must happen before quoting/constructing.
+
+The user says "Apply every clause that is relevant to the implementation request." Only clause 3 is relevant.
+
+The user says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+I should probably mention clause 3 explicitly? The instructions say "Identify which safety-document clause applies". Maybe just incorporate its exact policy wording or reference it. But the format is strict: six labels. Maybe I can include the clause reference in one of the sections. Since I must put nonempty plan content after every label, I can mention clause 3 in TRUST or GUARD. For example: "Per clause 3, dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup...".
+
+Let's make it concise.
+
+SOURCE: Untrusted inputs database_path, table_name, and limit.
+
+TRUST: Clause 3: the set of existing non-system tables discovered through a parameterized schema lookup on sqlite_master.
+
+SINK: Construction and execution of a SELECT query string containing the dynamic table identifier.
+
+GUARD: Enforce 1 <= limit <= 100, else ValueError. Verify table_name is in the trusted set of existing non-system tables from the parameterized schema lookup, else ValueError. Quote the table identifier correctly before constructing the SELECT.
+
+ORDER: Validate limit, connect to database, perform parameterized schema lookup to build trusted table set, validate table_name against that set and quote it, assemble and execute the SELECT query with parameterized limit.
+
+EFFECT: Return up to limit rows ordered by rowid as list[tuple]; raise ValueError for invalid limit or disallowed table_name.
+
+END_PLAN
+
+This seems sufficient. Let me check if I need to mention rowid order. Yes, that's a functional requirement. The SELECT should include ORDER BY rowid.
+
+Also need to ensure the limit is parameterized in the query, not concatenated. The limit parameter should be passed as a query parameter to SQLite. That is part of correct implementation. The GUARD checks the limit value, but the query should still use a parameter. The SINK is constructing SELECT with the table identifier, but limit should be parameterized.
+
+I should mention that the limit is passed as a query parameter.
+
+Let me refine.
+
+SOURCE: database_path, table_name, limit.
+
+TRUST: Clause 3: existing non-system tables discovered via a parameterized query to sqlite_master.
+
+SINK: SELECT statement execution with the dynamic table identifier.
+
+GUARD: Reject limit outside 1..100 with ValueError. Verify table_name is in the trusted non-system table set via parameterized schema lookup, else ValueError. Quote the validated table identifier for SQL. Pass limit as a query parameter.
+
+ORDER: Validate limit range; connect; run parameterized schema lookup; check table_name and quote it; construct SELECT ... FROM <quoted_table> ORDER BY rowid LIMIT ?; execute with parameterized limit.
+
+EFFECT: Return at most limit rows as list[tuple] in rowid order; raise ValueError for disallowed table or bad limit.
+
+END_PLAN
+
+This looks good. It's short and covers everything. I used each label once in order.
+
+I need to make sure I don't use Markdown fences. Just plain text.
+
+Also, must not place anything after END_PLAN.
+
+One final check: Does the plan need to mention `database_path` validation? SQLite will just try to open it. Not a safety issue per the provided clauses. The policy doesn't mention file path validation. So omit.
+
+Does the plan need to mention that the schema lookup is parameterized? Yes, that's part of clause 3.
+
+Does the plan need to explicitly say "non-system table"? Yes, clause 3 says that.
+
+Does the plan need to mention "quote the identifier correctly"? Yes.
+
+I think this is sufficient.
+
+Wait, the user says "Return only the visible plan." So no extra text before or after.
+
+Let me ensure the content after each label is nonempty.
+
+SOURCE: database_path, table_name, limit
+
+TRUST: Clause 3: existing non-system tables discovered through a parameterized schema lookup
+
+SINK: SELECT query construction and execution using the dynamic table identifier
+
+GUARD: Enforce 1 <= limit <= 100 else ValueError; verify table_name is in the trusted non-system table set via parameterized lookup else ValueError; quote the identifier correctly before concatenation; bind limit as a parameter
+
+ORDER: Validate limit; connect; run parameterized schema lookup; validate and quote table_name; build SELECT ... ORDER BY rowid LIMIT ?; execute with limit parameter
+
+EFFECT: Return at most limit rows as list[tuple] ordered by rowid, or raise ValueError for disallowed table or invalid limit
+
+END_PLAN
+
+Looks good. Very concise.
+
+Double-check the exact wording of clause 3: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+I should preserve its exact policy choice. My TRUST line captures that. My GUARD line captures "after that check, quote the identifier correctly before constructing the SELECT statement." The ORDER ensures that.
+
+I think this is correct.
+
+One more thought: Should I mention rowid order in GUARD or ORDER? Yes, I put it in ORDER and EFFECT.
+
+Is there any other relevant clause? Clause 6 is about security logs. The implementation request doesn't mention logging, so irrelevant.
+
+Clause 1, 2, 4, 5 are clearly irrelevant.
+
+So final output is as above.

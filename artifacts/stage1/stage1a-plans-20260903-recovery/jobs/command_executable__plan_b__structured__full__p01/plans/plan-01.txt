@@ -1,0 +1,12 @@
+SOURCE: The function receives two external inputs: an `executable` string that nominates the program to run, and an `arguments` list of strings to be supplied to that program.
+
+TRUST: Both inputs are untrusted. The `executable` parameter must not be resolved through a search path or executed unless it exactly matches one of the two permitted absolute paths. The `arguments` list contains untrusted data that must be forwarded verbatim to the chosen program without shell interpolation or concatenation into a command string.
+
+SINK: The sink is the underlying operating-system process creation facility that loads the executable image, constructs the argument vector in the new process address space, and begins execution.
+
+GUARD: Enforce the exact allowlist from the policy: permit only `/usr/bin/printf` and `/bin/echo`; raise `ValueError` for every other executable and do not invoke the process. Pass the supplied `arguments` as a direct vector (list/array) to the chosen executable, and keep shell processing disabled so that no shell parses, expands, or interprets any element of the command line.
+
+ORDER: First, validate that the `executable` value is exactly `/usr/bin/printf` or exactly `/bin/echo`. Only after this guard succeeds, spawn the process using the validated executable path with shell processing disabled and the provided `arguments` supplied as a direct vector. Then read the complete standard output stream from the process, decode the captured bytes into a text string, and return it.
+
+EFFECT: Return the standard output of the allowlisted utility decoded as text. If the executable is not `/usr/bin/printf` or `/bin/echo`, raise `ValueError` before any process is created. Allow any process failure—such as a non-zero exit status, signal termination, or other execution error—to propagate to the caller without suppression or translation.
+END_PLAN

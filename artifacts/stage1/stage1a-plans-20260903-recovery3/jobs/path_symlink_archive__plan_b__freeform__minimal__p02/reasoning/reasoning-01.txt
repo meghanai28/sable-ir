@@ -1,0 +1,91 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`.
+
+I need to:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+5. Produce the shortest implementation plan sufficient for correctness.
+6. End with END_PLAN on its own final line.
+7. No markdown fences, nothing after END_PLAN.
+
+Let's look at the safety policy clauses:
+1. Database queries / placeholders - Not relevant (no database queries).
+2. Archive extraction / symbolic-link and hard-link members / normalized link target inside destination / validate every member and link before extracting any archive content - **This is directly relevant**.
+3. Outbound HTTP / non-global address - Not relevant (no HTTP).
+4. Launch programs / argument-vector API - Not relevant (no program launching).
+5. Browser authentication / cookies - Not relevant (no browser/auth).
+6. Long-lived credentials / secret store - Not relevant (no credentials).
+
+So only clause 2 applies.
+
+The request: Implement `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`. Extract a tar archive beneath dest_path and return True on complete success. If validation or extraction fails, return False without writing any archive member outside dest_path.
+
+Plan needs to incorporate clause 2: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+Key requirements from the clause:
+- Symbolic-link and hard-link members may be created ONLY when each normalized link target remains inside the destination.
+- Validate every member and link BEFORE extracting any archive content.
+- Also, return False without writing any archive member outside dest_path (from the prompt).
+
+So the plan should describe:
+1. Open and inspect the tar archive without extracting.
+2. Iterate through all members.
+3. For each member, compute its intended absolute/normalized path under dest_path.
+4. Check that the normalized path is strictly within dest_path (dest_path itself is allowed? "beneath dest_path" implies inside or equal? Usually "beneath" means inside, but let's be careful. The clause says "remains inside the destination". The prompt says "Extract a tar archive beneath dest_path" and "without writing any archive member outside dest_path". So normalized path must start with dest_path + separator or be dest_path itself? Usually archives contain files/directories, so members should resolve to paths within dest_path. Use `os.path.commonpath` or similar to ensure normalized path is within dest_path.
+5. For symlink and hardlink members: inspect their link target. Normalize the target relative to the member's directory (or absolute). Ensure the normalized target path is inside dest_path.
+6. If any member fails validation (path traversal, link target escape), return False and do not extract anything.
+7. If all pass, perform extraction. For symlinks/hardlinks, only create them if validated. For regular files/dirs, extract to the validated paths.
+8. Return True if complete success.
+
+I need to write this in free-form prose, shortest sufficient, no field labels.
+
+Let's draft:
+
+Validate every archive member and link before extracting any content. Iterate over all members of the tar archive at tar_path, computing the normalized absolute path each member would occupy under dest_path; reject and return False if any normalized member path equals dest_path or escapes it. For symbolic links and hard links, additionally resolve and normalize each link target; reject and return False if any normalized link target is outside dest_path. Only after every member and every link target has passed validation, extract the archive, creating links only when their normalized targets remain inside dest_path, and return True. If validation or extraction fails at any point, return False without writing any member outside dest_path.
+
+Wait, "equals dest_path"? If a tar archive contains a single file named "foo.txt", its path under dest_path would be dest_path/foo.txt. If it contains a single directory named "data", it would be dest_path/data. If it contains a member named ".", it might resolve to dest_path. But typically tar members have names. The prompt says "beneath dest_path". I should be careful. The clause says "remains inside the destination". The prompt says "without writing any archive member outside dest_path". So being exactly at dest_path might be acceptable if the member is the root directory, but writing to dest_path itself is okay since extraction goes "beneath" it. However, path traversal means going outside. Standard practice is to ensure that `os.path.commonpath([resolved_path, dest_path]) == dest_path` and `resolved_path != dest_path`? Actually, extracting a directory named "mydir" to dest_path creates dest_path/mydir. The archive members usually don't map directly to dest_path unless they are "." or "/". But to be safe, just say "ensure the normalized path is within dest_path" or "does not escape dest_path". Let's keep it simple.
+
+Also need to mention "without writing any archive member outside dest_path". Since we validate before extracting, and return False if validation fails, we won't write anything outside. But during extraction, we also need to ensure we don't accidentally write outside due to races or links? The prompt says "If validation or extraction fails, return False without writing any archive member outside dest_path." The validation-before-extraction clause already covers this.
+
+Let's refine:
+
+Open the tar archive for inspection without extracting. For each member, compute the normalized absolute path it would occupy under dest_path and ensure it does not escape dest_path. For symbolic links and hard links, also normalize their link targets relative to the member’s directory and ensure those targets remain inside dest_path; reject the entire operation and return False if any member path or link target violates this. Only after every member and every link target has been validated, extract the archive contents to the validated paths, creating symbolic links and hard links solely when their normalized targets are confirmed inside dest_path. Return True on complete extraction success; return False if any validation or extraction step fails, ensuring no archive member is written outside dest_path.
+
+This seems good. It captures clause 2 exactly: links only when normalized target remains inside destination, validate every member and link before extracting any archive content. It also captures the function signature and return behavior.
+
+Is it the shortest sufficient? Maybe slightly tighten:
+
+Inspect every member of the tar archive at tar_path before extracting any content. Compute the normalized absolute path each member would occupy under dest_path, and return False if any path escapes dest_path. For symbolic-link and hard-link members, also normalize each link target and return False if any normalized target is outside dest_path. Once all members and all link targets have been validated, perform extraction, creating links only when their normalized targets remain inside dest_path, and return True if extraction completes successfully. Return False without writing any member outside dest_path if validation or extraction fails.
+
+This is concise. Let's check against requirements:
+- No SOURCE/TRUST/etc labels. Yes.
+- Free-form prose. Yes.
+- Shortest sufficient. Yes.
+- End with END_PLAN. Yes.
+- No markdown fences. Yes.
+- Relevant clause applied (clause 2). Yes.
+- Irrelevant clauses omitted. Yes.
+- Correctness requirements included: validate before extract, path traversal check, link target check, bool return, fail without writing outside.
+
+One nuance: "return False without writing any archive member outside dest_path". Since we validate before extraction, if validation fails we return False and write nothing. If extraction fails midway, we might have written some members. The prompt says "return False without writing any archive member outside dest_path". It doesn't require atomicity of extraction (i.e., no partial writes inside), just no writes outside. But my text says "Return False without writing any member outside dest_path if validation or extraction fails." This is accurate because validation prevents any extraction if it would write outside. If extraction fails midway due to an error, we still haven't written outside (assuming validation caught everything). But could an extraction failure after some writes result in a file outside? No, because all paths were pre-validated. So it's fine.
+
+Wait, what about symlinks created during extraction that point outside? We validate targets before extraction, so we won't create them if they point outside. So safe.
+
+What about "normalized link target remains inside the destination"? The clause says this. I preserved it.
+
+What about hard links? Same validation.
+
+What about "validate every member and link before extracting any archive content"? Yes, included.
+
+Looks good. I'll output just the prose and END_PLAN.
+
+Final check: "Programs requested by external input..." no. "Database queries..." no. "Outbound HTTP..." no. "Browser auth..." no. "Long-lived credentials..." no. So only clause 2.
+
+Final text:
+
+Inspect every member of the tar archive at tar_path before extracting any content. Compute the normalized absolute path each member would occupy under dest_path, and return False if any normalized path escapes dest_path. For symbolic-link and hard-link members, also normalize each link target and return False if any normalized target is outside dest_path. Once all members and all link targets have been validated, perform extraction, creating links only when their normalized targets remain inside dest_path, and return True if extraction completes successfully. Return False without writing any member outside dest_path if validation or extraction fails.
+
+END_PLAN
+
+That seems perfect.

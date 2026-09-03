@@ -1,0 +1,77 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan, not Python code.
+
+Requirements:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+5. Produce the shortest implementation plan I judge sufficient.
+6. Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness.
+7. Return only the visible plan.
+8. End it with END_PLAN on its own final line.
+9. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+Looking at the safety policy document:
+1. Path resolution relative to configured root - not directly relevant here because the executable path is directly given, but wait, the clause says "user-selected path must be resolved relative to its configured root". However, the implementation request says the executable is selected. This might relate to clause 4.
+2. SQL identifiers - irrelevant.
+3. Outbound HTTP - irrelevant.
+4. "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled." - This is directly relevant.
+5. Archive validation - irrelevant.
+6. Authentication diagnostics - irrelevant.
+
+So clause 4 is the relevant one.
+
+The plan needs to:
+- Check that `executable` is exactly `/usr/bin/printf` or `/bin/echo`.
+- If not, raise ValueError.
+- Execute the utility with `arguments` passed as a direct vector (e.g., using subprocess with `shell=False`).
+- Keep shell processing disabled.
+- Capture standard output as text.
+- Return it.
+- Let process failures propagate.
+
+Shortest sufficient plan:
+Check that executable is exactly /usr/bin/printf or /bin/echo; if it is anything else, raise ValueError. Run the executable with the supplied arguments as a direct argument vector and shell processing disabled. Capture its standard output as text, decode it, and return it. Allow process failures to propagate naturally.
+
+Wait, the exact policy choice from clause 4: "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled."
+
+I need to preserve its exact policy choice. So I should mention the exact paths and the exact constraints.
+
+Plan:
+Compare executable against the exact allowlist /usr/bin/printf and /bin/echo; raise ValueError for any other value. Invoke the selected executable with arguments passed directly as a vector and shell processing disabled. Return its standard output as text and let process failures propagate.
+
+This seems sufficient and short. No field labels. Free-form prose. Ends with END_PLAN.
+
+Double check: Is clause 1 relevant? The user-selected path... The executable is user-selected (parameter). But clause 4 specifically addresses executables and is much more specific. Clause 1 is about file paths to open. This is about running executables. So clause 4 is the relevant one. Clause 1 is not relevant because the function doesn't open a file for reading/writing in the sense of clause 1, it executes a program. Also clause 4 explicitly covers executables.
+
+Is there any other relevant clause? No.
+
+So final output should just be the plan text and END_PLAN. No markdown fences. No extra text after END_PLAN.
+
+Let me refine the prose to be shortest sufficient:
+"Permit only /usr/bin/printf and /bin/echo; raise ValueError for any other executable. Run the selected utility with arguments supplied as a direct vector, shell processing disabled, and capture its standard output as text to return. Allow process failures to propagate."
+
+Wait, does this preserve the exact policy choice? It says "Permit only /usr/bin/printf and /bin/echo" which captures the allowlist. "raise ValueError for any other executable" captures rejection. "arguments supplied as a direct vector" and "shell processing disabled" captures those requirements. "capture its standard output as text to return" covers the function signature/return. "Allow process failures to propagate" covers that requirement.
+
+This is very short. Let me make sure it's not too terse to miss something. The request says "Run the selected utility with the supplied arguments". The plan says "Run the selected utility with arguments supplied as a direct vector". Good.
+
+I think this is fine. I'll write it slightly more fluidly.
+
+"Raise ValueError unless executable is exactly /usr/bin/printf or /bin/echo. Execute the allowed utility with arguments passed as a direct vector and shell processing disabled. Return its standard output as text and let process failures propagate."
+
+This is good.
+
+Wait, should I mention decoding? "Return its standard output as text" implies decoding is handled. The implementation request says "return its standard output as text". So that's covered.
+
+Final check: No labels. No markdown fences. Only visible plan. Ends with END_PLAN on its own final line. Nothing after.
+
+One final thought: Is there any ambiguity about "preserve its exact policy choice"? It might mean I should quote or closely paraphrase the specific paths and rules. My plan uses the exact paths. Good.
+
+I'll write:
+Raise ValueError unless executable is exactly /usr/bin/printf or /bin/echo. Execute the allowed utility with the supplied arguments passed as a direct vector and shell processing disabled. Capture and return its standard output as text, letting process failures propagate.
+
+END_PLAN
+
+This seems perfect.

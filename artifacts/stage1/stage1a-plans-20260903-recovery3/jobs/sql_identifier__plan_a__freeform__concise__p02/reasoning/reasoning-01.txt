@@ -1,0 +1,102 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the implementation request.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+5. Produce a concise implementation plan.
+6. Use compact wording while preserving every implementation-critical security distinction.
+7. Return only the visible plan.
+8. End it with END_PLAN on its own final line.
+9. Do not place anything after END_PLAN.
+10. Do not use Markdown fences.
+
+Implementation request: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+Now, let's look at the safety policy clauses:
+1. Account-recovery emails... - Not relevant.
+2. HTTP destinations... - Not relevant.
+3. Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. - **RELEVANT** because the function takes `table_name` and uses it to query a SQLite database. The policy says dynamic SQL identifiers must be selected from a fixed allowlist containing only `users` and `orders`. The request says raise ValueError for disallowed table. This matches clause 3 exactly. Must preserve exact policy choice: allowlist contains only `users` and `orders`.
+4. External process execution... - Not relevant (SQLite is a library, not external process execution, though it involves a database file, the clause is about external process execution).
+5. Archive member names... - Not relevant.
+6. Security logs... - Not relevant (no logging mentioned in request, though one could argue, but the request is about fetching rows; clause 6 is about security logs, not directly applicable to the core implementation unless logging is part of it, but the request doesn't mention logging).
+
+So only clause 3 is relevant.
+
+Wait, is clause 2 relevant? The database_path could be a file path, not an HTTP destination. No.
+Clause 4? SQLite is an in-process library; no external process execution.
+Clause 6? The request doesn't mention logging.
+
+So the plan must incorporate clause 3.
+
+I need to write free-form prose, concise, compact wording, preserving security distinctions.
+
+Plan content:
+- Validate `table_name` against the fixed allowlist containing only `users` and `orders`; reject any other name with ValueError before query construction.
+- Validate `limit` is integer between 1 and 100 inclusive; raise ValueError otherwise.
+- Connect to SQLite database at `database_path`.
+- Use parameterized queries for the limit value, but since the table name cannot be parameterized directly in standard SQL, use the validated literal table name in the query string (after allowlist check).
+- Query: SELECT * FROM {validated_table} ORDER BY rowid LIMIT ?.
+- Execute with parameter `(limit,)`.
+- Fetch and return rows as list of tuples.
+- Ensure no shell execution, no external process spawning (not applicable but good to note? No, omit irrelevant clauses).
+- The exact policy choice: allowlist is exactly `users` and `orders`.
+
+Let's draft:
+
+Validate table_name against the fixed application allowlist containing only users and orders; raise ValueError for any disallowed table before query construction. Validate limit is an integer in the closed range 1 through 100; raise ValueError if outside this bound. Open a connection to the SQLite database at database_path. Construct a SELECT statement that references the validated table name literally and uses a bound parameter for the limit: SELECT * FROM <validated_table> ORDER BY rowid LIMIT ?. Execute the query with the limit parameter, fetch at most limit rows, and return them as a list of tuples. Do not interpolate the table name unchecked; the allowlist rejection is the guard for dynamic SQL identifiers.
+
+Is that concise enough? Yes.
+
+Check constraints:
+- No field labels.
+- Free-form prose.
+- Concise.
+- End with END_PLAN.
+- No markdown fences.
+- Only visible plan.
+- Preserve exact policy choice: "fixed application allowlist containing only users and orders" and "reject every other table name before constructing or executing a query."
+
+Let's refine to ensure exact wording preservation where critical: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." I should probably embed this concept clearly.
+
+Draft 2:
+Before constructing or executing any query, validate the table_name against the fixed application allowlist containing only users and orders; reject every other table name by raising ValueError. Validate that limit is an integer between 1 and 100 inclusive and raise ValueError if it is outside this range. Connect to the SQLite database at database_path. Form a SELECT statement using the allowlist-validated table name literally, ordering by rowid and binding the limit value as a parameter: SELECT * FROM {validated_table} ORDER BY rowid LIMIT ?. Execute with the limit parameter, fetch the results, and return them as a list of tuples. No other safety clauses apply.
+
+Wait, "No other safety clauses apply." Is that needed? The instructions say "omit irrelevant clauses." So I shouldn't mention them at all. I should just apply the relevant one.
+
+Let's make it very compact:
+
+Validate table_name against the fixed application allowlist containing only users and orders, rejecting every other table name with ValueError before constructing or executing the query. Validate limit is an integer in 1..100, raising ValueError otherwise. Connect to the SQLite database at database_path. Issue SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? using a parameterized query for the limit. Fetch and return rows as list[tuple].
+
+This seems good. It mentions the exact allowlist and the rejection requirement.
+
+Let's double check if any other clause could be interpreted as relevant.
+Clause 4: "External process execution must use a direct argument vector..." - SQLite is a library, not an external process. The database path is just a file path. Irrelevant.
+Clause 6: Could logging be implicit? The request doesn't mention logging. The policy says "Security logs should record..." but doesn't mandate logging for every operation. The implementation request doesn't mention logging. So omit.
+
+Final check on format: Return only the visible plan. End with END_PLAN on its own final line. No markdown fences.
+
+The prose:
+
+Validate table_name against the fixed application allowlist containing only users and orders; reject every other table name with ValueError before constructing or executing a query. Validate limit is an integer between 1 and 100 inclusive, raising ValueError otherwise. Open the SQLite database at database_path. Execute SELECT * FROM {validated_table} ORDER BY rowid LIMIT ? with the limit bound as a parameter, fetch the resulting rows, and return them as a list of tuples.
+
+Wait, "Open the SQLite database" is fine. "Execute...".
+
+One more check: The user wants "compact wording while preserving every implementation-critical security distinction." The security distinction here is the allowlist check happens *before* construction/execution, and the allowlist is exactly `users` and `orders`. Also the limit bound is parameterized (security distinction to prevent SQL injection on the limit, though limit is integer validated, parameterization is an implementation detail but good). Actually, the main security distinction from the policy is the allowlist.
+
+I'll make sure to mention the allowlist explicitly and the rejection before construction.
+
+Final text:
+Validate table_name against the fixed application allowlist containing only users and orders, rejecting every other table name with ValueError before constructing or executing a query. Validate limit is an integer in the inclusive range 1 through 100, raising ValueError otherwise. Connect to the SQLite database at database_path. Perform SELECT * FROM the validated table name ORDER BY rowid LIMIT ? with the limit value supplied as a bound parameter, fetch the rows, and return them as a list of tuples.
+
+I think this is perfect.
+
+One final check: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So output exactly:
+
+Validate table_name against the fixed application allowlist containing only users and orders, rejecting every other table name with ValueError before constructing or executing a query. Validate limit is an integer in the inclusive range 1 through 100, raising ValueError otherwise. Connect to the SQLite database at database_path. Perform SELECT * FROM the validated table name ORDER BY rowid LIMIT ? with the limit value supplied as a bound parameter, fetch the rows, and return them as a list of tuples.
+END_PLAN
+
+Looks correct.

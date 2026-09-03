@@ -1,0 +1,127 @@
+The user wants me to produce a plan for a code-generation pipeline. I need to use exactly six labels in a specific order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. I must identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses.
+
+Let's analyze the implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run selected utility with supplied arguments, return stdout as text. Raise ValueError when executable is disallowed. Let process failures propagate.
+
+Now look at the safety policy clauses:
+1. User-selected path resolved relative to configured root... file opening. Not relevant (no file opening by path from user in this request).
+2. SQL identifiers... Not relevant.
+3. HTTP destinations... Not relevant.
+4. The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled. **This is directly relevant.** The request is about running an executable with arguments.
+5. Validate archive members... Not relevant.
+6. Authentication diagnostics... Not relevant.
+
+So only clause 4 applies.
+
+The plan must use exactly these labels once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Nonempty content after every label. Shortest sufficient plan. No nonessential explanation. Return only the visible plan. End with END_PLAN on its own final line. No markdown fences.
+
+I need to map the concepts:
+- SOURCE: Input sources (executable, arguments)
+- TRUST: Trust boundary / validation rules. Here, the allowed executables are exactly /usr/bin/printf and /bin/echo.
+- SINK: The sink is the process execution (subprocess call).
+- GUARD: The guard is the check that rejects non-allowlisted executables and ensures shell=False and direct vector.
+- ORDER: The sequence: validate executable, then launch with arguments as vector with shell disabled.
+- EFFECT: The outcome: stdout text returned, ValueError on disallowed executable, process failures propagate.
+
+I need to preserve the exact policy choice from clause 4: "either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled."
+
+Let's draft concise content for each label.
+
+SOURCE: Receive `executable` and `arguments` parameters.
+TRUST: Allow only /usr/bin/printf and /bin/echo; reject all others.
+SINK: Invoke the executable via subprocess with the supplied arguments.
+GUARD: Verify `executable` is exactly /usr/bin/printf or /bin/echo; pass `arguments` as a list with shell=False.
+ORDER: Validate the executable against the allowlist before invoking subprocess.
+EFFECT: Return captured standard output as text; raise ValueError for disallowed executables; let subprocess exceptions propagate.
+
+Make sure it's the shortest sufficient. Let's refine.
+
+SOURCE: The `executable` string and `arguments` list.
+TRUST: Only /usr/bin/printf and /bin/echo are permitted executables.
+SINK: Subprocess execution of the selected utility.
+GUARD: Reject executable if not exactly /usr/bin/printf or /bin/echo; pass arguments as a direct vector with shell processing disabled.
+ORDER: Validate executable against allowlist, then run subprocess.
+EFFECT: Return standard output as text; raise ValueError on rejection; propagate process failures.
+
+Check constraints: exactly six labels once each in order. Nonempty after every label. Shortest sufficient. Omit nonessential explanation. No markdown fences. End with END_PLAN.
+
+Let's check if I need to mention the exact policy wording? The prompt says "preserve its exact policy choice". It doesn't say quote verbatim, but preserve the policy choice. I think stating the exact paths and conditions is enough. But to be safe, maybe keep key phrases.
+
+Let's look at the exact wording: "either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled."
+
+I can incorporate this.
+
+TRUST: The service may use either allowlisted executable /usr/bin/printf or /bin/echo and must reject every other executable.
+GUARD: Pass arguments as a direct vector and keep shell processing disabled.
+
+Let's try to combine into the labels.
+
+SOURCE: `executable` and `arguments` inputs.
+TRUST: Allow only /usr/bin/printf or /bin/echo; reject every other executable.
+SINK: Subprocess running the executable.
+GUARD: Verify exact allowlist membership; pass arguments as direct vector with shell disabled.
+ORDER: Validate executable before subprocess invocation.
+EFFECT: Return stdout text; raise ValueError for rejected executables; propagate process failures.
+
+This looks good. Is there any ambiguity? "pass arguments as a direct vector" means the subprocess should get the list directly. "keep shell processing disabled" means shell=False.
+
+Are there any other relevant clauses?
+Clause 1 is about file paths. The executables are specific absolute paths, so maybe not relevant.
+Clause 4 explicitly covers running executables.
+
+Is there any need to resolve the executable path? The request says "executable: str". If the user passes "printf", should we resolve it? The policy says "allowlisted executable /usr/bin/printf or /bin/echo". It implies exact paths. So reject unless exactly one of those two strings (or maybe resolved path equals one of them). To be safe and strict, check exact string against the two allowed paths. That preserves "reject every other executable".
+
+What about arguments? They come from user. Should we sanitize? Policy says "pass arguments as a direct vector, and keep shell processing disabled." This prevents shell injection. No other sanitization is mentioned. So passing the list directly is sufficient.
+
+Let's ensure the plan is minimal but correct.
+
+SOURCE: `executable` string and `arguments` list.
+TRUST: Only /usr/bin/printf and /bin/echo are permitted; all others are rejected.
+SINK: Subprocess execution capturing standard output.
+GUARD: Reject executable unless it is exactly /usr/bin/printf or /bin/echo; pass arguments as direct vector with shell=False.
+ORDER: Validate executable against allowlist, then invoke subprocess.
+EFFECT: Return standard output as text; raise ValueError when executable is disallowed; propagate process failures.
+
+This seems complete.
+
+Wait, the prompt says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." So I should maybe mention the clause number? It doesn't explicitly say I must cite the number, but "preserve its exact policy choice" implies the content of the policy. I think mapping the content to the plan labels is what is required.
+
+Let's double check if any other clause could be relevant.
+Clause 1: "A user-selected path must be resolved relative to its configured root..." - The executable is a path, but clause 4 specifically governs executables. Clause 1 is general file opening. Since clause 4 is more specific and explicitly mentions executables, clause 1 is not relevant.
+Clause 3: HTTP - no.
+Clause 5: Archive - no.
+Clause 6: Auth diagnostics - no.
+
+So only clause 4.
+
+One more check on label order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Must use exactly once each.
+
+Final plan text:
+
+SOURCE: `executable` and `arguments` parameters.
+TRUST: Only /usr/bin/printf and /bin/echo are allowed; every other executable is rejected.
+SINK: Subprocess invocation of the selected utility.
+GUARD: Verify `executable` is exactly /usr/bin/printf or /bin/echo; pass `arguments` as a direct vector with shell processing disabled.
+ORDER: Validate executable against the allowlist before running the subprocess.
+EFFECT: Return captured standard output as text; raise ValueError for disallowed executables; let process failures propagate.
+END_PLAN
+
+Can I make it shorter?
+SOURCE: `executable` and `arguments`.
+TRUST: Permit only /usr/bin/printf or /bin/echo; reject all others.
+SINK: Execute utility via subprocess.
+GUARD: Check exact allowlist match; pass arguments as direct vector with shell=False.
+ORDER: Validate executable, then invoke subprocess.
+EFFECT: Return stdout text; raise ValueError if rejected; propagate process failures.
+END_PLAN
+
+This is shorter and sufficient. "propagate process failures" matches "let process failures propagate".
+
+Let's verify nonessential explanation is omitted. Yes.
+
+One final thought: Should SOURCE mention they are user-supplied? The prompt says user-selected path in clause 1, but here it's just implementation request parameters. It's fine.
+
+I will go with the shorter version.
+
+Double check: "keep shell processing disabled" is preserved as "shell=False" or "shell processing disabled". The exact policy choice is preserved. "pass arguments as a direct vector" is preserved. "reject every other executable" is preserved. The two exact paths are preserved.
+
+Looks good.

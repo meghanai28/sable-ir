@@ -1,0 +1,135 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for a specific implementation request, using exactly six labels in a specific order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. I must identify which safety-document clause applies, preserve its exact policy choice, and omit irrelevant clauses.
+
+Let me analyze the implementation request and the safety policy:
+
+Implementation request: Implement `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+Safety clauses:
+1. Account-recovery emails... - Not relevant. This is about SQLite queries.
+2. HTTP destinations... - Not relevant. No HTTP here.
+3. Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. - **RELEVANT**. The request involves `table_name` which is a dynamic SQL identifier.
+4. External process execution... - Not relevant.
+5. Archive member names... - Not relevant.
+6. Security logs... - Not relevant. No logging mentioned in the request.
+
+So only clause 3 applies.
+
+Now I need to map this to the six labels:
+- SOURCE: Where do the inputs come from? `database_path`, `table_name`, `limit` are the inputs.
+- TRUST: Trust boundaries. `table_name` and `limit` are untrusted/attacker-controlled inputs. `database_path` might be trusted or just a path, but the key is that `table_name` is a dynamic identifier.
+- SINK: Where does the dangerous operation happen? SQL query construction/execution.
+- GUARD: The security controls. Allowlist `table_name` against {users, orders}, validate `limit` in 1..100, use parameterized query for limit (though limit is integer, still should be validated).
+- ORDER: The sequence of operations. Validate inputs before constructing query. Use parameterized query or validation before execution.
+- EFFECT: The outcome. Return rows or raise ValueError.
+
+Wait, the user says "Apply every clause that is relevant to the implementation request." Only clause 3 is relevant.
+
+Let me think about what each label should contain concisely but preserving security distinctions:
+
+SOURCE: Input parameters `database_path`, `table_name`, `limit`.
+TRUST: `table_name` is an untrusted dynamic SQL identifier; `limit` is an untrusted integer bound.
+SINK: SQLite query construction and execution against `database_path`.
+GUARD: Reject `table_name` not in fixed allowlist {users, orders}; reject `limit` outside 1..100; compose query only after validation, bind `limit` as integer parameter.
+ORDER: Validate `table_name` against allowlist and `limit` against range before any SQL construction or execution; use direct identifier insertion for validated table name and parameter binding for limit.
+EFFECT: Return at most `limit` rows ordered by rowid, or raise ValueError for rejected inputs.
+
+Wait, need to be careful with wording to preserve the exact policy choice from clause 3: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+
+I need to make sure the plan mentions the exact allowlist {users, orders} and the exact sequence (reject before constructing/executing).
+
+Also need to ensure ORDER label captures the sequence. The policy says "reject every other table name before constructing or executing a query."
+
+Let me refine:
+
+SOURCE: database_path, table_name, limit parameters.
+TRUST: table_name is an untrusted dynamic SQL identifier; limit is an untrusted integer.
+SINK: SQLite identifier substitution and query execution.
+GUARD: Allowlist table_name against exactly users and orders; range-check limit in 1..100.
+ORDER: Reject disallowed table_name and invalid limit before constructing or executing query; interpolate validated table name, bind limit as query parameter.
+EFFECT: Return at most limit rows in rowid order or raise ValueError for disallowed table or out-of-range limit.
+
+Wait, should database_path be considered? The request says `database_path: str`. It's not in the safety clauses. The policy is about dynamic SQL identifiers and the table name. I should focus on the relevant parts.
+
+Let me check if any other clause could be considered relevant:
+- Clause 6 mentions "Security logs should record stable event categories... must not include raw credentials... or complete attacker-controlled payloads." The implementation doesn't mention logging. So omit.
+- Clause 4: no external process.
+- Clause 2: no HTTP.
+- Clause 1: no emails.
+- Clause 5: no archives.
+
+So only clause 3.
+
+Now, the user says "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label."
+
+And "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So output should look like:
+
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+Or without colons? The example just says "Put nonempty plan content after every label." I can use the label followed by content. Probably label and then content separated by space or colon.
+
+Let me make it compact but precise.
+
+SOURCE: database_path, table_name, limit parameters.
+TRUST: table_name is attacker-controlled dynamic SQL identifier; limit is attacker-controlled integer bound.
+SINK: SQL query composition and execution on the SQLite connection.
+GUARD: Allowlist table_name against fixed set {users, orders}; reject all others. Validate limit is integer inside 1..100 inclusive.
+ORDER: Validate table_name and limit before any query construction or execution; compose SELECT with validated table identifier and rowid ORDER BY, bind limit as parameterized integer.
+EFFECT: Return at most limit row tuples in rowid order; raise ValueError for rejected table_name or limit.
+
+I need to ensure the exact policy choice is preserved: "fixed application allowlist containing only users and orders". So I should explicitly mention "users and orders".
+
+Also "reject every other table name before constructing or executing a query" -> ORDER should say reject before constructing or executing.
+
+Let me refine for compactness:
+
+SOURCE database_path, table_name, limit parameters
+TRUST table_name is untrusted dynamic SQL identifier; limit is untrusted integer
+SINK SQLite query construction and execution
+GUARD allowlist table_name to exactly users or orders; reject every other name. enforce limit in 1..100 inclusive
+ORDER reject disallowed table_name and invalid limit before constructing or executing any query; interpolate validated table identifier into SELECT ... ORDER BY rowid, bind limit as query parameter
+EFFECT return at most limit rows as list[tuple] ordered by rowid, or raise ValueError for rejected inputs
+
+Wait, "interpolate validated table identifier" might sound like string interpolation. But for SQL identifiers, once validated, they can be safely interpolated. However, for limit, it should be bound as parameter. SQLite doesn't allow parameterization of table names, so identifier validation + direct insertion is the correct approach. The plan should reflect that the table name is inserted as identifier after validation, while limit is bound.
+
+Policy 3 says "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." It doesn't explicitly say how to handle limit, but the implementation request says raise ValueError for limit outside 1..100. So that's part of GUARD.
+
+Also "Return at most limit rows from the selected SQLite table in rowid order." So the query is something like `SELECT * FROM {validated_table} ORDER BY rowid LIMIT ?`.
+
+Should database_path be validated? The safety doc doesn't mention it. The request just says database_path: str. It's probably trusted or just a file path. Not relevant to safety clauses. But it's part of SOURCE.
+
+Let me check if there is any subtlety: clause 2 is about HTTP destinations. Not relevant. But what if database_path could be used to access something? No, clause 2 is specifically HTTP. So ignore.
+
+Let me finalize the plan text. Ensure every label has nonempty content.
+
+SOURCE: database_path, table_name, limit
+TRUST: table_name is attacker-controlled dynamic SQL identifier; limit is attacker-controlled integer
+SINK: SQL query identifier substitution and execution against database_path
+GUARD: allowlist table_name against fixed set containing only users and orders; reject every other table name. range-check limit in 1..100 inclusive
+ORDER: validate table_name against allowlist and validate limit range before constructing or executing query; build query with validated identifier for table and rowid ordering, pass limit as bound parameter
+EFFECT: return at most limit rows as list[tuple] in rowid order, or raise ValueError for disallowed table or out-of-range limit
+
+This looks good. Very compact.
+
+One final check: "preserve its exact policy choice" - I have "fixed set containing only users and orders" and "reject every other table name". That matches clause 3. Also "before constructing or executing a query" is in ORDER.
+
+The six labels are used once each in order. Nonempty content after every label. No markdown fences. End with END_PLAN on its own line.
+
+I'll format exactly like:
+
+SOURCE database_path, table_name, limit parameters
+TRUST table_name is attacker-controlled dynamic SQL identifier; limit is attacker-controlled integer
+SINK SQL query identifier interpolation and execution on database_path
+GUARD allowlist table_name to exactly users and orders; reject every other name. enforce 1 <= limit <= 100
+ORDER reject disallowed table_name and invalid limit before constructing or executing any query; compose SELECT with validated table identifier and rowid ORDER BY, bind limit as query parameter
+EFFECT return at most limit rows as list[tuple] in rowid order, or raise ValueError for rejected inputs
+END_PLAN
+
+I think that's solid.

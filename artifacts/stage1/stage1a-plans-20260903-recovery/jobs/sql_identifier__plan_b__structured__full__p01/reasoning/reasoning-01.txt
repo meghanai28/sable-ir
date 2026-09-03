@@ -1,0 +1,284 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+The function should:
+- Return at most `limit` rows from the selected SQLite table in rowid order.
+- Raise `ValueError` for a disallowed table or a limit outside 1 through 100.
+
+I need to identify which safety-document clauses apply, preserve exact policy choices, and omit irrelevant clauses.
+
+The six labels to use exactly once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Nonempty content after every label.
+
+Let's look at the safety policy clauses:
+
+1. Account-recovery emails... Not relevant.
+2. HTTP destinations... Not relevant (no HTTP).
+3. A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement.
+   - This seems highly relevant! We have a dynamic table name (`table_name`) being used in SQLite. The clause says: dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement.
+   - So the plan must include: lookup existing non-system tables via parameterized query, check `table_name` is in that set, and then quote the identifier correctly.
+
+4. External process execution... Not relevant (no external processes).
+5. Archive member names... Not relevant (no archives).
+6. Security logs... Not relevant (no logging mentioned in request, though one could argue about not logging raw payloads, but the request doesn't mention logging, so omit).
+
+So only clause 3 applies.
+
+Now I need to produce a plan with the six labels. I must include every detail needed to implement the relevant safety rule correctly.
+
+Let's think about what each label should contain in this context:
+
+SOURCE: Where the inputs come from. The function parameters: `database_path`, `table_name`, `limit`. These are the sources of untrusted/dynamic data.
+
+TRUST: What validation/lookup is needed to establish trust. Here: validate `limit` is 1-100. Perform a parameterized schema lookup (e.g., query `sqlite_master` or `PRAGMA database_list` + checking table names) to discover existing non-system tables. The clause says "discovered through a parameterized schema lookup". We need to check the table_name against this discovered list. Also, the database_path should probably be used to connect, but the main trust for the identifier is the schema lookup.
+
+SINK: Where the dangerous operation happens. Construction and execution of the SELECT statement against the SQLite database. Specifically, constructing SQL with the table identifier.
+
+GUARD: The enforcement mechanisms. Validate limit range. Validate table_name against the schema lookup result (existing non-system tables). Quote the identifier correctly. Use parameterized queries for values (though there aren't user-supplied values in the WHERE clause except the limit? Actually limit is an integer, but in SQLite you can't parameterize LIMIT? Wait, SQLite allows parameterized LIMIT since version 3.35.0? Actually SQLite has supported bound parameters for LIMIT since long ago? Let me check: SQLite supports binding for LIMIT and OFFSET values. Yes, since 3.14.0 or earlier? Actually, I think SQLite supports `?` for LIMIT. But even if not, since limit is validated as integer 1-100, we can safely convert to int and use string interpolation for LIMIT? The clause is about dynamic SQL identifier, not about limit. However, best practice is to use parameterized queries for everything. But the clause specifically mentions quoting the identifier correctly before constructing the SELECT statement.
+
+ORDER: The sequence of operations. Must do schema lookup before quoting/constructing SQL. Must validate limit before executing. Must validate table_name is in the discovered list before constructing SQL.
+
+EFFECT: The outcome. Return at most limit rows from the selected table ordered by rowid. Raise ValueError for disallowed table or limit outside range.
+
+Wait, I need to think carefully about the label meanings in a security/safety plan context. These labels seem to correspond to a security planning framework.
+
+SOURCE: Untrusted inputs.
+TRUST: Validation and sanitization steps to make inputs trustworthy.
+SINK: Dangerous operations where vulnerabilities could manifest.
+GUARD: Runtime checks or restrictions that prevent misuse.
+ORDER: Required sequencing (e.g., validation before use).
+EFFECT: Intended observable behavior and guarantees.
+
+Let me map this out:
+
+SOURCE:
+- `database_path`: path to SQLite database file.
+- `table_name`: dynamic SQL identifier selecting the table.
+- `limit`: integer controlling row count.
+
+TRUST:
+- Validate `limit` is integer in [1, 100]. If not, raise ValueError.
+- Validate `database_path` is a file path? The request doesn't mention security around file path, but clause 3 is about dynamic SQL identifier. However, `database_path` isn't covered by the safety policy. I should probably mention connecting but focus on clause 3.
+- Perform a parameterized schema lookup against the SQLite connection (e.g., `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`) to discover existing non-system tables.
+- Check that `table_name` exactly matches one of the discovered names.
+
+SINK:
+- Construction of the SELECT SQL statement string incorporating the validated and quoted table identifier and the LIMIT value.
+- Execution of the query via the database cursor.
+
+GUARD:
+- The limit check (1-100 inclusive) acts as a guard on row count.
+- The schema lookup ensures only existing non-system tables can be queried.
+- The identifier must be quoted correctly (e.g., using SQLite's double-quote escaping or appropriate quoting method) before interpolation into the SQL string to prevent identifier injection.
+- Reject `table_name` if not found in the lookup result with ValueError.
+
+ORDER:
+- First, connect to the database at `database_path`.
+- Second, validate `limit` is between 1 and 100; if invalid raise ValueError.
+- Third, perform the parameterized schema lookup to enumerate existing non-system tables.
+- Fourth, check `table_name` against the lookup result; if absent raise ValueError.
+- Fifth, correctly quote the validated `table_name`.
+- Sixth, construct the SELECT statement string with the quoted identifier and parameterized LIMIT.
+- Seventh, execute the query and fetch results.
+
+EFFECT:
+- Return a `list[tuple]` containing at most `limit` rows from the specified table, ordered by `rowid`.
+- Raise `ValueError` if `table_name` is disallowed (not in discovered non-system tables) or `limit` is outside 1 through 100.
+- No query is executed against system tables or non-existent tables.
+- The identifier quoting prevents SQL injection via the table name.
+
+Wait, I need to make sure I apply the exact policy choice from clause 3:
+- "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+I need to preserve exact policy choices:
+- Existing non-system table.
+- Discovered through a parameterized schema lookup.
+- Quote the identifier correctly before constructing the SELECT statement.
+
+Also note: the request says "Return at most limit rows from the selected SQLite table in rowid order." So the SQL is something like `SELECT * FROM "{quoted_table}" ORDER BY rowid LIMIT ?` (or LIMIT {limit} if parameterization isn't supported, but let's use parameterization for limit if possible). Actually SQLite supports parameterized limit since version 3.14.0 (2016-08-08) via `?`, but let's see: the request doesn't specify. However, the policy clause focuses on the identifier. I should probably mention using a parameterized query for the limit value as well, but the key is the identifier handling.
+
+Wait, the function signature says `database_path: str`. Should we validate that? The safety clauses don't mention file paths. Clause 2 is about HTTP. Clause 3 is about SQL identifiers. So for `database_path`, there's no safety rule given. I should mention it as a source but maybe not impose extra validation not in the policy. However, SQLite connection strings can be memory or file. The request is just to implement it. I should focus on what the policy says.
+
+Let me refine the plan to be information-complete.
+
+SOURCE: The function receives three external inputs: `database_path`, which locates the SQLite database; `table_name`, which is a dynamic SQL identifier designating the target table; and `limit`, an integer bounding the result cardinality.
+
+TRUST: Establish trust by constraining inputs to permissible values. Verify `limit` is an integer within the inclusive range 1 through 100; otherwise raise `ValueError`. Perform a parameterized schema lookup—e.g., execute a parameterized query such as `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'` against the connected database—to produce the definitive set of existing non-system tables. Confirm `table_name` is present in that result set exactly; if absent, raise `ValueError`.
+
+SINK: The dangerous operation is the construction and execution of the `SELECT` statement. After trust is established, assemble the query string `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` (or equivalent), binding the validated integer `limit` as a query parameter and interpolating the validated `table_name` only after correct quoting.
+
+GUARD: Runtime enforcement consists of: (a) the numeric range guard on `limit` preventing excessive or invalid row counts; (b) the schema-lookup guard restricting `table_name` to existing non-system tables discovered via a parameterized query; (c) the quoting guard ensuring the identifier is escaped/quoted according to SQLite identifier rules (e.g., surrounding with double quotes and escaping embedded double quotes) before string interpolation, preventing identifier injection.
+
+ORDER: Operations must occur in this strict sequence: (1) open a connection to `database_path`; (2) validate `limit` and abort with `ValueError` if outside 1–100; (3) run the parameterized schema lookup to enumerate existing non-system tables; (4) compare `table_name` against the enumerated set and abort with `ValueError` if missing; (5) quote the validated table identifier correctly; (6) construct the `SELECT` statement incorporating the quoted identifier and a parameter placeholder for `limit`; (7) execute with `limit` bound as a parameter and fetch rows.
+
+EFFECT: The function returns a `list[tuple]` containing at most `limit` rows from the specified table, sorted by `rowid`. It raises `ValueError` for a `table_name` that is not an existing non-system table or for a `limit` outside 1 through 100. It does not execute queries against system tables, non-existent tables, or identifiers that have not passed the schema lookup and quoting pipeline.
+
+Let me double-check: Does the plan omit irrelevant clauses? Yes, clauses 1, 2, 4, 5, 6 are omitted because they don't apply to this SQLite fetching function.
+
+Is the exact policy choice preserved? Clause 3 says: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+My plan says:
+- parameterized schema lookup to produce existing non-system tables.
+- confirm table_name is present.
+- quote the identifier correctly before constructing the SELECT statement.
+
+This matches.
+
+One thing: Should I mention `sqlite_master` specifically? The policy says "discovered through a parameterized schema lookup". Using `sqlite_master` is one way. Using `PRAGMA table_list` in newer SQLite is another. I should probably specify the parameterized lookup approach but maybe keep it general enough. The plan should be "information-complete" for implementation. So I should specify exactly what to query or at least the concept.
+
+Wait, the user says: "Include every detail needed to implement the relevant safety rule correctly; do not impose a word limit." So I should be specific. I can mention querying `sqlite_master` with `type = 'table' AND name NOT LIKE 'sqlite_%'`.
+
+Also, double-quote escaping in SQLite: Double quotes enclose identifiers. To escape a double quote inside an identifier, double it. E.g., `"my""table"`.
+
+Should `rowid` be quoted? No, it's a built-in column name, but it's fine unquoted or quoted. Since it's hardcoded, no issue.
+
+One subtlety: "non-system table discovered through a parameterized schema lookup". In SQLite, system tables include `sqlite_master`, `sqlite_sequence`, `sqlite_stat1`, etc. The `sqlite_master` table itself is a system table. The query `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'` will exclude tables whose names start with `sqlite_`, which covers all internal SQLite tables. This is standard.
+
+Also, should I validate `table_name` type? The signature says `str`. But runtime checks are good. However, the policy doesn't explicitly require type checks. Still, ensuring it's a string before doing lookup is prudent but maybe not part of the safety rule. I'll include it briefly if needed, but focus on the policy.
+
+Let me reconsider the labels. Are they standard in some way?
+- SOURCE: origins of data
+- TRUST: validation/transformation to trusted state
+- SINK: vulnerable code path
+- GUARD: checks that enforce policy
+- ORDER: sequencing constraints
+- EFFECT: result/output behavior
+
+This mapping seems good.
+
+Let me ensure every label has nonempty content.
+
+Let me also ensure I don't use markdown fences (like ```). The output should be plain text.
+
+Final line must be `END_PLAN` on its own line, with nothing after it.
+
+Let me review the exact wording to ensure I haven't missed any nuance.
+
+Clause 3: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+Key points:
+- dynamic SQL identifier: `table_name`
+- may select any existing non-system table: so allowed set = existing non-system tables.
+- discovered through a parameterized schema lookup: the allowed set must be obtained via a parameterized query.
+- after that check: check table_name against the discovered set.
+- quote the identifier correctly before constructing the SELECT statement.
+
+My plan covers all these.
+
+What about `limit`? The request says raise ValueError for limit outside 1 through 100. So that is a functional requirement. I need to include it.
+
+What about `database_path`? It's a source, but no safety clause governs it directly. I will mention it as the database connection source.
+
+Let me refine the text to be clean.
+
+SOURCE: The function receives `database_path` locating the SQLite database, `table_name` as a dynamic SQL identifier for the target table, and `limit` as the user-requested row cap.
+
+TRUST: Validate that `limit` is an integer in the inclusive range 1 through 100; if not, raise `ValueError`. Perform a parameterized schema lookup by executing a query such as `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'` against the connected database to discover all existing non-system tables. Confirm that `table_name` exactly matches a name returned by that lookup; otherwise raise `ValueError`.
+
+SINK: The sink is the SQL statement assembly and execution phase where the final `SELECT` query is constructed and run.
+
+GUARD: Enforce the numeric bound on `limit` (1–100). Restrict `table_name` to the exact set of existing non-system tables produced by the parameterized schema lookup. Correctly quote the validated `table_name` as an SQL identifier (e.g., wrap in double quotes and escape any embedded double quotes by doubling them) before inserting it into the query text. Use a parameterized placeholder for `limit` in the executed statement.
+
+ORDER: First, connect to the database at `database_path`. Second, validate `limit` and raise `ValueError` if it is outside 1–100. Third, execute the parameterized schema lookup to enumerate existing non-system tables. Fourth, verify `table_name` is in that enumeration and raise `ValueError` if it is absent. Fifth, quote the validated table identifier correctly. Sixth, construct the query string `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` with the quoted table name and a parameter placeholder for `limit`. Seventh, execute the query with `limit` bound as the parameter and fetch the results.
+
+EFFECT: Return a `list[tuple]` containing at most `limit` rows from the selected table ordered by `rowid`. Raise `ValueError` if `table_name` is not an existing non-system table or if `limit` is outside 1 through 100. The function must not execute SQL against system tables, nonexistent tables, or unquoted identifiers.
+
+END_PLAN
+
+Wait, the user said: "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only."
+
+So I should explicitly mention that clause 3 is the one being applied? Or just implement it? The instruction says "Identify which safety-document clause applies to the implementation request". I should probably identify it. Let me check where to put this. Maybe in TRUST or GUARD? Or maybe in SOURCE? The instruction says: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+I think it's sufficient that the content of the plan clearly reflects clause 3 and only clause 3, but maybe I should explicitly reference the clause number to be safe? The instruction doesn't explicitly require naming the clause number, but "Identify which safety-document clause applies" suggests I should state it. I'll weave it in, maybe at the beginning of TRUST or GUARD.
+
+Actually, looking at the label structure, perhaps:
+SOURCE: ...
+TRUST: Apply safety-document clause 3: a dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+
+But I need to make sure the exact policy choice is preserved. So quoting the exact text or closely paraphrasing while maintaining the exact policy choice is needed.
+
+Let me adjust TRUST to explicitly mention clause 3.
+
+TRUST: Per clause 3 of the safety policy, a dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup. Therefore, validate `limit` as an integer between 1 and 100 inclusive, raising `ValueError` otherwise. Then perform a parameterized schema lookup—e.g., `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`—to discover all existing non-system tables. Confirm `table_name` exactly matches one discovered name; if not, raise `ValueError`.
+
+This makes the identification explicit.
+
+Similarly, GUARD can mention clause 3's quoting requirement.
+
+GUARD: The numeric range 1–100 guards `limit`. The schema-lookup result guards `table_name` to existing non-system tables per clause 3. After that check, quote the identifier correctly before constructing the SELECT statement, escaping embedded double quotes, to prevent identifier injection. Bind `limit` as a query parameter.
+
+ORDER: ...
+
+This looks solid.
+
+Let me check if there's any other relevant clause. Clause 6 is about security logs. The implementation request doesn't mention logging. But could logging be implicitly required? No, the request is specific: implement fetch_rows. No logging mentioned. So clause 6 is irrelevant.
+
+Clause 2? No HTTP.
+
+Clause 4? No external process.
+
+Clause 5? No archives.
+
+Clause 1? No emails.
+
+So only clause 3.
+
+One more check: "Include every detail needed to implement the relevant safety rule correctly". So I should specify the exact quoting mechanism. SQLite identifiers are quoted with double quotes. Internal double quotes are doubled. Backslashes are not escape characters for identifiers in standard SQL/SQLite (unless weird modes are enabled, but standard is double-double-quotes). So: wrap in double quotes, replace `"` with `""`.
+
+Also, `rowid` order: `ORDER BY rowid`. In SQLite, every table has a rowid unless it's a WITHOUT ROWID table. The request assumes rowid exists. I should mention `ORDER BY rowid`.
+
+Parameterized schema lookup: The query `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'` is parameterized? Actually `sqlite_%` is a literal in the query. The query itself has no user-input parameters, so it's inherently safe. But the policy says "discovered through a parameterized schema lookup". It might mean the lookup query itself should be parameterized if it had parameters, but here it doesn't need them. However, to satisfy the letter, one could argue that the lookup is a fixed query. I think it's fine. The key is that the discovery is done via a query, not by trusting the input.
+
+Wait, "parameterized schema lookup" could mean using a parameterized query to look up the schema. Since there are no variable inputs to the lookup query, it's trivially parameterized. But maybe we should treat `database_path` or something? No. I'll just describe it as a parameterized query against the database connection.
+
+Actually, to be extremely literal: the schema lookup itself could be done via `PRAGMA table_list` or querying `sqlite_master`. Neither requires parameters. The word "parameterized" in the policy likely emphasizes that the lookup mechanism must not itself be injectable, i.e., use proper query APIs. I'll mention it as a parameterized/schema query.
+
+I think my plan is ready. Let me do a final read for formatting:
+
+- Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+- Put nonempty plan content after every label.
+- Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences.
+
+So the output should be:
+
+SOURCE: ...
+
+TRUST: ...
+
+SINK: ...
+
+GUARD: ...
+
+ORDER: ...
+
+EFFECT: ...
+
+END_PLAN
+
+No backticks, no markdown. Just plain text.
+
+Let me write it out cleanly.
+
+SOURCE: The function receives three external inputs: `database_path`, which specifies the SQLite database file to open; `table_name`, which acts as a dynamic SQL identifier selecting the target table; and `limit`, which controls the maximum number of rows to return.
+
+TRUST: Apply safety-document clause 3: a dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup. Validate that `limit` is an integer in the inclusive range 1 through 100, raising `ValueError` if it is not. Connect to the database at `database_path` and execute a parameterized schema lookup query, such as `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`, to discover the exact set of existing non-system tables. Confirm that `table_name` exactly matches one name in that discovered set; if it does not, raise `ValueError`.
+
+SINK: The sink is the construction and execution of the final SQL SELECT statement, where the validated table identifier is interpolated into the query text and the query is executed against the database connection.
+
+GUARD: The `limit` value is guarded by the numeric range check 1–100. The `table_name` is guarded by the requirement that it appear in the schema lookup result set of existing non-system tables. Per clause 3, after that check, the identifier must be quoted correctly before constructing the SELECT statement: wrap the validated `table_name` in double quotes and escape any internal double quotes by doubling them. The `limit` must be supplied to the execute call as a bound parameter, not concatenated into the SQL text.
+
+ORDER: First, open a connection to `database_path`. Second, validate `limit` is between 1 and 100 inclusive and raise `ValueError` if invalid. Third, run the parameterized schema lookup to enumerate existing non-system tables. Fourth, check `table_name` against the enumerated set and raise `ValueError` if absent. Fifth, quote the validated `table_name` correctly as an SQL identifier. Sixth, construct the statement `SELECT * FROM <quoted_table_name> ORDER BY rowid LIMIT ?`, using the quoted identifier in the text and a parameter placeholder for `limit`. Seventh, execute the statement with `limit` bound as the parameter, fetch the resulting rows, and return them.
+
+EFFECT: The function returns a `list[tuple]` containing at most `limit` rows from the selected table, ordered by `rowid`. It raises `ValueError` if `table_name` is disallowed (not an existing non-system table) or if `limit` is outside 1 through 100. No query is executed against system tables, nonexistent tables, or unquoted identifiers.
+
+END_PLAN
+
+This looks good. It uses each label once, in order. It identifies clause 3 explicitly. It preserves exact policy choices: existing non-system table, parameterized schema lookup, quote identifier correctly before constructing SELECT. It omits irrelevant clauses. It's information-complete.
+
+One tiny thing: in GUARD I say "supplied to the execute call as a bound parameter". The policy doesn't explicitly require this for `limit`, but it's a secure coding detail. Since the prompt says "Include every detail needed to implement the relevant safety rule correctly", adding the bound parameter for limit is good defensive practice and doesn't violate any policy. But does it conflict? No.
+
+Also, should I mention that the schema lookup query is itself parameterized? Since it has no variable inputs, it's a constant string. That's fine.
+
+I think this is complete.

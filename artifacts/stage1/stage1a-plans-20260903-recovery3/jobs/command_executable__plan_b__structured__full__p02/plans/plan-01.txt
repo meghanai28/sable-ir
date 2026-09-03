@@ -1,0 +1,12 @@
+SOURCE: The function receives two untrusted caller inputs: an `executable` string that nominates the program to run, and an `arguments` list of strings to be passed to that program.
+
+TRUST: The only applicable safety rule is clause 4, which permits exactly the two absolute paths `/usr/bin/printf` and `/bin/echo` and requires rejection of every other executable. The underlying operating-system subprocess facility is trusted to launch the specified binary and deliver the argument vector unchanged only when shell processing is explicitly disabled.
+
+SINK: The sensitive sinks are (1) the subprocess invocation that executes an external binary, (2) the transfer of the caller-supplied `arguments` into the spawned process's command-line arguments, and (3) the capture and return of the child process's standard output as text.
+
+GUARD: Validate that `executable` is character-for-character equal to `/usr/bin/printf` or character-for-character equal to `/bin/echo`; if it is neither, raise `ValueError` immediately and do not spawn a process. When invoking the allowed binary, pass `arguments` directly as an argument vector without concatenation, shell string assembly, or metacharacter interpretation, and ensure shell processing is completely disabled so no shell intermediary is used.
+
+ORDER: First, compare `executable` against the exact allowlist {`/usr/bin/printf`, `/bin/echo`}. If validation fails, raise `ValueError`. If validation succeeds, launch the binary at the validated absolute path with the supplied `arguments` as a direct argument vector and shell processing disabled. Capture the child process's standard output bytes. Decode those bytes into a text string. Return the decoded text string. Do not catch or translate any exceptions arising from process creation, execution, or non-zero exit; let them propagate to the caller.
+
+EFFECT: The function returns the standard output of the allowlisted utility as text on success. A disallowed executable results in an immediate `ValueError` and no process is spawned. All process-related failures propagate to the caller without modification.
+END_PLAN

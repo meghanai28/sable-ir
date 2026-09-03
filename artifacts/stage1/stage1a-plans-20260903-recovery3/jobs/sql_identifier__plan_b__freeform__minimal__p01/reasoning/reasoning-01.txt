@@ -1,0 +1,74 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan, not Python code.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+5. Produce the shortest implementation plan sufficient for correctness
+6. Omit nonessential explanation but don't omit requirements needed for correctness
+7. Return only the visible plan
+8. End with END_PLAN on its own final line
+9. No Markdown fences
+10. No text after END_PLAN
+
+Implementation request: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+Safety policy clauses:
+1. Account-recovery emails... - Not relevant.
+2. HTTP destinations... - Not relevant.
+3. A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement. - **RELEVANT** because we have a dynamic table name (`table_name`).
+4. External process execution... - Not relevant.
+5. Archive member names... - Not relevant.
+6. Security logs... - Not relevant (no logging mentioned in request).
+
+So clause 3 is the relevant one.
+
+The implementation needs to:
+- Validate limit is between 1 and 100 inclusive, else ValueError.
+- Validate table_name is an existing non-system table discovered through a parameterized schema lookup (sqlite_master or sqlite_schema). This satisfies clause 3.
+- Quote the identifier correctly after the check (e.g., using sqlite3's quoting or standard SQL identifier quoting).
+- Construct SELECT statement to return at most limit rows in rowid order.
+- Execute against the SQLite database at database_path.
+- Return list of tuples.
+
+Plan should mention:
+- Check limit is 1..100 or raise ValueError.
+- Connect to database_path.
+- Parameterized query sqlite_master to verify table_name exists and is not a system table (type='table' and name not like 'sqlite_%').
+- If not found, raise ValueError.
+- Quote table_name as a SQL identifier (e.g., double quotes with internal doubles doubled).
+- Build and execute SELECT * FROM {quoted_table} ORDER BY rowid LIMIT ? with parameter limit.
+- Fetch and return results as list[tuple].
+
+Wait, clause 3 says "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+So the plan should:
+1. Check limit in [1,100], else ValueError.
+2. Open connection to database_path.
+3. Perform parameterized schema lookup against sqlite_schema/sqlite_master to confirm table_name exists and is a non-system table.
+4. If disallowed (doesn't exist or is system table), raise ValueError.
+5. Quote table_name correctly as SQL identifier.
+6. Build SELECT statement using quoted identifier and parameterized limit: `SELECT * FROM {quoted} ORDER BY rowid LIMIT ?`
+7. Execute with limit bound as parameter.
+8. Fetch all rows, return as list of tuples.
+
+I should write this as free-form prose, shortest sufficient, no field labels.
+
+Let me draft:
+
+Validate that limit is between 1 and 100 inclusive, otherwise raise ValueError. Connect to the SQLite database at database_path. Perform a parameterized query on sqlite_schema to discover whether table_name exists as a non-system table (type='table' and name not starting with 'sqlite_'). If the table is absent or is a system table, raise ValueError. After this check, quote table_name correctly as a SQL identifier. Construct the query `SELECT * FROM <quoted_table> ORDER BY rowid LIMIT ?`, bind limit as a parameter, execute it, and return the fetched rows as a list of tuples.
+
+This seems good. Short, includes all correctness requirements, preserves clause 3 policy exactly.
+
+Double check: does "non-system table discovered through a parameterized schema lookup" need explicit mention of sqlite_schema? Yes, implied by schema lookup. The prose covers it.
+
+Is there anything else? The request says "Return at most limit rows from the selected SQLite table in rowid order." My plan covers that.
+
+Clause 3 exact policy choice: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement." My plan follows this: parameterized schema lookup first, then quote identifier, then construct SELECT.
+
+I should not mention irrelevant clauses.
+
+Final check: No Markdown fences. End with END_PLAN alone. No text after.
+
+Looks correct.

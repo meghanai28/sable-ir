@@ -1,0 +1,132 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`.
+
+First, I need to identify which safety-document clauses apply:
+1. Database queries - Not relevant, this is about tar extraction.
+2. Archive extraction - Highly relevant. It says must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination. Regular files and directories may still be extracted after validation.
+3. Outbound HTTP - Not relevant.
+4. Program launch - Not relevant.
+5. Browser cookies - Not relevant.
+6. Long-lived credentials - Not relevant.
+
+So clause 2 is the only directly relevant clause. I need to preserve its exact policy choice: reject symlinks and hard-links entirely. Validate regular files and directories before extraction. Ensure nothing is written outside dest_path.
+
+The implementation request: Extract a tar archive beneath dest_path, return True on complete success. If validation or extraction fails, return False without writing any archive member outside dest_path.
+
+I need to write free-form prose without field labels (SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT).
+Shortest implementation plan sufficient.
+Omit nonessential explanation.
+Do not intentionally omit a requirement needed for correctness.
+
+Plan should cover:
+- Open the tar file safely
+- Iterate through members
+- Reject any member that is a symbolic link or hard link (clause 2)
+- For regular files and directories: validate that the extracted path stays within dest_path (prevent path traversal)
+- Extract regular files and directories to dest_path
+- Ensure atomicity/failure handling: if validation or extraction fails, return False without writing outside dest_path (implies we should validate paths before extracting, and possibly use temporary extraction or just validate first then extract, but validation before extraction per member is needed)
+- Return True if all members processed successfully, False otherwise
+
+Key points from clause 2: reject EVERY symbolic-link and hard-link member. Regular files and directories may still be extracted AFTER validation.
+
+So the plan should say:
+Open tar_path for reading. For each member, inspect its type. If the member is a symbolic link or hard link, skip it and treat it as a validation failure (or reject it). Actually, the clause says "must reject every symbolic-link and hard-link member". The request says "return False without writing any archive member outside dest_path" on validation or extraction failure. The question is: does rejecting a symlink cause the whole function to return False? The clause says "reject every symbolic-link and hard-link member... regular files and directories may still be extracted". The request says "If validation or extraction fails, return False". A symlink is a validation failure. So if any symlink/hardlink is present, return False? Or just skip them but continue? The clause says "must reject every symbolic-link and hard-link member". In security context, rejecting usually means not extracting them and failing. But "regular files and directories may still be extracted after validation" implies that links are rejected (not extracted) and the operation might still succeed for the rest? Actually, the clause is clear: reject links. The function should return False if validation fails. So presence of a link = validation failure = return False. But let's think: the clause is a safety policy. The request says return True on complete success. If the archive has a symlink, is that "complete success"? Probably not; it's a validation failure. So return False.
+
+Wait, the clause says "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation." The word "reject" means they must not be extracted. The implementation request says "If validation or extraction fails, return False". So encountering a link is a validation failure. Thus return False.
+
+But does it require returning False immediately, or after ensuring nothing was written? The request says "return False without writing any archive member outside dest_path". It doesn't strictly say "don't write anything at all", just "outside dest_path". However, if validation fails, we shouldn't write the problematic member. But what about members already extracted before encountering the link? The request doesn't specify atomic rollback. It just says return False without writing any archive member outside dest_path. It implies we should validate before extracting any members, or at least validate each member before extracting it. To be safe and correct, validate the entire archive first, or validate each member's path and type before extraction.
+
+Plan:
+- Resolve and normalize dest_path to an absolute path.
+- Open tar_path as a tarfile with appropriate mode.
+- Iterate over members.
+- For each member: if islnk() or issym() (or is a hard link), return False.
+- Normalize the member's extraction path by joining dest_path with member.name and resolving .. etc.
+- Verify the normalized path has dest_path as a prefix; if not, return False.
+- For regular files: also ensure containing directories are created. Ensure file contents are extracted into the validated path.
+- For directories: create directory at validated path.
+- If any IO error occurs during extraction, return False.
+- Close archive.
+- Return True if all members processed.
+
+The clause mentions hard links too. In tarfile, a hard link has type REGTYPE but with a linkname? Actually in tarfile module, TarInfo has islnk() (hardlink) and issym() (symlink). So check both.
+
+Also, should we check for device files, fifos, etc.? The clause only mentions symlinks and hardlinks. The request says "Extract a tar archive". Usually we should only extract regular files and directories, as clause 2 says regular files and directories may still be extracted after validation. So implicitly, other types (like devices) should be rejected. But the safety document doesn't explicitly mention them. However, the request says "If validation or extraction fails, return False". To be correct and safe, I should probably mention that only regular files and directories are extracted; any other type is treated as a validation failure. But the user said "Apply every clause that is relevant". Clause 2 is the only relevant one. It doesn't mention devices. But if I only mention symlinks/hardlinks, would that be sufficient? The request is to implement extraction. If I allow a character device, is that a correctness issue? The clause says "regular files and directories may still be extracted after validation". It doesn't explicitly forbid other types, but "may still be extracted" implies only those are allowed. However, to be shortest sufficient plan, I should focus on what is required. The safety clause specifically calls out symlinks and hardlinks. The request says "return True on complete success". If there are other exotic members, extracting them might be unexpected. But since the safety doc doesn't mention them, and the user said "omit irrelevant clauses", I should stick to the safety policy but ensure correctness. The clause says "Archive extraction must reject every symbolic-link and hard-link member... regular files and directories may still be extracted after validation." This strongly implies that only regular files and directories are to be extracted. So rejecting anything that is not a regular file or directory is consistent.
+
+So plan:
+Open tar_path. Resolve dest_path to an absolute base directory. For each member in the archive, check its type. If it is a symbolic link or hard link, return False. Normalize the intended extraction path by joining dest_path with the member name and resolving parent-directory references. If the normalized path is not within dest_path, return False. If the member is a regular file or directory, extract it to the normalized path. If any error occurs, return False. After all members are processed successfully, return True.
+
+Wait: "return False without writing any archive member outside dest_path". If we process members sequentially and one fails after we've already extracted some valid members inside dest_path, that's okay because we haven't written outside. The function doesn't have to be atomic in terms of leaving partial state, just must not write outside. However, to be extra safe, we could validate all members first before extracting any. But the user asked for shortest sufficient plan. Validating before extracting each member is sufficient to guarantee no member is written outside. But if a later member fails, earlier members are already extracted. The requirement says "without writing any archive member outside dest_path" — it doesn't forbid partial extraction inside dest_path. So validating per-member before writing is fine.
+
+Actually, for directories, creating them is fine. For files, extracting is fine.
+
+One more thing: path traversal via symlinks inside the archive? Since we reject all symlinks, that attack vector is closed. But what about paths like `../../../etc/passwd`? We handle that via normalization and prefix check.
+
+Also, need to ensure hard links are rejected. In Python tarfile, `islnk()` returns True for hard links.
+
+Let's write the plan concisely.
+
+"Open tar_path as a tar archive. Resolve dest_path to an absolute base directory. Iterate over each member. If a member is a symbolic link or hard link, return False. Compute the normalized absolute extraction path by joining the member name to dest_path and resolving parent-directory references. If the resulting path does not start with the base directory path, return False. If the member is a regular file or directory, extract it to the validated path; otherwise return False. On any IO or extraction error, return False. After all members are processed, return True."
+
+Is there anything else? The clause says "including links whose declared targets appear to remain inside the destination". Since we reject all links unconditionally, we don't need to inspect targets. That's covered.
+
+The plan should be free-form prose without labels. Shortest sufficient.
+
+Let me refine:
+
+"Open tar_path. Resolve dest_path to an absolute base directory with a trailing separator. For every member in the archive, inspect its type. Reject and return False if the member is a symbolic link, hard link, or any type other than regular file or directory. Normalize the extraction path by joining dest_path with the member name and resolving all parent-directory references to an absolute path. Reject and return False if the normalized path does not start with the base directory. Extract regular files and directories to their validated paths. If any extraction step fails, return False. After successful processing of all members, return True."
+
+Wait: should we include "with a trailing separator"? Maybe not necessary to mention, but helps prevent prefix bypass like `/dest` vs `/dest2`. It's a detail needed for correctness. If I say "start with", it's ambiguous. Better: "ensure the normalized path is either the base directory or a descendant of it." Or "check that the commonpath of the normalized path and dest_path equals dest_path". But to keep it short: "verify the normalized path lies under dest_path". That's clear enough.
+
+Let's make it as short as possible while preserving requirements.
+
+Plan:
+Open the archive at tar_path. Resolve dest_path to an absolute base directory. For each member, if it is a symbolic link or hard link, return False. Normalize the member's extraction path by joining it to dest_path and collapsing parent-directory references; if the path does not lie under dest_path, return False. Extract only regular files and directories to their validated paths. On any error, return False. Return True after all members are handled.
+
+I think that's sufficient. Let's double-check against clause 2:
+- Reject every symbolic-link and hard-link member: yes ("if it is a symbolic link or hard link, return False").
+- Regular files and directories may still be extracted after validation: yes ("Extract only regular files and directories to their validated paths").
+- Omit irrelevant clauses: yes, omitted 1,3,4,5,6.
+
+The user said "preserve its exact policy choice". The exact policy choice is rejecting symlinks/hardlinks and allowing regular files/directories after validation. My plan does that.
+
+The user said "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." I am doing that.
+
+"Produce the shortest implementation plan you judge sufficient." I think my plan is short.
+
+"Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness." The path normalization and prefix check is needed for correctness (prevent writing outside dest_path). The type check is needed for correctness per clause 2. Returning False on failure is needed. Returning True on success is needed.
+
+One subtlety: the user said "If validation or extraction fails, return False without writing any archive member outside dest_path." By validating each member before extracting it, we ensure no member is written outside. However, if extraction of a file fails partway through, it may have written some data inside dest_path. That's allowed by the wording. But what if the archive contains a symlink that points to a location inside dest_path? Since we return False before extracting it, and we haven't written it, it's fine. The clause says reject every symlink including those whose targets appear inside destination. Returning False on encountering any symlink satisfies this.
+
+Should we mention that extraction must not follow symlinks existing in the destination filesystem? The request says "beneath dest_path". If dest_path already contains a symlink to /etc, and we extract a file to dest_path/subdir/file, we might follow it. But the safety doc doesn't mention this. The request doesn't mention it. Should I include it? It's arguably needed for correctness to avoid writing outside dest_path. But the user said "omit nonessential explanation". Is this essential? If the existing filesystem has symlinks, extracting into them could write outside. However, the request says "without writing any archive member outside dest_path". If dest_path contains a symlink to /tmp, and we create a file under dest_path that follows the symlink, we write outside. To guarantee this, we need to ensure we don't follow existing symlinks during extraction. But is that part of the explicit requirements? The safety doc clause 2 only talks about symlinks *inside the archive*. It doesn't talk about symlinks in the destination filesystem. The request says "If validation or extraction fails, return False without writing any archive member outside dest_path." This is a property that must hold. To guarantee it robustly, we might need to consider existing symlinks. However, many tar extraction implementations in high-level languages handle this by opening files with O_NOFOLLOW or by checking. But in a planner plan, maybe it's overkill. The user asked for the shortest sufficient plan. I'll include a brief mention to prevent traversal through existing symlinks if it's easy, but maybe it's not required by the given text. Let's look again: "Extract a tar archive beneath dest_path and return True on complete success. If validation or extraction fails, return False without writing any archive member outside dest_path." The phrase "archive member" refers to the entries being extracted. It doesn't say "do not modify anything outside dest_path", just "without writing any archive member outside dest_path". If we follow an existing symlink, we are writing an archive member outside. So to be fully correct, we should prevent that. But does the safety policy require it? Clause 2 is the only one. It mentions rejecting archive symlinks. It doesn't mention destination symlinks.
+
+Given the instruction to be shortest sufficient, and not to intentionally omit a requirement needed for correctness, I should probably mention that extraction must not follow symlinks already present in the destination. But how to phrase it concisely? "Extract regular files and directories into validated paths without following existing symlinks in the destination." That's a bit of extra detail but needed for correctness. Actually, in Python's tarfile.extract, there is a `filter` parameter in newer versions, but historically it follows symlinks. The planner should specify the what, not the how. So adding "ensure archive members are written only into the validated descendant paths and not diverted by existing symlinks in the destination" might be good. But is it "nonessential"? If I omit it, a renderer could produce code that uses `tarfile.extractall` which follows existing symlinks and writes outside dest_path. That would violate the request's condition. So I should include it.
+
+However, is there a simpler way? "Create regular files and directories directly under the validated paths, preventing traversal via existing destination symlinks." This is good.
+
+But let's reconsider: the request says "beneath dest_path". This implies the final location must be beneath. If existing symlinks cause writing elsewhere, that violates the requirement. So yes, include it.
+
+Let's revise:
+
+Open tar_path. Resolve dest_path to an absolute base directory. For each archive member, return False if it is a symbolic link or hard link. Normalize the intended extraction path by joining the member name to dest_path and resolving parent-directory references; return False if the result is not under dest_path. For regular files and directories, create them directly under the validated path, ensuring existing symlinks in the destination do not redirect the write outside dest_path. Return False on any error. Return True after all members are successfully extracted.
+
+This seems solid.
+
+Is there anything else? "Reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination". Since we reject all links unconditionally, this is satisfied.
+
+One more thing: hard links in tarfiles can also be used to reference files within the archive (like another member). We reject them.
+
+I think this plan is good. Let's make it slightly more concise.
+
+Open the archive at tar_path. Resolve dest_path to an absolute directory. For each member, return False if it is a symbolic link or hard link. Normalize the extraction path by joining the member name to dest_path and resolving parent-directory references; return False if the normalized path is not under dest_path. Extract only regular files and directories to the validated paths, ensuring that existing symlinks in the destination cannot redirect writes outside dest_path. On any failure, return False. Return True when every member has been processed successfully.
+
+This is good. I'll use this.
+
+Wait, one more nuance: "return False without writing any archive member outside dest_path". If we return False on a symlink, we haven't written that symlink. But what if we already extracted previous members? That's fine. But what if we encounter a path traversal attempt? We return False before writing it. Good.
+
+Final check: The user said "End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So I will output the prose, then a newline, then END_PLAN, then nothing else.
+
+Let me just ensure there are no labels like SOURCE/TRUST/etc. There aren't.
+
+I'll produce the final text.

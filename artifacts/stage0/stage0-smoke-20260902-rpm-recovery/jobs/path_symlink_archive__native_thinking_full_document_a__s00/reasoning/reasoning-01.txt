@@ -1,0 +1,960 @@
+The user wants a Python module implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`.
+
+Relevant safety clauses:
+1. Database queries - not relevant (no DB).
+2. Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation. -> Must reject symlinks and hardlinks.
+3. Outbound HTTP - not relevant.
+4. Program launch - not relevant.
+5. A user-selected file must be resolved against its configured root before opening, and the resolved target must be rejected unless it remains strictly within that root directory. -> We must ensure extracted files don't escape dest_path. Also tar_path should be resolved? The clause says "user-selected file must be resolved against its configured root before opening". Here `tar_path` is the archive to read, and `dest_path` is the root. Probably need to ensure that members, when extracted, resolve strictly within dest_path. Also perhaps tar_path itself should be checked? The clause mentions "before opening". The function opens `tar_path`. We should resolve it and ensure it's valid? But there is no configured root for tar_path given. The primary application is extraction beneath dest_path. I should ensure that each member's extracted path is strictly within dest_path. Also maybe resolve dest_path to absolute to prevent issues.
+6. Long-lived credentials - not relevant.
+
+Implementation details:
+- Use `tarfile` module.
+- Open tar_path.
+- Iterate members.
+- Reject any member that is a symlink or hardlink (including if the link target appears inside destination). `tarfile` has `issym()`, `islnk()` (hardlink). Reject both.
+- For regular files and directories, validate that the extracted path stays strictly within dest_path.
+- How to handle paths: member.name may contain `..` or absolute paths. We must sanitize.
+- Resolve the intended extraction path: `os.path.join(dest_path, member.name)`. But `member.name` might be absolute (e.g., `/etc/passwd`). `os.path.join` on Unix ignores previous components if a component is absolute. So need to strip leading slashes. Better to use `os.path.normpath(os.path.join(dest_path, member.name.lstrip('/')))`? Wait, `member.name` could be `../../x`. `os.path.join(dest_path, member.name)` -> if member.name has `..`, it can escape. `os.path.normpath` can collapse `..`. Then check if the result is within dest_path.
+- Must ensure "strictly within that root directory". Usually means `os.path.commonpath([real_dest, target]) == real_dest` and `target != real_dest`? Or does it allow dest_path itself? "strictly within that root directory" could mean the resolved target must be under the root, not equal? The clause says "remains strictly within that root directory". For directories, extracting a directory named exactly the root might happen if tar contains `./` or `/`. Typically we allow dest_path itself (e.g., creating a directory inside dest). But "strictly within" might mean no `..` escaping. I'll interpret as: the normalized absolute path of the extracted file must start with dest_path + os.sep, or be equal to dest_path for directory entries that are the root itself. However, to be safe, I can require that the real path (after normpath) is either dest_path or under it. But `strictly within` suggests no writing outside. If a member is `./` or `dest/` maybe it maps to dest_path. That's okay because it's not outside. Let's use `os.path.commonpath([dest_path, target]) == dest_path`. That allows target == dest_path. If we want strictly inside, we could also check `target != dest_path`. But rejecting a member named `./` might be overly strict and cause extraction of normal archives to fail (since many tars have `.` as a member). Better to allow target == dest_path for directories, but for files maybe not? Actually you can't extract a file onto a directory path. The function should probably just check `not target.startswith(dest_path + os.sep)`? Let's think.
+
+The clause: "the resolved target must be rejected unless it remains strictly within that root directory." This is clause 5 about user-selected file. For extraction, each member is like a user-selected file path. "strictly within" might mean no `..` escaping, but being exactly the root might be okay for directories. However, for files, being exactly the root means overwriting dest_path itself (if dest_path is a file). But dest_path is a directory. So a file cannot be extracted to dest_path because that's a directory. So it's fine.
+
+Let's define the check: after computing `target = os.path.normpath(os.path.join(dest_path, member.name))`, we ensure that `os.path.commonpath([dest_path, target]) == dest_path`. This prevents escaping. If we want to be extra careful about symlink/hardlink bypasses: we must not extract links at all. We also need to ensure that after extracting a regular file, no intermediate symlinks inside the archive could cause escape? Since we reject all symlinks/hardlinks, no symlinks will be created. However, what if the dest_path itself contains symlinks? The clause says "user-selected file must be resolved against its configured root before opening, and the resolved target must be rejected unless it remains strictly within that root directory." This is about resolving the path. We can resolve the final path after extraction using `os.path.realpath`? But during extraction, `tarfile.extract` might follow symlinks in the destination filesystem. To prevent that, we should not use `tarfile.extract` blindly. We can either:
+- Use `tarfile.extract` with `filter='data'` in Python 3.12+? But we need compatibility.
+- Or manually handle extraction: for directories, `os.makedirs`. For regular files, open the file ourselves after validating the path. But `os.path.realpath` could resolve symlinks that already exist in dest_path. The prompt says "If validation or extraction fails, return False without writing any archive member outside dest_path." It doesn't explicitly say we must protect against pre-existing symlinks in dest_path, but clause 5 suggests resolving against root and rejecting if not strictly within. So we should ensure that the actual path written to is within dest_path, even if dest_path contains symlinks. We can do this by checking `realpath` of the target's parent or the target itself before writing. However, `os.path.realpath` resolves symlinks. But if we are creating nested directories, we might create a directory inside a symlinked dir that points outside. We can avoid this by using `os.lstat`? Or we can extract each member by computing the absolute normalized path, and then verifying that `os.path.realpath(target)` (if the path exists) or the path constructed remains under `os.path.realpath(dest_path)`. But `realpath` might not exist yet.
+
+Actually, a safer approach: use `tarfile.extract` with a custom extraction controller, or manually write files.
+Python 3.12 introduced `tarfile.TarFile.extractall(filter='data')` which strips dangerous features. But we cannot rely on 3.12.
+
+Manual extraction:
+- For each member:
+  - If member.issym() or member.islnk(): return False.
+  - Compute `member_path = os.path.join(dest_path, member.name)`.
+  - Normalize: `target_path = os.path.normpath(member_path)`.
+  - Ensure `os.path.commonpath([real_dest, target_path]) == real_dest`. Where `real_dest = os.path.realpath(dest_path)`. But dest_path might not exist yet. Should we create it? The function says extract beneath dest_path. Probably dest_path exists or we should create it. Let's create it if it's a directory? Actually if dest_path doesn't exist, extraction might create it as a file? No, we can ensure dest_path exists as a directory. Or we can just compute `abs_dest = os.path.abspath(dest_path)`. Then `target_path = os.path.abspath(os.path.join(dest_path, member.name))`. But `abspath` doesn't resolve symlinks. To be strict, we should resolve dest_path with `realpath` if it exists, else `abspath`. Let's do `dest_path = os.path.abspath(dest_path)`. For members, compute `target = os.path.normpath(os.path.join(dest_path, member.name.lstrip('/')))`. Wait, `os.path.join` with absolute member.name will ignore dest_path. So we must strip leading slashes and also handle drive letters on Windows? `member.name` in tar is usually POSIX paths. On Windows, `tarfile` handles path separators. We should use `os.path.join(dest_path, *member.name.split('/'))` to safely join? Or just strip leading `/` and then `os.path.normpath(os.path.join(dest_path, member.name))`. But if member.name is `../x`, `os.path.join(dest_path, '../x')` yields `dest_path/../x`. `normpath` resolves to something outside. Good. If member.name is `/x`, `os.path.join(dest_path, '/x')` yields `/x` on Unix, escaping dest_path. So we must strip leading slashes. We can do `member_name = member.name.lstrip('/')`. But what about multiple leading slashes? `lstrip('/')` handles that. What about Windows absolute paths like `C:/x`? Unlikely in tar. We can also reject any member name that starts with a drive letter or is absolute. Simpler: `member_name = member.name.lstrip('/')`. Then `target = os.path.normpath(os.path.join(dest_path, member_name))`. Then check `os.path.commonpath([dest_path, target]) == dest_path`. If member.name is empty (e.g., representing `.`), then target = dest_path. That's fine for a directory.
+
+But what about symlink/hardlink check? `member.issym()` returns True for symbolic links. `member.islnk()` returns True for hard links (type '1'). We must reject both.
+
+Now, extraction:
+- If `member.isdir()`: create directory using `os.makedirs(target, exist_ok=True)`. This is safe because we validated target is within dest_path.
+- If `member.isfile()` or `member.isreg()`: we need to create parent dirs. `os.makedirs(os.path.dirname(target), exist_ok=True)`. Then extract the file. We can use `tarfile.extractfile(member)` to get a file-like object and write it. This avoids `tarfile.extract` which might set attributes we don't want, but also avoids symlink following issues because we open the file path ourselves. However, opening `target` for writing could follow a symlink if one exists in the destination. Since we reject symlinks inside the archive, but what if a previous extraction (or pre-existing file) created a symlink in dest_path? To be safe, we can open with `os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)` to ensure we don't follow symlinks and don't overwrite existing files? But `O_EXCL` requires `O_CREAT` and fails if file exists. If the file exists, should we overwrite? The prompt doesn't specify. For safety, maybe we should allow overwriting regular files but not follow symlinks. We can use `os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)` but that follows symlinks. To avoid following symlinks on Linux, we can use `os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)`. On Windows, `O_NOFOLLOW` doesn't exist. The prompt likely targets a Unix-like environment given the mention of symlinks/hardlinks, but we should try to be cross-platform. We can check if `os.O_NOFOLLOW` exists.
+
+Alternatively, we can use `tarfile.extractfile(member)` and then write to a temporary file and then `shutil.move`. But that still has the symlink issue.
+
+Simpler: Use `tarfile.TarFile.extract(member, path=dest_path, set_attrs=False)`? But `extract` might create symlinks if we haven't filtered them. We are iterating manually and skipping symlinks. But `extract` might still be vulnerable to directory traversal via `..` if we haven't patched `member.name`. We can modify `member.name` to a safe relative path? But modifying the member object is possible. Or we can just do manual writing.
+
+Given the safety requirements, manual extraction is best.
+
+Let's design the code:
+
+```python
+import os
+import tarfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    try:
+        dest_path = os.path.abspath(dest_path)
+        # Ensure dest_path exists as a directory? If not, create it?
+        # If tar contains files, we need a directory to put them in.
+        os.makedirs(dest_path, exist_ok=True)
+        dest_path = os.path.realpath(dest_path)
+    except Exception:
+        return False
+
+    try:
+        with tarfile.open(tar_path, 'r:*') as tf:
+            for member in tf.getmembers():
+                # Clause 2: reject symlinks and hardlinks
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Compute target path
+                # Strip leading slashes to prevent absolute path traversal
+                member_name = member.name.lstrip('/')
+                if not member_name:
+                    # root entry, skip or handle as directory
+                    member_name = '.'
+                
+                # Use normpath to resolve .. etc.
+                target = os.path.normpath(os.path.join(dest_path, member_name))
+                
+                # Clause 5: resolved target must remain strictly within root
+                # commonpath handles this; also ensure target is not outside
+                if os.path.commonpath([dest_path, target]) != dest_path:
+                    return False
+                
+                if member.isdir():
+                    os.makedirs(target, exist_ok=True)
+                elif member.isfile() or member.isreg():
+                    # Ensure parent directory exists
+                    parent = os.path.dirname(target)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
+                    
+                    # Write file manually to avoid tarfile.extract following symlinks
+                    source = tf.extractfile(member)
+                    if source is None:
+                        return False
+                    
+                    # Open target without following symlinks if possible
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                    if hasattr(os, 'O_NOFOLLOW'):
+                        flags |= os.O_NOFOLLOW
+                    # Use a safe mode; we don't need to preserve permissions
+                    mode = 0o666
+                    try:
+                        fd = os.open(target, flags, mode)
+                    except OSError:
+                        return False
+                    try:
+                        with os.fdopen(fd, 'wb') as f:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        os.close(fd)
+                        return False
+                    finally:
+                        source.close()
+                else:
+                    # Skip other types (fifo, device, etc.) or treat as failure?
+                    # The request says regular files and directories may still be extracted after validation.
+                    # Other types should probably be rejected to be safe.
+                    return False
+        return True
+    except Exception:
+        return False
+```
+
+Wait, what about the `finally` block? If `os.fdopen` succeeds, the `with` statement closes the fd. But if an exception occurs after `os.open` but before `os.fdopen` or during `os.fdopen`, we need to close fd. Actually `os.fdopen(fd, 'wb')` returns a file object; if that fails, fd is leaked? We can wrap in try/except.
+
+Let's refine the file writing:
+
+```python
+                    try:
+                        fd = os.open(target, flags, mode)
+                    except OSError:
+                        return False
+                    try:
+                        with os.fdopen(fd, 'wb') as f:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                        return False
+                    finally:
+                        source.close()
+```
+
+Actually if `os.fdopen` succeeds, the file object closes the fd on context exit. If an exception occurs inside the `with`, it will be closed. But if an exception occurs before `with` (e.g., `os.fdopen` fails), we need to close fd manually. The code above doesn't catch that. Let's do:
+
+```python
+                    fd = None
+                    try:
+                        fd = os.open(target, flags, mode)
+                        with os.fdopen(fd, 'wb') as f:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        if fd is not None:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        return False
+                    finally:
+                        source.close()
+```
+
+This is better.
+
+But there is an issue: `os.path.commonpath` raises ValueError if paths are on different drives (Windows) or if one is empty. We should handle that.
+
+Also, `member.name` could contain backslashes on some systems? In tar, it's usually forward slashes. But `os.path.join` handles forward slashes on Unix. On Windows, `os.path.join` with forward slashes works but `os.path.normpath` converts to backslashes. That's fine.
+
+What about `member_name = member.name.lstrip('/')`? If member.name is `//`, lstrip gives empty. We handle empty.
+
+But there is a subtle issue: `os.path.join(dest_path, member_name)` where `member_name` is something like `C:/foo` on Windows. `os.path.join` would see the drive letter and treat it as absolute? On Windows, `os.path.join('C:\\dest', 'C:/foo')` results in `'C:/foo'` because the second path is absolute (has drive letter). This would bypass the check. To be robust, we should reject member names that are absolute paths. How to detect? `os.path.isabs(member_name)`. On Windows, `C:/foo` is absolute. On Unix, `/foo` is absolute but we stripped `/`. However, `member.name` could be `\foo` on Windows? `lstrip('/')` doesn't strip backslash. So we should also strip backslashes? Or better: after stripping `/`, check if `os.path.isabs(member_name)` and reject if true. Because on Windows, `member_name` could be `C:/foo` or `\\server\share`. If `os.path.isabs(member_name)` is True, reject.
+
+Also, what about names containing null bytes? `tarfile` should handle that, but we can rely on it.
+
+Clause 2 says "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination". So rejecting `issym()` and `islnk()` covers that.
+
+Clause 5: "A user-selected file must be resolved against its configured root before opening, and the resolved target must be rejected unless it remains strictly within that root directory." For each member, we resolve against dest_path and check commonpath.
+
+One more thing: `tarfile.open(tar_path, 'r:*')` will auto-detect compression. `tar_path` is externally supplied. We open it directly. Should we resolve `tar_path`? Clause 5 says a user-selected file must be resolved against its configured root before opening. But there is no root for `tar_path` given. We could do `os.path.realpath(tar_path)` to avoid symlink attacks on the tar_path itself? The prompt says "Apply every clause that is relevant to the implementation request." Clause 5 is relevant because the extracted members are user-selected files resolved against dest_path. The `tar_path` is also a file selected by external input. But there is no configured root for it. We can at least use `os.path.abspath` or `os.path.realpath` to normalize. But the clause says "resolved against its configured root before opening". Without a configured root, we can't fully apply it. However, to be safe, we can open it after `os.path.realpath(tar_path)` to resolve symlinks in its path, but that doesn't enforce a root. I think the main point is the extraction paths.
+
+Let's ensure we handle the case where `dest_path` doesn't exist. `os.makedirs(dest_path, exist_ok=True)` creates it. Then `os.path.realpath(dest_path)` resolves it. Good.
+
+Edge case: `member.isdir()` and member name is `.` or empty. `target` becomes `dest_path`. `os.makedirs(dest_path, exist_ok=True)` is fine.
+
+Edge case: What if the tar archive contains a member with name `..`? `member_name = '..'`. `target = os.path.normpath(os.path.join(dest_path, '..'))` -> parent of dest_path. `commonpath` will be parent, not dest_path. So returns False. Good.
+
+What about nested `../../foo`? Also caught.
+
+What about `foo/../../bar`? `normpath` resolves to `../bar` if dest_path is `/a/b` and member is `foo/../../bar` -> `/a/b/foo/../../bar` -> `/a/bar`. `commonpath` would be `/a`, not `/a/b`. So returns False. Good.
+
+What about symlinks that are not explicitly in the tar but are created by the extraction process? Since we don't extract symlinks, we don't create any. So good.
+
+What about hard links? `islnk()` catches them. Note: `tarfile` hardlinks are members with type '1'. `islnk()` returns True for those. `issym()` returns True for type '2'. Good.
+
+Now, what about `O_NOFOLLOW`? It's Unix-only. On Windows, `hasattr(os, 'O_NOFOLLOW')` is False, so we don't set it. On Windows, symlinks are less common and require privileges, but it's a potential hole. However, the prompt's context is heavily Unix-like (symlinks/hardlinks). We can note that we use it when available.
+
+Also, we need to handle exceptions broadly to return False.
+
+One more issue: `tf.getmembers()` might be slow for huge archives but fine. Alternatively, iterate with `tf.next()`.
+
+We should also consider that `member.isfile()` and `member.isreg()` are similar. `isreg()` checks `type == REGTYPE`. `isfile()` checks `isreg() or type == GNUTYPE_SPARSE`. We can just check `member.isreg() or member.isfile()`. Actually `isfile()` is the broader one. Let's use `member.isfile()`.
+
+What about `member.isdev()` or `member.isfifo()`? The prompt says "regular files and directories may still be extracted after validation." It doesn't explicitly mention other types. To be safe, we should reject any other type (devices, fifos, etc.). The code currently returns False for else. Good.
+
+But wait: `member.isdir()` might also be true for the root entry. That's fine.
+
+Let's think about `os.path.commonpath` behavior with trailing slashes. `os.path.normpath` removes trailing slashes (except for root). `dest_path` is normalized via `abspath` and `realpath`. `target` is normalized. `commonpath` compares them. Good.
+
+Let's write the complete module.
+
+Potential improvements:
+- Add `from __future__ import annotations`? Not necessary.
+- Should we import `typing`? Not necessary.
+- Should we include `if __name__ == "__main__":`? Not necessary.
+
+Let's refine the file writing to avoid `os.fdopen` issues with exceptions and ensure we don't leak `fd`.
+
+```python
+                    fd = None
+                    try:
+                        fd = os.open(target, flags, mode)
+                        with os.fdopen(fd, 'wb') as f:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        if fd is not None:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        return False
+                    finally:
+                        source.close()
+```
+
+This looks solid.
+
+Wait, there's a subtle bug: if `os.fdopen` raises an exception, `fd` is not None, so we close it in the except block. Good. If the `with` block raises, `os.fdopen` has already wrapped the fd and will close it on context exit, but then the except block will try to close it again? Actually if an exception occurs inside the `with` block, the `with` statement ensures `f.close()` is called, which closes the fd. Then the exception propagates to the `except Exception` block, where we check `fd is not None` and try `os.close(fd)`. That will raise `OSError` (bad file descriptor) because it's already closed. We catch and ignore that. So it's safe, albeit slightly redundant. We can avoid double-close by setting `fd = None` after successful `os.fdopen`? But if `with` fails, the fd is closed by the file object. So we should set a flag.
+
+Better:
+
+```python
+                    fd = None
+                    file_obj = None
+                    try:
+                        fd = os.open(target, flags, mode)
+                        file_obj = os.fdopen(fd, 'wb')
+                    except Exception:
+                        if fd is not None:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        return False
+                    finally:
+                        source.close()
+                    
+                    try:
+                        with file_obj:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                file_obj.write(chunk)
+                    except Exception:
+                        return False
+```
+
+Wait, `source` is closed in the finally block before we read from it in the second try? No, the finally block closes `source` too early. We need to read from `source` before closing. So `source.close()` must be after the writing loop.
+
+Alternative: Use `try...finally` around everything.
+
+```python
+                    source = tf.extractfile(member)
+                    if source is None:
+                        return False
+                    try:
+                        fd = os.open(target, flags, mode)
+                        try:
+                            with os.fdopen(fd, 'wb') as f:
+                                while True:
+                                    chunk = source.read(1024 * 1024)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                        except Exception:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                            return False
+                    except Exception:
+                        return False
+                    finally:
+                        source.close()
+```
+
+But if `os.fdopen` fails, the `except Exception` inside the inner try will catch it and close fd. But if `os.fdopen` succeeds and then the `with` block raises, the file object closes fd, and the inner except catches it and tries to close again (bad). We can use a boolean to track.
+
+```python
+                    source = tf.extractfile(member)
+                    if source is None:
+                        return False
+                    fd_closed = False
+                    fd = None
+                    try:
+                        fd = os.open(target, flags, mode)
+                        with os.fdopen(fd, 'wb') as f:
+                            fd_closed = True
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        if fd is not None and not fd_closed:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        return False
+                    finally:
+                        source.close()
+```
+
+This is clean. `fd_closed` becomes True only after `os.fdopen` succeeds. If an exception occurs during `os.open`, `fd` is None. If during `os.fdopen`, `fd` is not None and `fd_closed` is False, so we close it. If during the loop, `fd_closed` is True, the `with` statement will close it, so we don't try.
+
+One more thing: `os.open` with `O_TRUNC | O_CREAT` will create the file if it doesn't exist, or truncate it if it does. It won't follow symlinks if `O_NOFOLLOW` is set. Good.
+
+On Windows, without `O_NOFOLLOW`, if a symlink exists at target pointing outside, we would write to the target of the symlink. But since we are not extracting symlinks and we create directories ourselves, there shouldn't be symlinks inside dest_path unless they existed before. The prompt says "without writing any archive member outside dest_path". Pre-existing symlinks could cause that. We might want to mitigate by checking if any component of the path is a symlink. We can do this by walking the path components and checking `os.lstat` for symlinks. That's a more robust way to handle pre-existing symlinks and works cross-platform.
+
+For each target, we can check its parent directories for symlinks. But we create directories with `os.makedirs`, which will create real directories. For the final component (file), we can check if the target itself is a symlink using `os.path.islink(target)`. If it is, we should reject. But what if a parent directory is a symlink? E.g., dest_path contains a symlink `dest_path/sub -> /outside`. Then `target = dest_path/sub/file`. `os.path.islink(target)` is False, but writing to it writes outside. We can resolve the path using `os.path.realpath(target)` before writing and check if it's within dest_path. But `realpath` resolves symlinks. If the path doesn't exist yet, `realpath` resolves existing symlinks in the path.
+
+We can do:
+- For the target path, compute the real path of the target (if it exists) or of its existing prefix. But `os.path.realpath` handles non-existent suffixes by resolving existing prefixes.
+- So before writing a file, we can check `real_target = os.path.realpath(target)`. If `os.path.commonpath([dest_path, real_target]) != dest_path`, return False.
+- For directories, after creating them, they are real. But before creating, if a parent is a symlink, `os.makedirs` might follow it? Actually `os.makedirs` creates directories; if a component is a symlink to a directory, `os.makedirs` will treat it as existing and not follow? Let's see: `os.makedirs(path, exist_ok=True)` uses `os.mkdir` for each missing component. If a component is a symlink to a directory, `os.path.isdir` returns True, so it considers it existing. Then it won't create anything inside it? Actually it will continue to create subdirectories inside the symlink target. That means it writes outside. So we need to ensure that no component in the relative path is a symlink.
+
+Simpler approach: Before any extraction, ensure `dest_path` itself is not a symlink? We can resolve `dest_path = os.path.realpath(dest_path)`. But if `dest_path` contains symlinks inside its path, `realpath` resolves them. So `dest_path` becomes the actual physical path. Then we compute target relative to that real dest_path. If we write to target, and a component is a symlink, the actual file ends up elsewhere. But if we check `os.path.realpath(target)` before writing, we can detect that. However, if the symlink component doesn't exist yet (we haven't created it), `realpath` might not resolve it? Actually `realpath` resolves all symlinks in the path, regardless of whether the final component exists. If a component in the middle is a symlink, `realpath` will resolve it. So we can do:
+
+For each member:
+- Compute `target = os.path.normpath(os.path.join(dest_path, member_name))`.
+- Check `commonpath([dest_path, target]) == dest_path`.
+- Then compute `real_target = os.path.realpath(target)`.
+- Check `commonpath([dest_path, real_target]) == dest_path`.
+
+This handles pre-existing symlinks. But wait: for directories that we are about to create, `target` doesn't exist yet, but some parent might be a symlink. `os.path.realpath(target)` will resolve that parent symlink and reveal the true path. If that true path is outside dest_path, we reject. Good.
+
+However, for performance, `realpath` does syscalls for each component. Acceptable.
+
+But there's a catch: for the directory member itself, if it doesn't exist, `realpath` returns the path with symlinks resolved in its parent. That's fine. If we then `os.makedirs(target)`, and a parent is a symlink, we would have rejected because `realpath` showed it escapes. Good.
+
+For files, same thing.
+
+So we should add a `realpath` check before writing/creating. But we must be careful with race conditions (TOCTOU). But given the constraints, this is a best effort.
+
+Actually, a better approach: When creating directories, we can create them component by component and check each new directory for symlinks. But `os.makedirs` is atomic-ish. Let's stick with `realpath` check before `makedirs`/`open`.
+
+But `realpath` might resolve symlinks that we created earlier in the same extraction if they were directories. Since we only create directories and files, and we check before each creation, it's safe. Wait, we create directory `foo` inside dest_path. Later we extract `foo/bar`. `realpath(foo/bar)` will be `dest_path/foo/bar` which is fine.
+
+So updated logic:
+- Compute `target`.
+- Check `commonpath([dest_path, target]) == dest_path`.
+- Compute `resolved = os.path.realpath(target)`.
+- Check `commonpath([dest_path, resolved]) == dest_path`.
+- If any check fails, return False.
+- Then proceed to create dir or write file.
+
+But note: `os.path.realpath(target)` may raise an error? Usually not, it works even for non-existent paths. It might raise if a symlink loop exists or permission denied on a directory component. We should catch exceptions.
+
+One more thing: dest_path itself might be a symlink. The prompt says "resolved against its configured root before opening, and the resolved target must be rejected unless it remains strictly within that root directory." So dest_path itself should be resolved. We do `dest_path = os.path.realpath(os.path.abspath(dest_path))`. Wait, `os.path.realpath` resolves symlinks. If dest_path is a symlink to `/outside`, then `dest_path` becomes `/outside`. Then any extracted file is within `/outside`. That's okay because the root is effectively `/outside`. But the user might not want that. However, clause 5 says resolve against configured root. If dest_path is the configured root, resolving it means we follow symlinks to find the true root. Then we enforce that extracted files stay within that true root. This seems correct.
+
+So:
+```python
+dest_path = os.path.realpath(os.path.abspath(dest_path))
+```
+
+Now, let's think about `os.path.commonpath` with resolved paths. It should be fine.
+
+Also, we need to consider that `tarfile.open(tar_path)` could be vulnerable to path traversal if `tar_path` is something like `/proc/self/fd/...`? Not relevant.
+
+Let's write the code clearly.
+
+One more subtlety: `member_name = member.name.lstrip('/')`. If `member.name` is `//foo//bar`, `lstrip('/')` gives `foo//bar`. `os.path.join` with that is fine. `normpath` will handle double slashes.
+
+What about `member.name` containing null bytes? `tarfile` should already sanitize or the C layer handles it.
+
+What about very long paths? `os.path` handles them.
+
+Let's construct the final module.
+
+```python
+import os
+import tarfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    try:
+        dest_path = os.path.realpath(os.path.abspath(dest_path))
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception:
+        return False
+
+    try:
+        with tarfile.open(tar_path, 'r:*') as tf:
+            for member in tf.getmembers():
+                if member.issym() or member.islnk():
+                    return False
+
+                member_name = member.name.lstrip('/')
+                if os.path.isabs(member_name):
+                    return False
+
+                target = os.path.normpath(os.path.join(dest_path, member_name))
+
+                try:
+                    if os.path.commonpath([dest_path, target]) != dest_path:
+                        return False
+                except ValueError:
+                    return False
+
+                try:
+                    resolved = os.path.realpath(target)
+                    if os.path.commonpath([dest_path, resolved]) != dest_path:
+                        return False
+                except ValueError:
+                    return False
+                except OSError:
+                    return False
+
+                if member.isdir():
+                    try:
+                        os.makedirs(target, exist_ok=True)
+                    except OSError:
+                        return False
+                elif member.isfile():
+                    parent = os.path.dirname(target)
+                    if parent:
+                        try:
+                            os.makedirs(parent, exist_ok=True)
+                        except OSError:
+                            return False
+                    source = tf.extractfile(member)
+                    if source is None:
+                        return False
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                    if hasattr(os, 'O_NOFOLLOW'):
+                        flags |= os.O_NOFOLLOW
+                    mode = 0o666
+                    fd = None
+                    fd_closed = False
+                    try:
+                        fd = os.open(target, flags, mode)
+                        with os.fdopen(fd, 'wb') as f:
+                            fd_closed = True
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        if fd is not None and not fd_closed:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        return False
+                    finally:
+                        source.close()
+                else:
+                    return False
+        return True
+    except Exception:
+        return False
+```
+
+Wait, `member.isfile()` returns True for sparse files etc. `member.isreg()` is also covered. Good.
+
+But what if `member_name` is empty after lstrip? For example member.name is `/`. Then `member_name` becomes empty string. `os.path.isabs('')` is False. `os.path.join(dest_path, '')` returns `dest_path`. `os.path.normpath(dest_path)` is dest_path. Then `commonpath` is dest_path. For a directory member representing root, `member.isdir()` might be True. `os.makedirs(dest_path, exist_ok=True)` is fine. For a file member representing root (unlikely), `target` is dest_path, which is a directory, and opening it as a file will fail. We could treat empty `member_name` as `.` to avoid confusion. Let's add: `if not member_name: member_name = '.'`. Then `target = os.path.normpath(os.path.join(dest_path, '.'))` which is `dest_path`. Same result. Good.
+
+Actually, `os.path.join(dest_path, '')` returns `dest_path + os.sep` on some systems? On Unix, `os.path.join('/a', '')` returns `/a`. So it's fine.
+
+One more issue: `os.path.realpath(target)` on a path that doesn't exist works, but if a component is a symlink to a non-existent directory? `realpath` resolves symlinks and may return a path with non-existent components. That's fine. `commonpath` will still work.
+
+Race condition: Time-of-check to time-of-use between `realpath` and `os.open`. A malicious actor could replace a directory with a symlink after the check. To mitigate, we can use `O_NOFOLLOW` when opening the file, and for directories, we can open the parent directory with `O_RDONLY | O_DIRECTORY` and use `mkdirat`? Python doesn't have a direct `mkdirat` in standard library. The best we can do is `O_NOFOLLOW` for files and check for symlinks. Given the constraints, this is acceptable.
+
+But for directories, we can also check after creation: after `os.makedirs(target, exist_ok=True)`, we can check `os.path.realpath(target)` again? But `os.makedirs` might follow a symlink in the parent path. However, we already checked `realpath(target)` before calling `makedirs`. If a parent is a symlink, `realpath(target)` would have shown it escaping, so we would have rejected. Good.
+
+What if `os.makedirs` creates a directory, but a symlink is placed there between the `realpath` check and `os.makedirs`? If the path doesn't exist, `os.makedirs` creates it. An attacker can't create a symlink at exactly the path we are creating unless they have write access to the parent. If they do, they could replace the parent. But that's outside our threat model (they have write access to dest_path). Actually, if they control the tar archive, they don't necessarily control the filesystem outside the extraction. But if another process is racing, TOCTOU is hard to prevent fully without `openat` semantics. The code is best-effort.
+
+Let's consider whether we need to handle `GNUTYPE_LONGNAME` or other special types. `getmembers()` handles these internally and gives us normal members. The longlink members are internal to tarfile and not returned as extractable members? Actually `getmembers()` returns all members including `L` (longname) and `K` (longlink) as TarInfo objects. But `issym()` and `islnk()` are False for them. Their `isreg()` might be False. They have type `GNUTYPE_LONGNAME` (type 'L') and `GNUTYPE_LONGLINK` (type 'K'). Our `else: return False` would reject them! That's bad because tarfile uses them to read subsequent members correctly, but if we iterate `getmembers()` and return False on them, legitimate archives with long names will fail.
+
+Does `tarfile.getmembers()` expose these internal members? Yes, it does. For example, if a tar archive has a long name, tarfile adds a `GNUTYPE_LONGNAME` member to the list. However, `tarfile.extractfile` or iterating via `tf.next()` handles them? Let's check Python's tarfile source. Actually, `TarFile.getmembers()` returns the list of `TarInfo` objects that have been parsed. The `GNUTYPE_LONGNAME` member is indeed in the list. But its `type` is not reg, dir, sym, etc. If we reject it, extraction of such archives fails.
+
+How does Python's `extractall` handle this? In `TarFile.extractall`, it iterates over members and calls `extract(tarinfo, path, set_attrs=...)`. But `extract` handles `GNUTYPE_LONGNAME`? No, `extract` uses `tarinfo.name` etc. Wait, in CPython's tarfile module, when reading the archive, the `next()` method handles `GNUTYPE_LONGNAME` and `GNUTYPE_LONGLINK` by reading the next member's name/linkname from the longname member's content. It does NOT add the longname member itself to the member list? Let me recall.
+
+Actually, looking at CPython source: In `TarFile.next()`, when it encounters a `GNUTYPE_LONGNAME`, it reads the next block as the name for the *following* member, and then continues to read the actual member. It does not return the `GNUTYPE_LONGNAME` as a separate TarInfo from `next()`. Wait, no: `TarFile._proc_member` handles various types. For `GNUTYPE_LONGNAME`, it calls `_proc_gnulong` which returns the next `TarInfo` object? Let me think.
+
+From CPython `tarfile.py`:
+- `next()` calls `self._proc_member(tarinfo)`.
+- `_proc_member` checks `tarinfo.type`.
+- For `GNUTYPE_LONGNAME` and `GNUTYPE_LONGLINK`, it calls `_proc_gnulong`.
+- `_proc_gnulong` reads the next tarinfo and sets its name or linkname, then returns that next tarinfo? Or does it return the longname tarinfo and modifies the next one?
+
+Looking at the code (approximate):
+```python
+def _proc_gnulong(self, tarinfo, type):
+    """Process the blocks that hold a GNU longname/longlink member.
+    """
+    # read the string and strip trailing zeros
+    buf = self.fileobj.read(self._block(tarinfo.size))
+    s = buf[:-1]  # strip null byte
+    # read the next header
+    try:
+        next = self.next()
+    except StopIteration:
+        raise HeaderError("missing subsequent header")
+    # update the next header's name/linkname
+    if type == GNUTYPE_LONGNAME:
+        next.name = s.decode('utf-8')
+    elif type == GNUTYPE_LONGLINK:
+        next.linkname = s.decode('utf-8')
+    return next
+```
+
+Actually, `_proc_gnulong` returns the *next* tarinfo, effectively skipping the longname member. So `getmembers()` will not contain the `GNUTYPE_LONGNAME` itself; it will contain the actual member with its long name set. Let me verify: `getmembers()` iterates using `next()` until StopIteration and appends each returned tarinfo. Since `_proc_gnulong` returns the next tarinfo, the longname header is consumed but not appended. So we are safe.
+
+Similarly for `GNUTYPE_SPARSE`, it's handled internally.
+
+What about `XHDTYPE`/`XGLTYPE` (POSIX.1-2001 extended headers)? `tarfile` handles them in `_proc_pax` and returns the next tarinfo with updated attributes. They are also not exposed in `getmembers()`.
+
+So our `else: return False` should be safe for standard archives.
+
+But there are also `DIRTYPE` (directories), `REGTYPE`/`AREGTYPE` (regular files), `SYMTYPE`, `LNKTYPE`, `CHRTYPE`, `BLKTYPE`, `FIFOTYPE`, `CONTTYPE`. We handle dir and reg (via isfile). Reject others.
+
+What about `FIFOTYPE`? Our else rejects. Good.
+
+One more thing: `os.path.isabs(member_name)` on Windows might return True for `\\server\share` (UNC paths). `lstrip('/')` doesn't strip backslashes. So if `member.name` is `\foo`, `os.path.isabs` is True on Windows, and we reject. Good.
+
+But `member.name.lstrip('/')` might leave backslashes. On Unix, backslashes are valid filename characters. On Windows, they are path separators. `os.path.join` on Windows will treat backslashes as separators. So `member.name` containing backslashes could traverse. For example, `member.name = '..\\..\\foo'` on Windows. `lstrip('/')` leaves it unchanged. `os.path.join(dest_path, '..\\..\\foo')` -> `normpath` resolves outside. `commonpath` catches it. So fine.
+
+Let's double-check the `commonpath` check for target == dest_path. If `member.name` is `.`, `target` = `dest_path`. `commonpath([dest_path, dest_path])` == `dest_path`. Pass. If it's a directory, `os.makedirs(dest_path, exist_ok=True)` is fine. If it's a file (unlikely name `.`), `target` is dest_path, which is a directory. `os.open` on a directory with `O_WRONLY` will fail with `EISDIR`, causing `return False`. That's acceptable; a tar shouldn't have a file named `.`.
+
+Wait, but what if `member.name` is empty string? `member_name = ''`. `os.path.join(dest_path, '')` returns `dest_path` (or `dest_path + os.sep`?). On both Unix and Windows, `os.path.join('C:\\a', '')` returns `'C:\\a'`. So target = dest_path. Same as above.
+
+Now, about `os.path.realpath` for target: if target doesn't exist, `realpath` returns the path with symlinks resolved in existing prefixes. If target is dest_path (existing directory), `realpath` returns dest_path. Good.
+
+Should we also resolve `tar_path` with `realpath` before opening? Clause 5: "A user-selected file must be resolved against its configured root before opening". The tar_path is a user-selected file. But we have no configured root. However, to prevent a symlink attack on tar_path itself (e.g., tar_path is a symlink to `/etc/shadow`), we could open it via `os.open` with `O_NOFOLLOW`? But `tarfile.open` takes a path or file object. We could open it ourselves:
+
+```python
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(tar_path, flags)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, 'rb') as f:
+            with tarfile.open(fileobj=f, mode='r:*') as tf:
+                ...
+    except Exception:
+        return False
+```
+
+This ensures we don't follow a symlink to open the tar file. This is a good security practice and aligns with clause 5 spirit (resolving/validating before opening). It also prevents race conditions on tar_path. Let's incorporate this.
+
+But wait, `tarfile.open(fileobj=f, mode='r:*')` works. However, we must be careful: if we use `os.fdopen(fd, 'rb')`, we pass the file object. When `tarfile.open` closes the fileobj? By default, `tarfile.TarFile.close()` closes the underlying file object if it opened it. If we pass a file object, it does NOT close it? Actually, looking at CPython tarfile source: `TarFile.__init__` stores `self.fileobj`. If `self.fileobj` is not None, `close()` calls `self.fileobj.close()`? Let's check.
+
+From CPython:
+```python
+class TarFile:
+    def __init__(self, name=None, mode="r", fileobj=None, ...):
+        ...
+        self.fileobj = fileobj
+        ...
+
+    def close(self):
+        if self.closed:
+            return
+        if self.mode in ("a", "w", "x"):
+            ...
+        self.closed = True
+        try:
+            self.fileobj.close()
+        except OSError:
+            pass
+```
+
+Actually, `TarFile.close()` always closes `self.fileobj` if it's not None. But if we pass our own file object, it will close it. That's fine because we are using it inside a `with` statement. Wait, if we do:
+
+```python
+with os.fdopen(fd, 'rb') as f:
+    with tarfile.open(fileobj=f, mode='r:*') as tf:
+        ...
+```
+
+Then when `tf` closes, it calls `f.close()`, which closes the fd. Then when the outer `with` exits, `f.close()` is called again, which might raise? Actually `file.close()` is idempotent; a closed file object doesn't raise on second close. So it's safe.
+
+Alternatively, we can just let tarfile open the path; it's simpler. But opening with `O_NOFOLLOW` is safer. Let's do it to be thorough, especially since clause 5 mentions resolving before opening. Even though we can't enforce a root, we can at least avoid following symlinks for the tar file itself.
+
+Actually, clause 5 says "resolved against its configured root before opening, and the resolved target must be rejected unless it remains strictly within that root directory." This specifically refers to files selected by the user (like uploaded files) that should be in a specific directory. We don't have a root for tar_path. But using `O_NOFOLLOW` is good.
+
+Let's decide: should we complicate the code with `os.open` for the tar file? The prompt is about extraction. I'll keep it simple and use `tarfile.open(tar_path, 'r:*')`. It's standard and less error-prone. The main risks are in extraction. But if we want to be strict about clause 5 for tar_path, we could at least do `os.path.realpath(os.path.abspath(tar_path))` to resolve symlinks. However, that is TOCTOU. I'll stick to `tarfile.open(tar_path)` but mention in my head that it's acceptable. Actually, I'll add a check to ensure `tar_path` is a real file and not a symlink if possible. But `tarfile.open` works with regular files. If `tar_path` is a symlink, it opens the target. If the target is outside the intended directory, that's a problem of the deployment environment, not the extraction logic. The extraction logic's job is to not write outside dest_path.
+
+Given the instruction "Apply every clause that is relevant to the implementation request", clause 5 is highly relevant to the extraction paths. For `tar_path`, there is no configured root, so it's not directly applicable. I'll focus on the extraction paths.
+
+Let's verify the code with an example.
+Archive contains:
+- `foo/bar.txt` (regular file) -> target = `dest/foo/bar.txt`. commonpath = dest. resolved = same (assuming no symlinks). Good.
+- `foo/../baz.txt` -> target = `dest/baz.txt`. commonpath = dest. Good.
+- `foo/../../etc/passwd` -> target = `dest/../etc/passwd` -> normpath = `../etc/passwd`. commonpath != dest. Return False.
+- `symlink` -> type SYMTYPE. `issym()` -> True. Return False.
+- `hardlink` -> type LNKTYPE. `islnk()` -> True. Return False.
+- `/etc/passwd` -> `member_name = 'etc/passwd'` (after lstrip). target = `dest/etc/passwd`. commonpath = dest. Good. It writes inside dest, not to absolute /etc/passwd. Good.
+- `foo/` -> directory. target = `dest/foo`. commonpath = dest. `makedirs` -> good.
+
+What about `foo` where `foo` is a symlink inside the tar to `bar`? Rejected by `issym()`. Good.
+
+What about `foo` where `foo` is a hardlink to `bar` inside the tar? Rejected by `islnk()`. Good.
+
+What about a tar bomb that writes to `../../../x`? Caught by commonpath.
+
+What about a tar with a directory entry `foo` followed by a file entry `foo/bar`. We create `foo` dir, then write `foo/bar`. Good.
+
+What about a tar with a long name? Handled by tarfile internally.
+
+What about a tar with `GNUTYPE_SPARSE`? `isfile()` returns True for sparse. `extractfile` handles sparse files. Good.
+
+What about `O_NOFOLLOW` not available (Windows)? We don't set it. We rely on `realpath` check.
+
+But on Windows, `os.path.realpath` resolves symlinks (if they exist). `commonpath` checks prevent escaping. Good.
+
+One more nuance: `os.path.commonpath` on Windows is case-insensitive? Actually `commonpath` normalizes case? No, it doesn't change case. It compares strings after normalization. On Windows, paths are case-insensitive but `commonpath` does a lexical comparison. However, since we control `dest_path` via `abspath` and `realpath`, and `target` is built via `join` and `normpath`, case variations could cause bypasses? For example, dest_path is `C:\Dest`, and member name is `..\dest` -> normpath might be `C:\Dest`? Wait, `os.path.join('C:\\Dest', '..\\dest')` -> `C:\\Dest\\..\\dest` -> `C:\\dest`. `commonpath` compares `C:\Dest` and `C:\dest`. On Windows, they could be the same directory but `commonpath` might say common path is `C:\` because of case difference? Actually `ntpath.commonpath` is case-insensitive? Let's check. In Python 3.6+, `ntpath.commonpath` does casefold the paths for comparison? I'm not sure. But `realpath` returns the canonical path. If the filesystem is case-insensitive, `realpath` preserves the case as stored in the filesystem. If `dest_path` is `C:\Dest` and a member resolves to `C:\dest`, `realpath` on that might return `C:\Dest` if the directory actually exists. But if it doesn't exist, `realpath` returns `C:\dest`. `commonpath` might treat them as different. However, this is an edge case. We could case-normalize on Windows using `os.path.normcase`. But `normcase` on Windows lowercases. We could do `dest_path = os.path.normpath(os.path.normcase(dest_path))`. But that changes the path for actual filesystem operations. We can compare normalized case for the check but use original path for operations. To keep it simple and robust across platforms, we can do the check on case-normalized versions on Windows.
+
+Actually, a better way: instead of `commonpath`, we can check that the normalized target starts with `dest_path + os.sep`, or equals `dest_path`. But we must handle case-insensitivity on Windows. We can use `os.path.normcase` for the prefix check.
+
+Let's implement a helper function:
+
+```python
+def _is_within_root(root: str, path: str) -> bool:
+    # Ensure path is under root, accounting for platform case sensitivity
+    root = os.path.normpath(os.path.normcase(root))
+    path = os.path.normpath(os.path.normcase(path))
+    if root == path:
+        return True
+    if not root.endswith(os.sep):
+        root += os.sep
+    return path.startswith(root)
+```
+
+This is simpler and avoids `commonpath` exceptions. It allows `path == root` for directories.
+
+But wait: `os.path.normcase` on Unix does nothing. On Windows it lowercases. So on Windows, it handles case insensitivity.
+
+However, `os.path.normcase` can be tricky with non-ASCII characters. But it's okay.
+
+Let's use this helper for both `target` and `resolved` checks.
+
+But we need to be careful: if `root` is `C:\` and `path` is `C:\`, `root == path` -> True. If `root` is `C:\dest` and `path` is `C:\dest\file`, `root + os.sep` = `C:\dest\`, `path.startswith` -> True. If `path` is `C:\dest`, True. If `path` is `C:\destination`, `startswith('C:\dest\')` is False. Good.
+
+What if `root` doesn't end with sep? We add it.
+
+But `os.path.normpath` might convert `C:\dest\` to `C:\dest`. So we need to add sep after normpath.
+
+Let's write the helper:
+
+```python
+def _is_within_root(root: str, path: str) -> bool:
+    root = os.path.normpath(root)
+    path = os.path.normpath(path)
+    # Case-insensitive comparison on platforms where it matters
+    root_nc = os.path.normcase(root)
+    path_nc = os.path.normcase(path)
+    if root_nc == path_nc:
+        return True
+    sep = os.sep
+    if not root_nc.endswith(sep):
+        root_nc += sep
+    return path_nc.startswith(root_nc)
+```
+
+This is robust.
+
+Now, integrating this.
+
+Also, for `tar_path`, we could do a similar check if we had a root, but we don't.
+
+Let's assemble the final code.
+
+```python
+import os
+import tarfile
+
+def _is_within_root(root: str, path: str) -> bool:
+    root_norm = os.path.normpath(root)
+    path_norm = os.path.normpath(path)
+    root_nc = os.path.normcase(root_norm)
+    path_nc = os.path.normcase(path_norm)
+    if root_nc == path_nc:
+        return True
+    if not root_nc.endswith(os.sep):
+        root_nc += os.sep
+    return path_nc.startswith(root_nc)
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    try:
+        dest_path = os.path.realpath(os.path.abspath(dest_path))
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception:
+        return False
+
+    try:
+        with tarfile.open(tar_path, 'r:*') as tf:
+            for member in tf.getmembers():
+                if member.issym() or member.islnk():
+                    return False
+
+                member_name = member.name.lstrip('/')
+                if os.path.isabs(member_name):
+                    return False
+
+                target = os.path.normpath(os.path.join(dest_path, member_name))
+
+                if not _is_within_root(dest_path, target):
+                    return False
+
+                try:
+                    resolved = os.path.realpath(target)
+                except OSError:
+                    return False
+
+                if not _is_within_root(dest_path, resolved):
+                    return False
+
+                if member.isdir():
+                    try:
+                        os.makedirs(target, exist_ok=True)
+                    except OSError:
+                        return False
+                elif member.isfile():
+                    parent = os.path.dirname(target)
+                    if parent:
+                        try:
+                            os.makedirs(parent, exist_ok=True)
+                        except OSError:
+                            return False
+                    source = tf.extractfile(member)
+                    if source is None:
+                        return False
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                    if hasattr(os, 'O_NOFOLLOW'):
+                        flags |= os.O_NOFOLLOW
+                    mode = 0o666
+                    fd = None
+                    fd_closed = False
+                    try:
+                        fd = os.open(target, flags, mode)
+                        with os.fdopen(fd, 'wb') as f:
+                            fd_closed = True
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        if fd is not None and not fd_closed:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        return False
+                    finally:
+                        source.close()
+                else:
+                    return False
+        return True
+    except Exception:
+        return False
+```
+
+Wait, what if `member_name` is empty? `os.path.isabs('')` is False. `os.path.join(dest_path, '')` returns `dest_path`. `target = dest_path`. `_is_within_root` returns True. If it's a dir, `makedirs(dest_path, exist_ok=True)` okay. If it's a file, `os.path.dirname(target)` is `os.path.dirname(dest_path)`, which might be parent directory. `os.makedirs(parent, exist_ok=True)` is okay. Then `os.open(target, ...)` tries to open the directory as a file, which fails, returns False. That's acceptable because a file named empty string is invalid. In practice, tarfile wouldn't yield such a member, or if it did (representing `.`), it would likely be a directory.
+
+Actually, we can handle empty `member_name` by setting it to `.` if empty:
+
+```python
+                member_name = member.name.lstrip('/')
+                if not member_name:
+                    member_name = '.'
+```
+
+This makes it cleaner. Let's add that.
+
+Also, `os.path.isabs('.')` is False.
+
+Let's refine the `member_name` handling.
+
+```python
+                member_name = member.name.lstrip('/')
+                if not member_name:
+                    member_name = '.'
+                if os.path.isabs(member_name):
+                    return False
+```
+
+This handles root entry correctly.
+
+One more thought: `tarfile` might have members with names like `./foo`. `os.path.join(dest_path, './foo')` -> `dest_path/./foo` -> `normpath` -> `dest_path/foo`. Fine.
+
+What about `foo//bar`? `normpath` handles double slashes.
+
+Now, consider `dest_path` containing symlinks. We resolve it with `realpath`. So `dest_path` is the true path. `_is_within_root` uses `realpath(dest_path)`. For `resolved`, we also use `realpath(target)`. So everything is compared in the resolved space. Good.
+
+What about `os.path.realpath(target)` when target is a file we already extracted earlier in the loop? If we extracted `foo` as a regular file, then later we extract `foo/bar`. `foo` is a file, not a directory. `os.makedirs(parent)` for `foo/bar` will fail because `foo` is a file and `os.makedirs` will raise. That would return False. That's correct.
+
+What about overwriting an existing file? `os.open(target, flags, mode)` with `O_TRUNC` will truncate and overwrite an existing regular file. Is that allowed? The prompt doesn't forbid it. It says "return False without writing any archive member outside dest_path." Overwriting inside dest_path is okay.
+
+But if the existing file is a symlink (created before our extraction), `os.open` without `O_NOFOLLOW` would follow it and write outside. We have two mitigations:
+1. `realpath` check before opening: if target is a symlink, `realpath(target)` resolves it. If it points outside, `_is_within_root` catches it. If it points inside dest_path, writing to it is still inside dest_path, so it's safe-ish, but it modifies a file via a symlink. The prompt doesn't explicitly forbid symlinks in the destination prior to extraction. It says "without writing any archive member outside dest_path". So writing inside via a pre-existing symlink is technically inside. But to be extra safe, we have `O_NOFOLLOW` on Unix, which prevents following the symlink and instead fails or opens the symlink itself. `os.open` with `O_NOFOLLOW` on a symlink raises `ELOOP` (or `EEXIST`?). Actually on Linux, `O_NOFOLLOW` with `O_CREAT` on a symlink returns `EEXIST`. So we would return False. Good. On systems without `O_NOFOLLOW`, if a pre-existing symlink points inside, we overwrite the target. That's arguably okay because it's still within dest_path. If it points outside, `realpath` catches it. So the combination is good.
+
+What if a parent directory component is a symlink to inside dest_path? For example, dest_path contains `sub -> dest_path/other`. Then target = `dest_path/sub/file`. `realpath(target)` = `dest_path/other/file`. `_is_within_root(dest_path, resolved)` is True. So we allow it. `os.makedirs(parent)` where parent = `dest_path/sub` sees `sub` exists (as a symlink to a dir), so `isdir` is True, and doesn't create anything. Then `os.open(target)` opens `dest_path/sub/file`, which resolves to `dest_path/other/file`. We write there. This is inside dest_path. Is this allowed? The prompt says "without writing any archive member outside dest_path". It's inside. But clause 2 says reject links whose declared targets appear to remain inside the destination. That's about archive members that are links. It doesn't say anything about pre-existing symlinks in dest_path. Clause 5 says "resolved target must be rejected unless it remains strictly within that root directory." If we resolve `target` via `realpath`, we get `dest_path/other/file`, which is strictly within. So it's allowed.
+
+But could this be used to write to a sensitive location inside dest_path? Since dest_path is the root, everything inside is the user's space. Overwriting `other/file` might be a tar overwrite attack, but that's not what the prompt asks to prevent. The prompt asks to prevent writing outside. So it's fine.
+
+Now, one more nuance: `tarfile.open(tar_path, 'r:*')` supports many compression formats. If the tar file is corrupted, it raises an exception, caught by outer `except Exception`, returns False.
+
+I think the code is solid.
+
+Let's check if we need to import anything else. `os`, `tarfile`. No.
+
+Make sure the function signature is exactly: `def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:`.
+
+The module should be complete. No markdown fences. No extra commentary.
+
+Double-check for syntax errors.
+
+```python
+import os
+import tarfile
+
+
+def _is_within_root(root: str, path: str) -> bool:
+    root_norm = os.path.normpath(root)
+    path_norm = os.path.normpath(path)
+    root_nc = os.path.normcase(root_norm)
+    path_nc = os.path.normcase(path_norm)
+    if root_nc == path_nc:
+        return True
+    if not root_nc.endswith(os.sep):
+        root_nc += os.sep
+    return path_nc.startswith(root_nc)
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    try:
+        dest_path = os.path.realpath(os.path.abspath(dest_path))
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception:
+        return False
+
+    try:
+        with tarfile.open(tar_path, 'r:*') as tf:
+            for member in tf.getmembers():
+                if member.issym() or member.islnk():
+                    return False
+
+                member_name = member.name.lstrip('/')
+                if not member_name:
+                    member_name = '.'
+                if os.path.isabs(member_name):
+                    return False
+
+                target = os.path.normpath(os.path.join(dest_path, member_name))
+
+                if not _is_within_root(dest_path, target):
+                    return False
+
+                try:
+                    resolved = os.path.realpath(target)
+                except OSError:
+                    return False
+
+                if not _is_within_root(dest_path, resolved):
+                    return False
+
+                if member.isdir():
+                    try:
+                        os.makedirs(target, exist_ok=True)
+                    except OSError:
+                        return False
+                elif member.isfile():
+                    parent = os.path.dirname(target)
+                    if parent:
+                        try:
+                            os.makedirs(parent, exist_ok=True)
+                        except OSError:
+                            return False
+                    source = tf.extractfile(member)
+                    if source is None:
+                        return False
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                    if hasattr(os, 'O_NOFOLLOW'):
+                        flags |= os.O_NOFOLLOW
+                    mode = 0o666
+                    fd = None
+                    fd_closed = False
+                    try:
+                        fd = os.open(target, flags, mode)
+                        with os.fdopen(fd, 'wb') as f:
+                            fd_closed = True
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                    except Exception:
+                        if fd is not None and not fd_closed:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
+                        return False
+                    finally:
+                        source.close()
+                else:
+                    return False
+        return True
+    except Exception:
+        return False
+```
+
+Looks good. I should ensure there are no blank lines at the end? The user said "Return only a complete Python module". A trailing newline is fine.
+
+One final check: `os.path.normcase` on `root_norm` and `path_norm`. On Unix, `normcase` is identity. On Windows, it lowercases. The `_is_within_root` function seems correct.
+
+Wait, there is a potential issue with `os.path.realpath(target)` for a path that contains `..`. We already normalized with `os.path.normpath`, so `..` are collapsed. Good.
+
+Also, `os.path.join(dest_path, member_name)` where `member_name` is `.` gives `dest_path/.` which `normpath` resolves to `dest_path`. Good.
+
+I think this is ready.

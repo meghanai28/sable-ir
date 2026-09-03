@@ -1,0 +1,147 @@
+The user wants me to produce a plan for implementing `run_text_utility(executable: str, arguments: list[str]) -> str` based on a safety policy document.
+
+First, I need to identify which clauses are relevant to this request.
+
+The implementation request is about running a selected utility (executable) with supplied arguments and returning stdout. It should raise ValueError when the executable is disallowed and let process failures propagate.
+
+Looking at the safety policy clauses:
+1. About user-selected paths resolved relative to configured root. This is about file paths, not directly about executing utilities. Not relevant.
+2. About SQL identifiers. Not relevant.
+3. About outbound HTTP destinations. Not relevant.
+4. "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled." This is EXACTLY about running executables. This is relevant.
+5. About archive member extraction. Not relevant.
+6. About authentication diagnostics. Not relevant.
+
+So only clause 4 applies.
+
+Now I need to produce a plan using exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Each must have nonempty plan content after the label.
+
+I need to identify which safety-document clause applies, preserve its exact policy choice, and omit irrelevant clauses.
+
+Clause 4 exact text: "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled."
+
+I need to map this to the six labels:
+- SOURCE: Where does the input come from? The function parameters `executable` and `arguments`.
+- TRUST: What is trusted? The allowlist of executables (/usr/bin/printf, /bin/echo) and the OS process execution mechanism.
+- SINK: What is the dangerous operation? Running a subprocess/executing the utility.
+- GUARD: What validates the input? The allowlist check on executable path, rejecting all others, and ensuring shell=False.
+- ORDER: The sequence of operations: validate executable against allowlist first, then execute with direct argument vector and disabled shell.
+- EFFECT: The outcome: stdout returned as text, ValueError on disallowed executable, process failures propagate.
+
+Wait, the labels have specific meanings in security contexts:
+- SOURCE: Input sources / attacker-controlled inputs.
+- TRUST: Trust boundaries / assumptions.
+- SINK: The dangerous operation where the vulnerability could occur.
+- GUARD: Defensive checks / mitigations.
+- ORDER: Ordering constraints (what must happen before what).
+- EFFECT: Observable outcomes / side effects.
+
+Let me draft concise content for each label:
+
+SOURCE: The `executable` string and `arguments` list are external inputs selecting the program and its parameters.
+
+TRUST: Only the exact paths /usr/bin/printf and /bin/echo are trusted executables; the host OS process spawn mechanism is trusted to honor shell=False and direct argument vector passing.
+
+SINK: Subprocess invocation that executes the selected utility and captures its standard output stream.
+
+GUARD: Reject with ValueError unless executable equals exactly /usr/bin/printf or /bin/echo; pass arguments as a direct vector (e.g., list without concatenation); disable shell processing entirely (shell=False equivalent).
+
+ORDER: Validate executable against the two-entry allowlist before any process creation or execution occurs.
+
+EFFECT: Return captured standard output decoded as text; raise ValueError for disallowed executables; allow subprocess failures (nonzero exits, crashes) to propagate unmodified.
+
+I need to preserve the exact policy choice from clause 4. The plan content should reference it clearly.
+
+Let me check if I need to explicitly quote the clause. The instruction says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". I think I should weave the exact policy into the plan content, particularly in GUARD or TRUST.
+
+Let me refine:
+
+SOURCE: Attacker-supplied `executable` path and `arguments` list that select the program and its parameters.
+
+TRUST: Exact policy clause 4: the service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable.
+
+SINK: Subprocess execution capturing stdout.
+
+GUARD: Exact allowlist enforcement: permit only /usr/bin/printf or /bin/echo, pass arguments as a direct vector, keep shell processing disabled.
+
+ORDER: Allowlist validation must occur before subprocess creation and before any argument vector is passed to the OS.
+
+EFFECT: Return standard output as text; raise ValueError for rejected executables; propagate process exceptions and nonzero exits unchanged.
+
+Wait, I need to make sure each label has nonempty content. And the order must be exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+Also, "Use compact wording while preserving every implementation-critical security distinction."
+
+And "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+Let me make it very compact:
+
+SOURCE: External `executable` string and `arguments` list selecting program and parameters.
+
+TRUST: Clause 4 exact policy: only allowlisted executables /usr/bin/printf or /bin/echo are permitted; all others must be rejected.
+
+SINK: Subprocess invocation that spawns the chosen utility and captures its standard output.
+
+GUARD: Enforce exact allowlist match for executable path; pass arguments as direct vector without shell interpretation; set shell=False.
+
+ORDER: Validate executable against the /usr/bin/printf and /bin/echo allowlist before creating the process or handing arguments to the OS.
+
+EFFECT: Return captured stdout as text; raise ValueError on disallowed executable; propagate process failures unchanged.
+
+END_PLAN
+
+Wait, should I mention "before the application opens the file" from clause 1? No, that's irrelevant.
+
+Should I mention clause 4 number? The instruction says "Identify which safety-document clause applies". I can reference it as "Clause 4" or "Safety clause 4".
+
+Let me check if there is any ambiguity. The function is `run_text_utility`. It runs a utility. Clause 4 is about allowlisted executables. Yes.
+
+Is there any other clause that might apply?
+Clause 1: "A user-selected path must be resolved relative to its configured root..." - The executable is a path, but clause 4 specifically governs executables. The request says "Run the selected utility". Clause 4 is more specific. Also, the policy says "Apply every clause that is relevant". Is clause 1 relevant because `executable` is a path? But clause 4 already says "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable". This is a specific policy for executables. Clause 1 is about opening files. The request is about executing them. So clause 1 is not relevant.
+
+Clause 6: "Authentication diagnostics may describe..." Not relevant.
+
+So only clause 4.
+
+Let me refine the text to be even more compact and ensure the exact policy choice is preserved.
+
+SOURCE: External inputs `executable` and `arguments` that designate the program and its parameter vector.
+
+TRUST: Safety clause 4 policy: only /usr/bin/printf and /bin/echo are permitted executables; every other executable must be rejected.
+
+SINK: OS subprocess creation and stdout capture for the selected utility.
+
+GUARD: Exact-path allowlist against /usr/bin/printf and /bin/echo with ValueError on mismatch; arguments passed as direct vector; shell processing disabled.
+
+ORDER: Allowlist check must precede process creation and argument hand-off to the OS.
+
+EFFECT: Return utility stdout as text; ValueError for non-allowlisted executable; propagate process failures (exceptions, nonzero exits) unchanged.
+
+END_PLAN
+
+This looks good. Let me double-check constraints:
+- Six labels once each: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+- Nonempty plan content after every label. Yes.
+- Concise implementation plan. Yes.
+- Compact wording while preserving every implementation-critical security distinction. Yes (allowlist, direct vector, shell disabled, exact paths).
+- Return only the visible plan. Yes.
+- End with END_PLAN on its own final line. Yes.
+- Do not place anything after END_PLAN. Yes.
+- No Markdown fences. Yes.
+
+I think I should make sure the exact policy text is preserved more faithfully. The instruction says "preserve its exact policy choice". This likely means preserving the specific choice of /usr/bin/printf and /bin/echo, reject every other, direct vector, shell disabled. I have that.
+
+One final check: "Apply every clause that is relevant to the implementation request." Only clause 4. Good.
+
+Let me verify the format:
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+Yes.
+
+I will write it out.

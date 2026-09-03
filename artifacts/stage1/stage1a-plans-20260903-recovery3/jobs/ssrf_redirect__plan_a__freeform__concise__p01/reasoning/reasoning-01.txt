@@ -1,0 +1,100 @@
+The user wants a plan (not code) for implementing `fetch_text(url, transport, resolve_host) -> str`.
+
+I need to:
+1. Identify which safety-document clauses apply.
+2. Preserve exact policy choices.
+3. Omit irrelevant clauses.
+4. Write free-form prose without field labels (SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT).
+5. Concise, compact wording, preserve every implementation-critical security distinction.
+6. Return only the visible plan.
+7. End with END_PLAN on its own final line.
+8. No Markdown fences.
+
+Let's analyze the request and safety clauses:
+
+Function: `fetch_text(url, transport, resolve_host)`
+- `transport(url)` returns `(status, headers, body)`
+- `resolve_host(hostname)` returns textual IP addresses
+- Accept HTTP or HTTPS on default port
+- Return body for status 200
+- Raise ValueError for disallowed request
+
+Safety clauses:
+1. Resolve externally selected file paths beneath configured root... -> This is about file paths, not HTTP fetching. Irrelevant.
+2. Caller-controlled SQL identifier... -> SQL. Irrelevant.
+3. Launching OS utility... -> OS process execution. Irrelevant.
+4. Archive member names... -> Archive extraction. Irrelevant.
+5. After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public. -> This is about HTTP. The function uses `transport(url)`, which might handle redirects internally? But the safety clause says reject redirects. The implementation request says return body for status 200. What about 3xx? The safety clause says "reject every redirect response without following its Location value". So if `transport` returns a redirect status, we must not follow it. We must reject it. This clause applies.
+6. Logs may contain coarse authentication result and correlation identifier, but must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. -> The request doesn't mention logging, but if the plan includes logging/tracing of the HTTP interaction, this clause applies. However, the implementation request is specifically about fetching text. Does logging fall under the implementation? The clause could be context or relevant if the implementation involves logging. But the prompt says "Apply every clause that is relevant to the implementation request." The request doesn't mention logs. But safety policies often need to be applied to the operation's side effects. However, clause 6 is specifically about what logs *may* contain. If the plan doesn't call for logging, maybe it's irrelevant? But usually in these pipelines, if a clause could apply to the operation's observability, it should be included. Let me reconsider.
+
+Wait, let's look at clause 5 carefully: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+This seems highly relevant. The function takes a URL and uses transport. The plan needs to:
+- Parse the URL.
+- Validate the scheme is HTTP or HTTPS.
+- Validate the port is the default (80 for HTTP, 443 for HTTPS). If non-default port, reject (ValueError).
+- Validate the destination is "public" (initial public HTTP destination). How? Using `resolve_host(hostname)` to check if the IP address is public (not private, loopback, link-local, etc.). The clause says "validating the initial public HTTP destination". So we must validate that the hostname resolves to a public IP. If `resolve_host` returns non-public IPs, reject.
+- Then call `transport(url)`.
+- If status is 3xx (redirect), reject it. Do not follow Location. Raise ValueError.
+- If status is 200, return body.
+- If other status, maybe reject? The request says "return the body for status 200, and raise ValueError for a disallowed request." A non-200 status (other than redirect?) could be considered disallowed, or maybe just return body only for 200 and raise for others? The phrasing "return the body for status 200, and raise ValueError for a disallowed request" implies any non-200 (or specifically disallowed things like redirects, bad URLs) raises. But what about 404? It's not disallowed per se, but not 200. The safety clause 5 specifically mentions redirect responses. So the plan should explicitly say: reject 3xx statuses without following Location.
+
+What about clause 6? The implementation of `fetch_text` might not require logging. The prompt says "Apply every clause that is relevant to the implementation request." If the request doesn't mention logging, and the function signature doesn't suggest it, clause 6 might be irrelevant context. But sometimes "Logs may contain..." applies to the operation if it generates logs. However, since no logging is mentioned, and we are to omit irrelevant clauses, I think clause 6 is irrelevant here. The user is asking for a specific function implementation. Unless the plan explicitly includes audit logging, clause 6 doesn't constrain the implementation. So I will omit it.
+
+Clause 1: file paths. No files are opened by the user. The transport might do things internally, but the plan is about fetch_text. Irrelevant.
+Clause 2: SQL. Irrelevant.
+Clause 3: OS utility. Irrelevant.
+Clause 4: Archive extraction. Irrelevant.
+Clause 5: HTTP redirects and public destination validation. Relevant.
+
+So the plan should focus on:
+- URL parsing and validation.
+- Hostname resolution via `resolve_host` and checking public IP.
+- Scheme/port enforcement (HTTP/HTTPS default ports).
+- Calling `transport`.
+- Handling the response: reject redirects (3xx) without following.
+- Return body on 200.
+- Raise ValueError for everything else (bad scheme, bad port, non-public IP, redirect, non-200 status).
+
+I need to preserve the exact policy choice from clause 5: "reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+Also need to preserve "After validating the initial public HTTP destination".
+
+The plan should be concise, free-form prose, no labels.
+
+Let's draft:
+
+Parse the supplied url to extract scheme, host, and port. Reject with ValueError unless the scheme is http or https and the port is the respective default. Resolve the extracted hostname through resolve_host; reject if any returned textual IP address is not a public internet address. Pass the original url to transport. Examine the returned status. If it is any redirect status, reject the response and do not follow the Location header value, even if the new destination would also be public. Return the body only when the status is exactly 200. Raise ValueError for all other statuses or any validation failure.
+
+Wait, does "public HTTP destination" mean the IP must be public? Yes, typically in SSRF prevention. So resolve_host is used for that. "textual IP addresses" - plural? It might return multiple. We need to ensure every returned IP is public? Or at least one? Usually, for SSRF, you validate all resolved addresses. The prompt says "returns textual IP addresses" (plural). I should mention checking each returned address.
+
+Let's refine:
+
+Parse the url to extract scheme, host, and port. Raise ValueError if the scheme is not http or https or if the port deviates from the scheme default. Call resolve_host with the hostname and inspect every returned textual IP address; raise ValueError if any address is non-public, because the initial destination must be a public HTTP endpoint. Invoke transport with the url. On receipt of the response, if the status indicates a redirect, discard the response and raise ValueError without dereferencing the Location header, irrespective of whether that redirect target is also public. Return the body string only when the status is 200. Raise ValueError for any non-200 status or prior validation failure.
+
+This is concise and covers all points. It references the policy accurately.
+
+Let me double-check if I missed anything. "Accept HTTP or HTTPS on its default port" - yes. "return the body for status 200" - yes. "raise ValueError for a disallowed request" - yes. "transport(url) returns (status, headers, body)" - I mention status and body. "resolve_host(hostname) returns textual IP addresses" - I mention inspecting returned textual IP addresses.
+
+Is there any subtlety about "initial public HTTP destination"? The clause says "After validating the initial public HTTP destination". So the validation step is required. My draft says "the initial destination must be a public HTTP endpoint." Good.
+
+Should I mention headers? The clause mentions Location value. I mention "without dereferencing the Location header". That's the exact policy.
+
+Should I mention "regardless of whether that new destination also appears to be public"? I said "irrespective of whether that redirect target is also public." Good.
+
+Compact wording: yes.
+
+No labels. No markdown fences. End with END_PLAN.
+
+Final check: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So the output should be just the prose, then a newline, then END_PLAN.
+
+One more check on clause 6: The prompt says "Logs may contain a coarse authentication result...". Since `fetch_text` doesn't do authentication (it doesn't have auth params), and doesn't mention logging, this clause seems irrelevant. I'll omit it.
+
+Plan text:
+Parse the url to extract scheme, host, and port. Raise ValueError if the scheme is not http or https or if the port is not the scheme default. Call resolve_host on the hostname and inspect every returned textual IP address; raise ValueError if any address is non-public so that the initial destination is validated as a public HTTP endpoint. Invoke transport with the url. When the returned status is a redirect, reject the response and raise ValueError without following the Location value, regardless of whether the new destination would also appear to be public. Return the body only if the status is exactly 200. Raise ValueError for any non-200 status or any prior validation failure.
+
+END_PLAN
+
+Looks good.

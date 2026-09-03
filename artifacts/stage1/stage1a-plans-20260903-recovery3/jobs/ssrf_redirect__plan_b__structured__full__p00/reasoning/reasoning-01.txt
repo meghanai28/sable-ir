@@ -1,0 +1,275 @@
+The user wants me to produce a plan for implementing `fetch_text(url, transport, resolve_host) -> str` based on a safety policy document.
+
+First, I need to identify which clauses are relevant to the implementation request.
+
+The implementation request involves:
+- Fetching text from a URL
+- Using a transport function
+- Resolving hostnames to IP addresses
+- Accepting HTTP or HTTPS on default ports
+- Returning body for status 200
+- Raising ValueError for disallowed requests
+
+Looking at the safety clauses:
+1. Resolve externally selected file paths beneath configured root... - This is about file paths, not URL fetching. Not relevant.
+2. Caller-controlled SQL identifier... - Not relevant to URL fetching.
+3. Launching an operating-system utility... - Not relevant.
+4. Validate archive member names... - Not relevant.
+5. Redirects may be followed for at most five hops... - This IS relevant. The function uses `transport(url)` which returns status and headers. HTTP fetching often involves redirects. The clause mentions following redirects, resolving Location against current URL, scheme/port/credential/DNS/public-address validation. This is highly relevant.
+6. Logs may contain coarse authentication result... - This is about logging. The implementation request doesn't mention logging explicitly, but does it apply? The request is about fetching text. Unless the implementation involves logging, this might not be directly relevant. However, the instruction says "Apply every clause that is relevant to the implementation request." Since `fetch_text` doesn't inherently require logging (it's not mentioned in the signature or description), clause 6 is likely not relevant. But wait, could logging be considered part of a robust implementation? The instruction says to "Identify which safety-document clause applies to the implementation request" and "Apply every clause that is relevant." I should only apply clause 5. But let me reconsider.
+
+Actually, clause 5 is definitely relevant because URL fetching involves redirects. The implementation uses `transport(url)` which returns headers that could include Location.
+
+Wait, the function signature is `fetch_text(url, transport, resolve_host)`. The transport is injected. But the safety policy clause 5 talks about redirects. If the function is to fetch text, it likely needs to handle redirects or at least validate the initial URL. Let me think carefully.
+
+Clause 5 says: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+The implementation request says: "Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request."
+
+So the function needs to:
+- Validate the initial URL (scheme, port, DNS, public-address via resolve_host)
+- Make the request via transport
+- If status is a redirect (like 301, 302, etc), follow it for at most five hops
+- Resolve Location against current URL
+- Validate the new URL with same checks (scheme, port, credential, DNS, public-address)
+- Return body for status 200
+- Raise ValueError for disallowed requests
+
+Clause 6: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers." Is logging relevant here? The implementation request doesn't mention logging. So clause 6 is not relevant. I should omit irrelevant clauses.
+
+So only clause 5 is relevant? Wait, what about clause 1? "Resolve externally selected file paths..." No, this is URL fetching, not file opening.
+
+But let me re-read the implementation request: "Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request."
+
+The transport takes a url. The resolve_host takes a hostname. So the function probably needs to:
+1. Parse the input URL
+2. Validate scheme is HTTP or HTTPS
+3. Validate port is default (80 for HTTP, 443 for HTTPS) or absent
+4. Extract hostname
+5. Call resolve_host(hostname) to get IP addresses
+6. Validate IP addresses (public-address validation? DNS validation?)
+7. If any validation fails, raise ValueError
+8. Call transport(url) - but wait, should it pass the original url or a resolved url? The transport takes a url. The clause 5 says "each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+This implies the function must handle redirects. Since transport returns headers, it can check for Location header.
+
+But there's a subtlety: the implementation request says transport(url) returns a tuple. It doesn't say the function must handle redirects, but clause 5 is about redirects. Since clause 5 is a safety policy that applies, I must incorporate it.
+
+Wait, is there any other clause that might be relevant? Clause 6 about logs - if the function is to be production-ready, it might log, but the request doesn't specify logging, so it's not relevant. The instruction says "omit irrelevant clauses."
+
+So I need to use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label.
+
+I need to produce an information-complete implementation plan. Include every detail needed to implement the relevant safety rule correctly.
+
+Since only clause 5 is relevant, I need to map the plan labels to the safety rule implementation.
+
+Let me think about what each label means in this context:
+- SOURCE: Where data enters. The url parameter, the transport response (status, headers, body), resolve_host result.
+- TRUST: Trust boundaries. The url is caller-controlled. The transport is an external service. resolve_host is a utility.
+- SINK: Where data leaves. The return value (body), the transport call, the resolve_host call.
+- GUARD: Validation/sanitization. Scheme check, port check, DNS resolution, public-address validation, redirect limit, Location resolution, redirect validation.
+- ORDER: Sequence of operations. Parse -> validate initial -> resolve host -> validate IPs -> transport -> check status -> if redirect, resolve location, validate, loop (max 5) -> return body on 200.
+- EFFECT: Side effects, errors, return values. ValueError for disallowed, return str body for 200, handling of redirect statuses.
+
+Wait, I need to make sure I include "preserve its exact policy choice" for the relevant clause. Clause 5 exact policy choices:
+- Redirects may be followed for at most five hops
+- each Location must first be resolved against the current URL
+- receive the same scheme, port, credential, DNS, and public-address validation as the initial destination
+
+Also the implementation request specifics:
+- HTTP or HTTPS on its default port
+- return body for status 200
+- raise ValueError for disallowed request
+- transport(url) returns (status, headers, body)
+- resolve_host(hostname) returns textual IP addresses
+
+I need to incorporate all these details.
+
+Let me draft the plan sections:
+
+SOURCE: The externally supplied `url` string; the `transport` callable returning `(status, headers, body)` where `headers` may contain a `Location` redirect; the `resolve_host` callable returning textual IP addresses for a hostname.
+
+TRUST: The caller controls the initial `url` and any redirect target derived from `Location` headers. The `transport` and `resolve_host` functions are trusted utilities but operate on potentially attacker-influenced data. The returned body is treated as safe only after all validation and hop limits succeed.
+
+SINK: The final `str` body returned on status 200; calls to `transport(url)` for each request; calls to `resolve_host(hostname)` for every redirect hostname; raised `ValueError` for disallowed requests.
+
+GUARD: Validate the initial URL and every redirect URL with identical checks: scheme must be exactly `http` or `https`; port must be absent or the default (80 for HTTP, 443 for HTTPS); reject all other schemes and non-default ports with `ValueError`. For every URL hostname, call `resolve_host` and validate the returned textual IP addresses: enforce DNS validation and public-address validation (reject private, loopback, and link-local addresses). Resolve any relative `Location` header against the current request URL using standard URL resolution before validation. Count redirect hops and enforce a hard maximum of five hops total, aborting with `ValueError` if exceeded. Only status 200 yields the body; treat any other terminal status or disallowed redirect as a policy violation raising `ValueError`.
+
+ORDER: 1) Parse the initial `url`. 2) Validate scheme, port, and extract hostname; raise `ValueError` if disallowed. 3) Call `resolve_host(hostname)` and validate returned IP addresses; raise `ValueError` if DNS or public-address checks fail. 4) Call `transport(url)` to obtain `(status, headers, body)`. 5) If status indicates a redirect (e.g., 301, 302, 307, 308), extract the `Location` header; if absent or empty, raise `ValueError`. 6) Resolve the `Location` value against the current URL to form the next absolute URL. 7) Increment hop count; if greater than five, raise `ValueError`. 8) Repeat steps 2–7 for the new URL using the same validation sequence. 9) Once status 200 is received, return `body` as `str`. 10) For any non-200 non-redirect status or any validation failure, raise `ValueError`.
+
+EFFECT: The function returns the response body as a `str` when the final HTTP response status is exactly 200 after at most five redirect hops. It raises `ValueError` for any disallowed scheme, non-default port, failed DNS resolution, non-public IP address, malformed redirect location, missing `Location` header, redirect hop count exceeding five, or any non-200 terminal status. No logs containing credentials, tokens, or authorization headers are produced by this fetch routine, as logging is outside its scope.
+
+Wait, the last sentence about logs in EFFECT might be unnecessary since clause 6 is irrelevant. But I put it to explain that no sensitive logging occurs? Actually, since clause 6 is irrelevant, I should not mention it at all. The instruction says "omit irrelevant clauses." So I should not reference clause 6.
+
+Let me reconsider the labels. They must be used exactly once each, in order, with nonempty content.
+
+Let me refine each section to be precise and information-complete.
+
+SOURCE:
+- Caller-supplied `url` string.
+- `transport` response tuple `(status, headers, body)` containing potentially attacker-controlled redirect directives in `headers["Location"]`.
+- `resolve_host(hostname)` result set of textual IP addresses.
+
+TRUST:
+- Initial `url` is untrusted caller input.
+- `Location` header values in transport responses are untrusted attacker-controlled data that must not bypass validation.
+- `transport` and `resolve_host` are trusted system utilities but their inputs must be strictly validated.
+- The returned body crosses the trust boundary back to the caller only after full validation.
+
+SINK:
+- Return value: the `str` body on successful 200 response.
+- External calls: `transport(url)` and `resolve_host(hostname)`.
+- Exception: `ValueError` raised for disallowed requests.
+
+GUARD:
+- Enforce scheme whitelist: exactly `http` or `https`.
+- Enforce default-port policy: port must be absent or default (80 for HTTP, 443 for HTTPS); reject explicit non-default ports.
+- Enforce DNS and public-address validation via `resolve_host`: for every hostname, obtain textual IPs and reject private, loopback, link-local, or otherwise non-public addresses.
+- Enforce redirect resolution: resolve relative `Location` headers against the current URL before applying guards.
+- Enforce hop limit: maximum five redirects; abort with `ValueError` on the sixth attempted hop.
+- Enforce terminal status: only 200 permits return; any other terminal status raises `ValueError`.
+
+ORDER:
+1. Parse initial `url` into components (scheme, host, port, path, etc.).
+2. Validate scheme and port; extract hostname.
+3. Call `resolve_host(hostname)`; validate each returned IP for public-address and DNS requirements.
+4. Invoke `transport(url)`; unpack `(status, headers, body)`.
+5. If status is a redirect (3xx):
+   a. Extract `Location` header; fail if missing.
+   b. Resolve `Location` against current URL to absolute URL.
+   c. Increment redirect counter; fail if count exceeds five.
+   d. Replace current URL with resolved URL.
+   e. Loop to step 2 (apply identical scheme, port, DNS, and public-address validation).
+6. If status is 200, return `body` as `str`.
+7. Otherwise, raise `ValueError`.
+
+EFFECT:
+- Successful execution yields `str` body from a 200 response after zero to five validated redirects.
+- Any policy violation (non-default port, non-http(s) scheme, failed IP validation, missing Location header, hop limit exceeded, or terminal non-200 status) immediately raises `ValueError` without returning body or performing further transport calls.
+- No state is persisted between invocations; the hop counter is local.
+
+Does this cover everything? Let me check against clause 5 exact text:
+"Redirects may be followed for at most five hops" -> yes, included.
+"each Location must first be resolved against the current URL" -> yes, included.
+"receive the same scheme, port, credential, DNS, and public-address validation as the initial destination" -> I included scheme, port, DNS, public-address. I omitted "credential" explicitly. Should I mention credentials? The policy says "same scheme, port, credential, DNS, and public-address validation". In the context of HTTP, credential might mean userinfo in the URL (user:pass@host). I should probably mention that credentials (userinfo) must be stripped or validated the same way. The implementation request didn't mention credentials, but clause 5 does. To be information-complete, I should mention it.
+
+Let me update GUARD and ORDER to include credential validation.
+
+What does "credential" mean in clause 5? Likely the userinfo portion of the URL (e.g., `http://user:pass@example.com`). The validation should treat it the same as the initial destination. Since the initial destination is caller-controlled, perhaps we should reject URLs containing credentials? Or pass them through? The policy says "receive the same ... credential ... validation as the initial destination." If the initial destination had no credentials, then perhaps redirects should not add them? Or if the initial had them, they should be preserved? To be safe, I should state that credential handling (userinfo) is validated consistently with the initial request: reject unexpected credential injection or ensure that credentials are not leaked via logs (but clause 6 is irrelevant). Actually, the policy says "receive the same scheme, port, credential, DNS, and public-address validation". This means the set of validations applied to the initial destination must also be applied to each redirect destination. So if the initial validation rejects URLs with userinfo, then redirects with userinfo must be rejected. If the initial allows them, they are allowed.
+
+But the implementation request says "Accept HTTP or HTTPS on its default port". It doesn't mention userinfo. To be safe, I can say: Apply the same validation profile to every hop, including scheme, port, presence or absence of credentials (userinfo), DNS resolution through `resolve_host`, and public-address validation of the resolved IPs.
+
+Let me update.
+
+Also, I should consider whether "transport(url)" expects the original URL or a modified one. The plan should specify that the validated URL is passed to transport. If the URL contains userinfo, it might be passed as-is to transport. But the plan should mention validating credentials (userinfo) as part of the URL parsing.
+
+Another thing: "resolve_host(hostname) returns textual IP addresses". The plan should say that the hostname from the URL is passed to resolve_host, and the returned IPs are validated.
+
+Also, regarding redirect status codes: should I enumerate them? 301, 302, 303, 307, 308? The policy doesn't specify which status codes are redirects, but to be complete, I should mention standard HTTP redirect statuses.
+
+Let me refine the plan text.
+
+SOURCE:
+Untrusted caller-provided `url` string. The `transport` function returning `(status, headers, body)` where `headers` may contain a `Location` field directing subsequent requests. The `resolve_host` function returning a sequence of textual IP addresses for a given hostname.
+
+TRUST:
+The initial `url` and any `Location` header values received from `transport` are attacker-controlled and must not bypass validation. `transport` and `resolve_host` are trusted platform utilities, but every argument passed to them must first satisfy the guard policy. The response `body` is trusted by the caller only after all hops pass identical validation.
+
+SINK:
+Calls into `transport(url)` for each request hop. Calls into `resolve_host(hostname)` for every hostname encountered. Return of the response `body` as `str` upon a validated 200 status. Raising of `ValueError` for any disallowed request or policy violation.
+
+GUARD:
+For the initial URL and for every redirect target derived from a `Location` header, apply the following identical validation set before any network call: parse the URL and require scheme `http` or `https`; require port to be absent or the scheme-appropriate default (80 for HTTP, 443 for HTTPS); validate that credentials (userinfo) conform to the same policy applied to the initial destination (reject or accept consistently); extract the hostname and invoke `resolve_host`; validate every returned textual IP address for DNS soundness and public-address eligibility (reject private, loopback, link-local, and multicast ranges); reject any hostname that fails resolution or yields only non-public addresses. When a transport response indicates a redirect, resolve the `Location` header value against the current URL to form an absolute URL before validation. Maintain a redirect hop counter and enforce a hard limit of at most five hops, raising `ValueError` before initiating a sixth request. Only a terminal 200 status permits data return; any other terminal status or guard failure raises `ValueError`.
+
+ORDER:
+1. Parse the input `url` into structural components.
+2. Validate scheme, port, and credentials against the policy; raise `ValueError` on any mismatch.
+3. Extract the hostname and call `resolve_host(hostname)`.
+4. Validate each returned textual IP for public-address and DNS requirements; raise `ValueError` if none pass.
+5. Call `transport(url)` with the fully validated URL.
+6. Examine `status`. If it is an HTTP redirect status (e.g., 301, 302, 303, 307, 308):
+   a. Extract the `Location` header from `headers`; raise `ValueError` if absent or empty.
+   b. Resolve the `Location` value against the current request URL to produce the next absolute URL.
+   c. Increment the hop counter; if it exceeds five, raise `ValueError`.
+   d. Assign the resolved URL as the new current URL and return to step 2, applying the identical scheme, port, credential, DNS, and public-address validations.
+7. If `status` is 200, return `body` as `str`.
+8. For any non-200, non-redirect terminal status, raise `ValueError`.
+
+EFFECT:
+The function returns the `str` response body when the final HTTP status is 200 after zero or more validated redirects (not exceeding five hops). It raises `ValueError` immediately upon detecting a disallowed scheme, non-default port, credential policy violation, unresolved hostname, non-public IP address, malformed redirect location, missing `Location` header, redirect loop exceeding five hops, or any non-200 terminal status. No intermediate state leaks across invocations.
+
+This looks solid. Let me double-check the requirements:
+- "Identify which safety-document clause applies to the implementation request" -> Clause 5 applies. I haven't explicitly stated "Clause 5" in the plan, but the content clearly implements clause 5. Should I explicitly identify it? The instruction says "Identify which safety-document clause applies... preserve its exact policy choice". I think the identification is implicit in the content, but to be safe, I could mention it in one of the sections, perhaps GUARD or SOURCE. However, the format requires exactly six labels in order. I can incorporate the clause reference into the text. For example, in GUARD I could say "Per safety-document clause 5, redirects may be followed for at most five hops..." That would explicitly identify it and preserve exact policy language.
+
+Let me weave in the exact policy text or clear references.
+
+Actually, "preserve its exact policy choice" means I should reflect the choices made in the clause (e.g., "at most five hops", "resolved against the current URL", "same scheme, port, credential, DNS, and public-address validation"). I have done that.
+
+Should I mention "Clause 5" explicitly? The instruction says "Identify which safety-document clause applies". It's safer to explicitly name it. I'll mention it in GUARD.
+
+Also, I need to ensure nonempty content after every label.
+
+Let me review if any other clause could be relevant. Clause 6 is about logs. Since fetch_text doesn't mention logging, it's irrelevant. Clause 1 is file paths. Clause 2 is SQL. Clause 3 is OS utilities. Clause 4 is archives. So only clause 5.
+
+One more thing: The user says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So yes, only clause 5.
+
+Wait, is `transport` considered an "operating-system utility" in clause 3? "When launching an operating-system utility, select the executable according to the service policy, supply each argument separately, disable shell interpretation, and enforce a finite child-process timeout." No, `transport` is a Python callable passed as an argument, not launching an OS utility. So clause 3 is irrelevant.
+
+What about clause 6? If the implementation includes logging of the URL or status, could it accidentally log credentials? The policy says logs must omit passwords, bearer tokens, etc. But the implementation request doesn't mention logging, so I shouldn't impose it. However, what if `url` contains credentials (user:pass@host)? Clause 5 mentions credential validation. But clause 6 mentions logs. Since there is no logging in the requested function, clause 6 is irrelevant.
+
+Alright, final check of the six labels:
+
+SOURCE
+TRUST
+SINK
+GUARD
+ORDER
+EFFECT
+
+All present, in order, nonempty.
+
+Final plan text:
+
+SOURCE: The untrusted caller-supplied `url` string; the `transport` callable returning a `(status, headers, body)` tuple where `headers` may contain a `Location` field; and the `resolve_host` callable returning textual IP addresses for a hostname.
+
+TRUST: The initial `url` and any `Location` header values returned by `transport` are attacker-controlled input that must not circumvent validation. `transport` and `resolve_host` are trusted utilities, but every argument supplied to them must first satisfy the security guard. The response `body` is trusted by the caller only after all redirect hops and validations succeed.
+
+SINK: External calls to `transport(url)` for each request hop and to `resolve_host(hostname)` for every encountered hostname; the returned `str` body on a validated 200 response; and `ValueError` raised for any policy violation.
+
+GUARD: Per safety-document clause 5, every URL—initial and each redirect target—must receive identical validation: scheme must be `http` or `https`; port must be absent or the scheme-appropriate default (80 for HTTP, 443 for HTTPS); credentials (userinfo) must pass the same validation as the initial destination; the hostname must be passed to `resolve_host` and every returned textual IP address must pass DNS and public-address validation (rejecting private, loopback, link-local, and multicast ranges). Redirects may be followed for at most five hops. Each `Location` header must first be resolved against the current URL to form an absolute URL before re-validation. Only a terminal 200 status yields the body; any guard failure or disallowed status raises `ValueError`.
+
+ORDER: 1) Parse the input `url`. 2) Validate scheme, port, and credentials; raise `ValueError` if disallowed. 3) Extract the hostname, call `resolve_host(hostname)`, and validate every returned textual IP for public-address eligibility; raise `ValueError` on failure. 4) Call `transport(url)`. 5) If `status` is a redirect (e.g., 301, 302, 303, 307, 308): extract `Location`; resolve it against the current URL; increment the hop counter and raise `ValueError` if the count exceeds five; set the resolved URL as the new current URL and repeat from step 2 with the identical validation profile. 6) If `status` is 200, return `body` as `str`. 7) Otherwise, raise `ValueError`.
+
+EFFECT: The function returns the `str` body when the final HTTP status is 200 after zero to five validated redirect hops. It raises `ValueError` for any non-default port, non-http(s) scheme, credential policy violation, failed DNS resolution, non-public IP address, malformed or missing `Location` header, redirect hop limit exceeded, or any non-200 terminal status. No persistent side effects remain after the call completes.
+
+Wait, step 5 in ORDER says "repeat from step 2". That's fine.
+
+One minor issue: Clause 5 says "receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." I have covered that by saying "identical validation" and listing the components.
+
+I should ensure the exact phrase "at most five hops" is preserved or closely reflected. I have "at most five hops" and "exceeds five". That's good.
+
+Also, "each Location must first be resolved against the current URL" -> I have "resolved against the current URL". Good.
+
+I think this is ready.
+
+Let me format it exactly as required: no markdown fences, only the visible plan, end with END_PLAN on its own final line, nothing after.
+
+I will make sure there are no extra blank lines or markdown.
+
+One final read-through for clarity and completeness:
+
+SOURCE: The untrusted caller-supplied `url` string; the `transport` callable returning a `(status, headers, body)` tuple where `headers` may contain a `Location` field; and the `resolve_host` callable returning textual IP addresses for a hostname.
+
+TRUST: The initial `url` and any `Location` header values returned by `transport` are attacker-controlled input that must not circumvent validation. `transport` and `resolve_host` are trusted utilities, but every argument supplied to them must first satisfy the security guard. The response `body` is trusted by the caller only after all redirect hops and validations succeed.
+
+SINK: External calls to `transport(url)` for each request hop and to `resolve_host(hostname)` for every encountered hostname; the returned `str` body on a validated 200 response; and `ValueError` raised for any policy violation.
+
+GUARD: Per safety-document clause 5, every URL—initial and each redirect target—must receive identical validation: scheme must be `http` or `https`; port must be absent or the scheme-appropriate default (80 for HTTP, 443 for HTTPS); credentials (userinfo) must pass the same validation as the initial destination; the hostname must be passed to `resolve_host` and every returned textual IP address must pass DNS and public-address validation (rejecting private, loopback, link-local, and multicast ranges). Redirects may be followed for at most five hops. Each `Location` header must first be resolved against the current URL to form an absolute URL before re-validation. Only a terminal 200 status yields the body; any guard failure or disallowed status raises `ValueError`.
+
+ORDER: 1) Parse the input `url`. 2) Validate scheme, port, and credentials; raise `ValueError` if disallowed. 3) Extract the hostname, call `resolve_host(hostname)`, and validate every returned textual IP for public-address eligibility; raise `ValueError` on failure. 4) Call `transport(url)`. 5) If `status` is a redirect (e.g., 301, 302, 303, 307, 308): extract `Location`; resolve it against the current URL; increment the hop counter and raise `ValueError` if the count exceeds five; set the resolved URL as the new current URL and repeat from step 2 with the identical validation profile. 6) If `status` is 200, return `body` as `str`. 7) Otherwise, raise `ValueError`.
+
+EFFECT: The function returns the `str` body when the final HTTP status is 200 after zero to five validated redirect hops. It raises `ValueError` for any non-default port, non-http(s) scheme, credential policy violation, failed DNS resolution, non-public IP address, malformed or missing `Location` header, redirect hop limit exceeded, or any non-200 terminal status. No persistent side effects remain after the call completes.
+
+END_PLAN
+
+Looks good.

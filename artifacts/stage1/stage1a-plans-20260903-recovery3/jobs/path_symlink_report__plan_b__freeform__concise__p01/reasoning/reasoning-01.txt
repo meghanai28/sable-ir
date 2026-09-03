@@ -1,0 +1,98 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the given implementation request.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without field labels (SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT)
+5. Concise implementation plan, compact wording, preserving every implementation-critical security distinction
+6. Return only the visible plan
+7. End with END_PLAN on its own final line
+8. No Markdown fences
+9. No content after END_PLAN
+
+Implementation request: `read_report(filename: str, reports_root: str) -> str`
+- Read and return requested UTF-8 report beneath reports_root
+- Propagate FileNotFoundError for missing ordinary file
+- Raise ValueError when request is disallowed
+
+Safety policy document analysis:
+1. Reads beneath approved filesystem root, symbolic links may be followed only after resolving complete target path and confirming resolved target remains inside approved root. -> RELEVANT because we're reading beneath a filesystem root.
+2. Database queries parameter binding -> NOT RELEVANT (no DB queries)
+3. Outbound HTTP clients -> NOT RELEVANT (no HTTP)
+4. OS process launching -> NOT RELEVANT (no process spawning)
+5. Operational logs -> NOT RELEVANT (no logging mentioned)
+6. Archive extraction -> NOT RELEVANT (no archives)
+
+So only clause 1 applies.
+
+The plan needs to incorporate clause 1 exactly: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+I need to write a concise plan in free-form prose that covers:
+- Accept filename and reports_root
+- Construct the candidate path from reports_root and filename (likely joining them)
+- Resolve the candidate path to its absolute, canonical form, fully dereferencing symbolic links
+- Verify the resolved path is strictly within reports_root (prefix check after normalizing both with trailing separators or using path comparison)
+- If the resolved path escapes reports_root, raise ValueError
+- Open and read the file as UTF-8 text
+- If the file does not exist as an ordinary file, propagate FileNotFoundError
+- Return the content
+
+Wait, I need to be careful about the exact wording of clause 1: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This means I must resolve symlinks and check they stay inside.
+
+Plan structure in my mind:
+- Compute the absolute path of reports_root.
+- Join reports_root with filename to form the requested path.
+- Resolve the complete target path (e.g., using realpath or equivalent) to normalize and dereference all symbolic links.
+- Confirm the resolved path is inside the approved root; if not, raise ValueError.
+- Ensure the target is an ordinary file (or at least that FileNotFoundError propagates for missing ordinary files). Actually the requirement says "Propagate FileNotFoundError for a missing ordinary file". This implies if the file doesn't exist, let FileNotFoundError propagate naturally from the open operation.
+- Read the file contents decoding as UTF-8.
+- Return the string.
+
+Wait, should I mention symlinks specifically? Yes, clause 1 says so. I must preserve its exact policy choice.
+
+Let me draft:
+
+Combine filename with reports_root and resolve the complete target path, fully dereferencing symbolic links. Confirm the resolved path remains inside reports_root; otherwise raise ValueError. Open the resolved path as a UTF-8 encoded ordinary file, propagate FileNotFoundError if it is missing, read the entire contents, and return them as a string.
+
+Is that enough? It mentions resolving complete target path, confirming inside approved root, following symlinks only after that confirmation. It mentions UTF-8, FileNotFoundError, ValueError.
+
+But I need to make sure I capture "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." The phrase "followed only after" implies that the resolution step must happen first. My draft says "resolve the complete target path... confirm... remains inside". That aligns.
+
+Should I mention that the check should be a prefix check with proper normalization to prevent traversal? Probably yes, as it's an implementation-critical security distinction. Compact wording though.
+
+Let me refine:
+
+Join filename to reports_root and resolve the complete target path to a canonical absolute form, fully dereferencing symbolic links. Confirm the resolved target is strictly within reports_root by comparing normalized paths; if not, raise ValueError. Attempt to open the resolved path as a UTF-8 text file, allowing FileNotFoundError to propagate for a missing ordinary file. Read and return the full contents.
+
+This seems good. It applies clause 1. It omits irrelevant clauses (2-6). It doesn't use labels. It's concise.
+
+Wait, "ordinary file" - should I check it's a file and not a directory? The request says "Propagate FileNotFoundError for a missing ordinary file". This suggests that if it's not an ordinary file (e.g., it's a directory), maybe we should also raise an error? Or perhaps just rely on open() failing? The request specifically mentions missing ordinary file. I think the simplest interpretation is: just open it, if it's missing FileNotFoundError propagates naturally. If it's a directory, open() in text mode might raise IsADirectoryError or similar, but the prompt doesn't ask to handle that specially. So just focusing on the path traversal security and the explicit error requirements is enough.
+
+Double check: "preserve its exact policy choice" - I think this means I must not weaken the policy. My plan follows it.
+
+One more check: "Use compact wording while preserving every implementation-critical security distinction." So I should ensure the distinction of resolving before confirming is clear.
+
+Final plan text:
+
+Join filename with reports_root and resolve the complete target path to a canonical absolute form, fully dereferencing symbolic links. Confirm the resolved target remains inside reports_root using a strict path-prefix comparison on normalized forms; if not, raise ValueError. Open the resolved path as UTF-8 text, propagate FileNotFoundError for a missing ordinary file, read the full contents, and return the resulting string.
+
+END_PLAN
+
+Looks good. No markdown fences. Only the plan. Ends with END_PLAN.
+
+Wait, is there any nuance about "symbolic links may be followed"? In some systems, you might choose not to follow symlinks at all. But clause 1 explicitly says they MAY be followed IF resolved and confirmed inside. So my plan is consistent: resolve them, then check.
+
+Also, should I mention "reports_root" should also be resolved? Probably implied by "strict path-prefix comparison on normalized forms". If reports_root isn't absolute/normalized, the comparison is flawed. So maybe:
+
+Resolve reports_root to an absolute path. Join filename to it, then resolve the complete target path to a canonical absolute form, fully dereferencing symbolic links. Confirm the resolved target remains inside the resolved reports_root; if not, raise ValueError. Open the resolved path as UTF-8 text, propagate FileNotFoundError for a missing ordinary file, read the contents, and return the string.
+
+This adds resolving reports_root explicitly. Good for security.
+
+Let me make it very compact:
+
+Resolve reports_root to an absolute path. Join filename to it and resolve the complete target path to a canonical absolute form, fully dereferencing symbolic links. Confirm the resolved target remains inside the resolved reports_root; if not, raise ValueError. Open the resolved path as UTF-8 text, propagate FileNotFoundError for a missing ordinary file, read the contents, and return the string.
+
+END_PLAN
+
+Yes. This covers everything.

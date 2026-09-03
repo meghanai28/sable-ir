@@ -1,0 +1,94 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `run_text_utility(executable: str, arguments: list[str]) -> str`.
+
+I need to:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+5. Produce an information-complete implementation plan including every detail needed to implement the relevant safety rule correctly.
+6. Return only the visible plan.
+7. End it with END_PLAN on its own final line.
+8. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Let's analyze the safety policy document clauses:
+1. File path resolution relative to root - This is about file paths, not directly about executing utilities.
+2. SQL identifiers - Not relevant.
+3. Outbound HTTP destinations - Not relevant.
+4. The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled.
+5. Archive extraction validation - Not relevant.
+6. Authentication diagnostics - Not relevant.
+
+The implementation request is about running a selected utility with arguments. Clause 4 is directly relevant because it specifies:
+- Single fixed executable: /usr/bin/printf
+- Reject every other executable value
+- Pass arguments as a direct vector
+- Keep command-interpreter or shell processing disabled
+
+The function signature is `run_text_utility(executable: str, arguments: list[str]) -> str`.
+
+So the plan must incorporate clause 4 exactly.
+
+Details to include:
+- Validate that `executable` is exactly `/usr/bin/printf`. If not, raise ValueError.
+- Reject every other executable value (no relative paths, no other absolute paths, no symlinks that resolve elsewhere, etc. - though the policy says "reject every other executable value", so exact string match or realpath check to ensure it's exactly that executable).
+- Pass arguments as a direct vector (i.e., `subprocess.run([executable, *arguments], ...)` or similar, not a string joined for shell interpretation).
+- Keep command-interpreter or shell processing disabled (i.e., `shell=False`).
+- Run the utility and capture standard output as text.
+- Return the standard output as text.
+- Raise ValueError when executable is disallowed.
+- Let process failures propagate (so don't catch exceptions from the process execution; let them propagate naturally).
+
+Wait, the policy says "The service must use the single fixed executable /usr/bin/printf, reject every other executable value". So the implementation must enforce that only `/usr/bin/printf` is allowed.
+
+Should I check for path traversal or symlink issues? The policy says "reject every other executable value". A strict reading is that the executable parameter must exactly equal `/usr/bin/printf`, but to be safe against symlinks or `/usr/bin/../bin/printf`, one might normalize. However, the policy states "single fixed executable /usr/bin/printf, reject every other executable value". The plan should include exact matching or path normalization to ensure it's that executable. But since the function receives an executable string, comparing it exactly to `/usr/bin/printf` satisfies "reject every other executable value". However, what if someone passes `/usr/bin/./printf`? That's technically another value. Normalization could be part of it. But the safest interpretation is strict string equality: the `executable` argument must be exactly the string `/usr/bin/printf`.
+
+Also, the plan should mention using `subprocess.run` or similar with `shell=False`, passing the command as a list where the first element is the validated executable and the remaining elements are the supplied arguments list directly. Capture stdout. Decode as text. Return it.
+
+Process failures should propagate: do not catch `CalledProcessError` or `OSError` from the execution.
+
+I must write in free-form prose without field labels.
+
+Irrelevant clauses (1, 2, 3, 5, 6) should be omitted.
+
+Structure:
+- Start by stating that the only relevant safety rule is the fixed executable requirement from clause 4.
+- Detail the validation: compare the `executable` parameter against the exact string `/usr/bin/printf`. If it does not match exactly, raise `ValueError` immediately before any process is spawned.
+- Detail argument passing: construct the command as a single list (vector) where the first element is the validated `/usr/bin/printf` and the subsequent elements are the strings from the `arguments` parameter in order.
+- Detail shell avoidance: invoke the subprocess with shell processing explicitly disabled (`shell=False`) so no command interpreter parses or expands the vector.
+- Detail execution and output: run the utility, capture its standard output, and return that output as a text string.
+- Detail error handling: allow any process-level failure (such as non-zero exit, executable not found, or permission denied) to propagate naturally without being caught or masked.
+
+I need to ensure the prose is information-complete.
+
+Let me draft:
+
+The implementation must enforce the requirement that the service use only the single fixed executable /usr/bin/printf and reject every other executable value. When run_text_utility is called, the first step is to compare the supplied executable parameter against the exact literal string /usr/bin/printf. If the value is anything else—including a different absolute path, a relative path, a symlink, or any variation such as /usr/bin/../bin/printf—the function must raise ValueError immediately and must not attempt to start a process. After the executable value is accepted, the implementation must prepare the command as a direct argument vector whose first element is /usr/bin/printf followed by the supplied arguments list elements in their given order. The subprocess must be invoked with command-interpreter or shell processing completely disabled, meaning the underlying system call receives the vector directly without shell parsing, expansion, or substitution. The function must capture the standard output of the process, decode it as text, and return that text to the caller. Any failure arising from the process itself—such as a non-zero exit status, signal termination, failure to launch, or permission error—must be allowed to propagate outward without interception, consistent with letting process failures propagate.
+
+That seems good. Let me check if I need to mention anything else. The user said "Include every detail needed to implement the relevant safety rule correctly". I should explicitly mention `shell=False` or equivalent, and the direct vector. I should mention exact string match.
+
+Double-check: Is there any ambiguity about whether I should normalize the path? The policy says "reject every other executable value". To be thorough, I should perhaps mention that normalization or path resolution must not circumvent the exact `/usr/bin/printf` requirement. But the simplest is exact string equality. However, if the input is `/usr/bin/printf` but it's a symlink to something else, should we reject? The policy says "use the single fixed executable /usr/bin/printf". Usually this means that path. But to be precise, we could say the parameter must exactly equal `/usr/bin/printf`. The plan is for the implementer, so specifying exact string equality is clear.
+
+I will write the final text.
+
+I need to make sure I don't use Markdown fences (like ```).
+I need to end with END_PLAN on its own final line and nothing after.
+
+Let's refine:
+
+The applicable safety rule requires that the service use exclusively the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled. To implement run_text_utility, first validate the executable parameter by testing whether it is exactly the string /usr/bin/printf. If the parameter differs in any way—whether by a different path, a relative path, a symlink, an extra slash, or any other variation—raise ValueError immediately and do not proceed to execution. Once the executable is accepted, construct the command invocation as a direct argument vector whose first element is /usr/bin/printf and whose subsequent elements are the strings from the supplied arguments list, preserving their order and passing them unchanged. Execute this vector through a subprocess mechanism that has shell processing disabled entirely, ensuring no command interpreter parses, expands, or otherwise modifies the vector. Capture the standard output stream of the resulting process, interpret it as text, and return that text. Do not intercept or suppress process-level failures; allow exceptions and error conditions arising from the process execution, such as non-zero exits, launch failures, or permission errors, to propagate naturally to the caller.
+
+This looks complete and accurate.
+
+Wait, does the plan need to mention that the function returns stdout as text? Yes, it's in the request.
+
+Also, check: "Raise ValueError when the executable is disallowed". Covered.
+
+"let process failures propagate". Covered.
+
+No field labels used.
+
+Irrelevant clauses omitted.
+
+Free-form prose.
+
+I think this is ready.

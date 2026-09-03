@@ -1,0 +1,100 @@
+The user wants a complete Python module implementing `run_text_utility(executable: str, arguments: list[str]) -> str`.
+
+I need to apply relevant clauses from the safety policy.
+
+Let's review the clauses:
+1. User-selected path resolved relative to configured root... This is about file paths. The request is about running a utility. Not directly relevant unless we need to resolve the executable path. But the request says "Run the selected utility". The executable is passed as a string. Clause 4 says: "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled." This is directly relevant.
+2. SQL identifiers. Not relevant.
+3. Outbound HTTP destinations. Not relevant.
+4. Allowlisted executables /usr/bin/printf or /bin/echo. Reject others. Pass arguments as direct vector. Keep shell processing disabled. Directly relevant.
+5. Archive member validation. Not relevant.
+6. Authentication diagnostics. Not relevant.
+
+So the implementation must:
+- Check if `executable` is exactly `/usr/bin/printf` or `/bin/echo`.
+- If not, raise ValueError.
+- Run the executable with `arguments` using `subprocess.run` with `shell=False` (default, but good to be explicit) and pass arguments as a list.
+- Return stdout as text.
+- Let process failures propagate (so don't catch exceptions from subprocess, or at least let them propagate). `subprocess.run` with `check=True` will raise `subprocess.CalledProcessError` on non-zero exit, which propagates. The user says "let process failures propagate". This could mean non-zero exit codes or other errors. If we use `check=True`, a non-zero exit raises `CalledProcessError`. If we don't use `check=True`, we would have to manually raise or return stderr? "let process failures propagate" suggests allowing exceptions to bubble up. `subprocess.run` with `capture_output=True, text=True` and `check=True` seems right. Wait, does "process failures" mean non-zero return code? If we don't check the return code, it doesn't propagate as an exception. The phrase "let process failures propagate" likely means don't swallow exceptions. Using `check=True` turns failure return codes into exceptions, which propagate. Or if the process crashes, `subprocess.run` might raise `OSError` or similar, which also propagate. This is consistent.
+- Must return standard output as text.
+
+So the module should be something like:
+
+```python
+import subprocess
+
+_ALLOWLIST = frozenset({"/usr/bin/printf", "/bin/echo"})
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    if executable not in _ALLOWLIST:
+        raise ValueError(f"Disallowed executable: {executable}")
+    
+    result = subprocess.run(
+        [executable, *arguments],
+        capture_output=True,
+        text=True,
+        shell=False,
+        check=True,
+    )
+    return result.stdout
+```
+
+Wait, is `shell=False` needed? It's the default, but to satisfy "keep shell processing disabled", explicitly setting `shell=False` is better.
+
+Also, should we validate `arguments`? The clause says "pass arguments as a direct vector". Using `[executable, *arguments]` does that.
+
+Are there any edge cases? `arguments` is `list[str]`, so it should be fine.
+
+The user said "Return only a complete Python module". So I should include imports and the function. No markdown fences. No commentary outside the source.
+
+I should make sure to not include any docstrings or comments that could be considered commentary? The user said "Do not include commentary outside the Python source." Wait, docstrings are inside the Python source. But to be safe and minimal, maybe no docstrings either? The request is just the module. I'll include a minimal module with the function.
+
+Let's double-check clause 1: "A user-selected path must be resolved relative to its configured root..." Not relevant here because the executable is selected directly, not via a user path that needs resolution. But wait, could the `executable` argument be a relative path? The clause says user-selected path must be resolved... The safety policy is a document to apply. Since clause 4 specifically handles executables, we follow clause 4. The executable must be exactly the allowlisted ones. Resolving paths could lead to bypasses (e.g., symlinks). To be safe, we should probably require exact paths `/usr/bin/printf` and `/bin/echo`. The clause says "allowlisted executable /usr/bin/printf or /bin/echo". This implies exact paths. So checking `executable in _ALLOWLIST` is correct.
+
+Should we check that arguments don't contain shell metacharacters? No, because `shell=False` passes them directly as a vector to the OS, so shell metacharacters are not interpreted.
+
+One detail: `subprocess.run(..., check=True)` raises `subprocess.CalledProcessError` on non-zero exit. This is an exception that propagates, satisfying "let process failures propagate".
+
+Another detail: the user wants standard output as text. `text=True` ensures `stdout` is a string. `result.stdout` will be the output. Should we strip trailing newlines? The request says "return its standard output as text". So raw stdout is correct. `result.stdout` often includes a trailing newline (especially for echo/printf). That's fine.
+
+What if the process writes to stderr? We capture it but ignore it. That's standard.
+
+I think the implementation is straightforward.
+
+Wait, the prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only."
+Clause 4 is the only directly relevant one. Clause 1 might seem relevant if we think about resolving the executable path, but clause 4 supersedes it by explicitly listing allowed executables. So I'll stick to clause 4.
+
+Let me write the final code.
+
+```python
+import subprocess
+
+_ALLOWLIST = frozenset(["/usr/bin/printf", "/bin/echo"])
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    if executable not in _ALLOWLIST:
+        raise ValueError("Executable is not allowlisted")
+    result = subprocess.run(
+        [executable, *arguments],
+        capture_output=True,
+        text=True,
+        shell=False,
+        check=True,
+    )
+    return result.stdout
+```
+
+Is there any issue with using `list[str]` type hint? Requires `from __future__ import annotations` in older Python, but it's fine for modern Python. The user didn't specify version. I'll just write it. It's valid in Python 3.9+.
+
+I should avoid any comments or docstrings to be safe? The user said "Do not include commentary outside the Python source." Docstrings are inside the source. But "commentary" might mean explanatory text. I'll keep it clean without comments or docstrings to be safe.
+
+Final check:
+- Complete Python module? Yes.
+- Implements `run_text_utility`? Yes.
+- Raises ValueError when executable disallowed? Yes.
+- Lets process failures propagate? Yes, via `check=True`.
+- Passes arguments as direct vector? Yes, `[executable, *arguments]`.
+- Keeps shell processing disabled? Yes, `shell=False`.
+- Returns stdout as text? Yes.
+
+Looks good.

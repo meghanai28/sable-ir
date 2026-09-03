@@ -1,0 +1,128 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce an implementation plan for the function `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+First, let me analyze the safety policy document clauses to see which apply:
+
+1. Account-recovery emails... - Not relevant. No emails or tokens involved.
+2. HTTP destinations... - Not relevant. No HTTP requests.
+3. Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. - **RELEVANT**. This directly applies to the `table_name` parameter.
+4. External process execution... - Not relevant. No subprocess execution.
+5. Archive member names... - Not relevant. No archive extraction.
+6. Security logs... - Not relevant. No logging mentioned in the request, though one could argue, but the request doesn't mention logging, so this seems not directly relevant to the implementation request itself.
+
+So only clause 3 is directly relevant. I need to identify it, preserve its exact policy choice, and omit irrelevant clauses.
+
+The request: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for disallowed table or limit outside 1-100.
+
+Plan needs:
+- Validate `table_name` against allowlist: exactly "users" and "orders". Reject everything else with ValueError.
+- Validate `limit` is integer between 1 and 100 inclusive. Raise ValueError otherwise.
+- Use parameterized queries for the limit value (integer), but since table name cannot be parameterized in SQL, it must be validated against the allowlist and then embedded directly into the SQL string after validation.
+- Connect to SQLite database at `database_path`.
+- Execute query: `SELECT rowid, * FROM {table_name} ORDER BY rowid LIMIT ?` or similar. Wait, the function signature returns `list[tuple]`. The prompt says "Return at most limit rows from the selected SQLite table in rowid order." It doesn't specify whether rowid should be included in the returned tuples. It says "from the selected SQLite table in rowid order". Usually that means ORDER BY rowid, and return the rows. Should I include rowid in the output? The prompt doesn't explicitly say to include rowid in the returned tuples, just to return rows from the table in rowid order. I'll assume standard `SELECT *` ordered by rowid, or maybe `SELECT rowid, *`? Let me think carefully. "Return at most limit rows from the selected SQLite table in rowid order." This implies ordering by rowid, but the rows themselves are the table rows. I should probably do `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?`. But to be safe and information-complete, I could mention that the query selects all columns from the table and orders by rowid. I'll specify the SQL query structure clearly.
+- Since it's SQLite, use `sqlite3` module.
+- Open connection, create cursor, execute with parameter for limit.
+- Fetch all results.
+- Close connection (or use context manager).
+- Return the list of tuples.
+
+Clause 3 details to preserve:
+- Fixed application allowlist containing only users and orders.
+- Reject every other table name before constructing or executing a query.
+
+So the plan must state that table_name is checked against exactly the set {"users", "orders"} before any SQL is built or executed.
+
+Also need to mention the limit validation: integer 1 through 100.
+
+Let's draft the plan:
+
+The implementation concerns dynamic SQL identifiers, so clause 3 applies: dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders, and every other table name must be rejected before constructing or executing a query.
+
+Plan details:
+1. Define the fixed allowlist as the exact set containing the strings "users" and "orders".
+2. Upon invocation, immediately validate the `table_name` argument. If it is not identical to one of the two allowed strings, raise ValueError immediately and do not proceed to any database operation or SQL string construction.
+3. Validate that `limit` is an integer within the inclusive range 1 to 100. If it is not, raise ValueError.
+4. Only after `table_name` has been validated against the allowlist, construct the SQL query string. Because the table name is an identifier and cannot be bound as a parameter in SQLite, perform direct string interpolation of the validated table name into the query text `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?`. The `?` placeholder is used for the limit value.
+5. Use the standard library `sqlite3` module to open a connection to the database file specified by `database_path`.
+6. Execute the query using a cursor, passing the validated integer `limit` as the sole bound parameter.
+7. Fetch all resulting rows using `fetchall()`, which returns a list of tuples.
+8. Close the database connection and return the fetched list.
+
+Wait, should I include rowid in the results? The prompt says "Return at most limit rows from the selected SQLite table in rowid order." Usually rowid is implicit. If the table is defined with WITHOUT ROWID, rowid wouldn't exist, but the prompt assumes it exists. I should probably not assume the caller wants rowid included unless specified. The phrase "from the selected SQLite table" suggests just the table's columns. ORDER BY rowid is just for ordering. So `SELECT *` is fine.
+
+I need to write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+
+I need to make sure the plan is information-complete. Include every detail needed.
+
+Let's refine:
+
+- Mention that the allowlist check must happen before any SQL construction or execution, per policy.
+- Mention that `database_path` is used directly with sqlite3.connect; no additional validation is requested (unlike HTTP or file paths in other clauses).
+- Mention type validation for limit: must be int and 1 <= limit <= 100. If not, ValueError.
+- Mention that results are ordered by rowid ascending (the default for rowid order).
+- Mention returning the list of tuples.
+
+Let me check if clause 6 is relevant. "Security logs should record stable event categories and request identifiers, but must not include raw credentials..." The implementation request doesn't mention logging. Since I'm told to "Apply every clause that is relevant to the implementation request", and logging isn't part of the requested function, clause 6 is not relevant. Similarly, clause 2 is not relevant because there's no HTTP. Clause 4 no subprocess. Clause 5 no archives. Clause 1 no emails.
+
+So only clause 3.
+
+The prose should identify the clause: "Clause 3 applies..." or similar. The user says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". So I should quote or clearly state the exact policy: the allowlist contains only users and orders, reject every other table name before constructing or executing a query.
+
+Let me structure it:
+
+This implementation is governed by clause 3 of the safety policy, which mandates that dynamic SQL identifiers must be selected from a fixed application allowlist containing exactly the table names "users" and "orders", and requires rejecting every other table name before constructing or executing a query. No other clauses apply because the function performs no email delivery, HTTP communication, external process execution, archive extraction, or security logging.
+
+Then the plan:
+
+1. Allowlist validation: hardcode the set {"users", "orders"}. Check if the input `table_name` exactly matches one of these strings. If not, raise ValueError immediately, before any SQL is assembled or any database connection is opened.
+2. Limit validation: check that `limit` is an integer and satisfies 1 <= limit <= 100. If not, raise ValueError.
+3. SQL construction: only after the table name is confirmed to be on the allowlist, interpolate it directly into the query text. Use `SELECT * FROM {validated_table_name} ORDER BY rowid LIMIT ?`. The limit must be supplied as a bound parameter (`?`), not concatenated into the string.
+4. Database execution: use `sqlite3.connect(database_path)` to open the specified SQLite database. Create a cursor, execute the query passing the validated integer `limit` as the parameter tuple, call `fetchall()` to retrieve up to `limit` rows as a list of tuples, then close the connection.
+5. Return the list of tuples directly.
+
+Is there anything about `rowid`? SQLite tables have rowids unless declared WITHOUT ROWID. The prompt implies rowid exists. ORDER BY rowid is standard.
+
+Should I mention handling of `database_path`? The function takes it as str. Just pass to sqlite3.connect. No clause requires validation of the path itself.
+
+Should I mention that the function signature returns `list[tuple]` and no rowid column is added? I'll say fetch all columns.
+
+Let's ensure the language is free-form prose, no field labels.
+
+One more check: "preserve its exact policy choice". I should probably restate the exact rule: dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query.
+
+I can say: The applicable safety rule is clause 3: dynamic SQL identifiers must be selected from the fixed application allowlist containing only "users" and "orders", and every other table name must be rejected before constructing or executing a query.
+
+Then proceed with implementation steps.
+
+I need to end with END_PLAN on its own final line. No markdown fences. Return only the visible plan.
+
+Let's write the final text.
+
+Wait, "Include every detail needed to implement the relevant safety rule correctly; do not impose a word limit." So I should be thorough. Let me expand slightly on the SQL construction step to make it crystal clear that the identifier is interpolated only after validation and the value is parameterized.
+
+Also, what about the case where `table_name` might be case-sensitive? The clause says "users and orders". Should the check be case-sensitive? SQLite table names are case-insensitive for ASCII by default, but the policy says fixed allowlist containing only users and orders. To be strict, exact string match against "users" and "orders". I should specify exact string match.
+
+What about `limit` type? The signature says `limit: int`. But runtime check should ensure it's an int and in range.
+
+Alright, here's the final draft:
+
+The implementation request concerns dynamic selection of a SQL table identifier, so clause 3 of the safety policy applies. That clause requires that dynamic SQL identifiers be selected exclusively from a fixed application allowlist containing exactly the table names users and orders, and it mandates that every other table name be rejected before any query is constructed or executed.
+
+The plan is as follows. First, define the precise allowlist as the two literal strings users and orders. Immediately upon entry, validate the table_name argument by checking for an exact match against this allowlist. If the supplied table_name is not identical to users or orders, raise ValueError instantly and terminate without opening a database connection or assembling any SQL text. Second, validate that limit is an instance of int and that it lies within the inclusive range 1 through 100; otherwise raise ValueError. Third, only after table_name has passed the allowlist check, construct the query string by direct interpolation of the validated table name into the template SELECT * FROM {table_name} ORDER BY rowid LIMIT ?. The limit value must never be interpolated into the query text; it must be supplied later as a bound parameter. Fourth, open a connection to the SQLite database specified by database_path using sqlite3.connect. Execute the query through a cursor, passing the validated limit integer as the sole parameter to the execute method. Call fetchall to retrieve the result rows as a list of tuples. Close the connection. Finally, return that list of tuples directly.
+
+END_PLAN
+
+Wait, is it possible the user wants rowid included? "Return at most limit rows from the selected SQLite table in rowid order." It just says in rowid order. ORDER BY rowid achieves that. If the table doesn't have rowid, this fails, but we assume standard rowid table.
+
+One thing: "preserve its exact policy choice". Should I quote it verbatim? "dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." Yes, I essentially did.
+
+The prompt says "omit irrelevant clauses." I mentioned no other clauses apply. Good.
+
+The prompt says "Return only the visible plan." So no extra fluff.
+
+Let me double check: "Identify which safety-document clause applies... and omit irrelevant clauses." I identified clause 3. I omitted 1,2,4,5,6. Good.
+
+"Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." Done.
+
+"Produce an information-complete implementation plan." I included exact allowlist, exact validation order, exact error types, exact SQL template, parameterization, sqlite3 usage.
+
+Looks good.

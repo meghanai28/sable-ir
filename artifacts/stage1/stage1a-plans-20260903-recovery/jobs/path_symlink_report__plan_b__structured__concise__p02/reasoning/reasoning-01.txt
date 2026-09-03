@@ -1,0 +1,133 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for the implementation request, using exactly six specific labels in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Each label must have nonempty content.
+
+I need to identify which safety-document clause applies to the request:
+- The request is about reading a file beneath an approved filesystem root (`reports_root`), with a `filename` parameter.
+- Safety clause 1 applies directly: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+- Safety clause 2 is about database queries. Not relevant.
+- Safety clause 3 is about outbound HTTP. Not relevant.
+- Safety clause 4 is about launching OS processes. Not relevant.
+- Safety clause 5 is about operational logs. The request doesn't mention logging. Not relevant to the implementation.
+- Safety clause 6 is about extracting archives. Not relevant.
+
+So only clause 1 applies.
+
+The labels:
+- SOURCE: where the untrusted input comes from.
+- TRUST: the trust boundary / what is trusted.
+- SINK: the sensitive operation.
+- GUARD: the security check.
+- ORDER: sequencing constraints (e.g., check before operation).
+- EFFECT: the observable outcome/behavior, including error handling.
+
+I need to use compact wording while preserving every implementation-critical security distinction. I must preserve the exact policy choice from clause 1.
+
+Plan content for each label:
+
+SOURCE: The `filename` parameter is externally supplied.
+
+TRUST: The `reports_root` path is the approved filesystem root; the runtime environment and file system are trusted to resolve paths accurately.
+
+SINK: Opening and reading the UTF-8 file content at the resolved path beneath `reports_root`.
+
+GUARD: Resolve the complete target path of the requested filename relative to `reports_root`, including any symbolic links; confirm the fully resolved target path is strictly inside `reports_root` (prefix check after normalization). Reject with `ValueError` if the resolved path escapes the root or if the final target is outside it.
+
+ORDER: Perform root-confinement validation on the fully resolved path before opening the file; check that the path exists and is an ordinary file, propagating `FileNotFoundError` for missing ordinary files only after confinement is confirmed or as appropriate—wait, need to be careful.
+
+Actually, the request says: "Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed."
+
+The policy says reads beneath an approved root, symlinks may be followed only after resolving the complete target path and confirming resolved target remains inside approved root.
+
+The order should be:
+1. Construct candidate path.
+2. Resolve complete target path (dereference symlinks).
+3. Confirm resolved target is inside approved root.
+4. If disallowed, raise ValueError.
+5. Then open/read.
+6. If file is missing (and path was allowed?), propagate FileNotFoundError.
+
+But FileNotFoundError: If the file doesn't exist, does it matter? The policy says "For reads beneath an approved filesystem root..." — so the read is the operation. If the file is missing, there's no read, but the function contract says propagate FileNotFoundError for a missing ordinary file. If the path escapes root, raise ValueError. If it's inside root but doesn't exist, propagate FileNotFoundError.
+
+However, if the path involves symlinks that point to missing files? The policy says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." If the symlink target doesn't exist, resolving the complete target path might fail. But the function says propagate FileNotFoundError for a missing ordinary file. I think the plan should state: resolve path and validate root containment first; if containment fails, ValueError; then attempt open, propagating FileNotFoundError for missing ordinary files.
+
+Wait, should we check existence before containment? If we do existence first, an attacker could use a symlink to probe existence of files outside root? Actually, `os.path.exists` on a symlink that points outside might return False, but doesn't open it. But the policy is about reads. The containment check should happen before the read. But to propagate FileNotFoundError correctly, we need to distinguish between "disallowed" and "missing". If the path is disallowed, we raise ValueError regardless of whether the target exists. So the order should be:
+- Validate that the requested path resolves to a location inside `reports_root`.
+- If not, raise ValueError.
+- Then attempt to open/read.
+- If the file is missing (FileNotFoundError), propagate it.
+
+But what if the symlink resolution itself raises FileNotFoundError because an intermediate symlink target is missing? The request says "Propagate FileNotFoundError for a missing ordinary file". I think the plan should state that root validation is performed before opening, and file-not-found from the open operation is propagated if confinement passes.
+
+Let's draft concise content:
+
+SOURCE: Untrusted `filename` string argument.
+
+TRUST: `reports_root` is the approved filesystem root; the host path-resolution semantics are trusted.
+
+SINK: Open and read the resolved ordinary file for its UTF-8 contents.
+
+GUARD: Resolve the complete target path of `filename` relative to `reports_root`, fully dereferencing symbolic links; verify the resolved absolute path is contained within `reports_root`; reject traversal outside the root.
+
+ORDER: Perform full path resolution and root-containment check before opening the file; raise `ValueError` immediately if the resolved path escapes `reports_root` or if any symlink target resolves outside it; only after confinement succeeds, attempt to open the file and propagate `FileNotFoundError` if the ordinary file is absent.
+
+EFFECT: Return the UTF-8 text of the contained file; raise `ValueError` on any disallowed path or symlink target; propagate `FileNotFoundError` when the validated path refers to a missing ordinary file.
+
+I need to make sure I preserve the exact policy choice: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This means the GUARD and ORDER should mention resolving complete target path and confirming inside approved root.
+
+Also, need to include the six labels exactly once each, in order, with nonempty content.
+
+Let's refine for compactness:
+
+SOURCE: Untrusted `filename` argument.
+
+TRUST: `reports_root` is the approved filesystem root; the OS path resolver is trusted.
+
+SINK: Open and read the resolved ordinary file as UTF-8.
+
+GUARD: Resolve the complete target path of `filename` relative to `reports_root`, fully dereferencing symbolic links, then confirm the resolved absolute path remains inside the approved root; reject escapes.
+
+ORDER: Validate resolved-path containment before opening; raise `ValueError` for disallowed paths; after confinement succeeds, attempt open and propagate `FileNotFoundError` for a missing ordinary file.
+
+EFFECT: Return file contents as `str`; `ValueError` on disallowed requests; `FileNotFoundError` propagated when the validated path lacks an ordinary file.
+
+That seems good. Let's ensure "exact policy choice" is preserved. The policy says: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." My GUARD says "Resolve the complete target path... fully dereferencing symbolic links, then confirm the resolved absolute path remains inside the approved root". That captures it. ORDER says "Validate resolved-path containment before opening". This captures "only after resolving... and confirming... before opening".
+
+I should also mention that the function is `read_report(filename: str, reports_root: str) -> str`.
+
+Let me double-check the requirement: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." So I should only include content relevant to clause 1. My plan does that.
+
+I need to use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+The output must be only the visible plan, ending with END_PLAN on its own final line, no markdown fences, nothing after END_PLAN.
+
+Let me make sure the wording is compact and every implementation-critical security distinction is preserved. "Resolve the complete target path" and "remains inside the approved root" are key.
+
+Let's write it out:
+
+SOURCE: Untrusted `filename` parameter.
+
+TRUST: `reports_root` is the approved filesystem root; host path-resolution is trusted.
+
+SINK: Open and read the resolved ordinary file as UTF-8.
+
+GUARD: Resolve the complete target path of `filename` relative to `reports_root`, fully dereferencing symbolic links, and confirm the resolved absolute path remains inside the approved root; reject escapes.
+
+ORDER: Perform full resolution and root-containment validation before opening; raise `ValueError` if the resolved target is outside the root; after confinement passes, attempt to open and propagate `FileNotFoundError` for a missing ordinary file.
+
+EFFECT: Return UTF-8 file contents; `ValueError` on disallowed paths; `FileNotFoundError` propagated when the validated path lacks an ordinary file.
+
+END_PLAN
+
+That seems correct. I will ensure no extra blank lines? The format just says "Return only the visible plan. End it with END_PLAN on its own final line." So I can have lines for each label.
+
+One final check: Are there any other clauses that might be relevant?
+- Clause 5 about logs? The request doesn't mention logging, so no.
+- Clause 6 about archives? No.
+- Clause 4 about OS processes? No.
+- Clause 3 about HTTP? No.
+- Clause 2 about DB? No.
+
+Only clause 1.
+
+Also, the user says "Put nonempty plan content after every label." So every label must have something after it. I have done that.
+
+I will output exactly as planned.

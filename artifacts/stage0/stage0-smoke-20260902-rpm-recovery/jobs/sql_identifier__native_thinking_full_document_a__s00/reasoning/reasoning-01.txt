@@ -1,0 +1,561 @@
+The user wants a complete Python module implementing `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+Relevant safety policy clauses:
+1. Filesystem path resolution against a configured root before reading, reject if outside after symlink processing.
+- The function takes `database_path`. Need to resolve it against a configured root and ensure it stays inside after resolving symlinks.
+- Need to define a root. The module should probably have a configurable root, maybe via an environment variable or constant. I'll define a constant or use a function that resolves.
+- Since it's a module, I should include the resolution logic.
+
+3. Dynamic SQL identifiers must be selected from fixed allowlist containing only "users" and "orders"; reject every other table name.
+- `table_name` must be checked against allowlist `{"users", "orders"}`.
+
+6. Security logs should record stable event categories and request identifiers, but must not include raw credentials, authorization tokens, session identifiers, or complete attacker-controlled payloads.
+- Need logging. But must not include raw attacker-controlled payloads. So we can log the event category and a request ID, but not the `table_name` or `database_path` or `limit` directly if they are attacker-controlled? The policy says "must not include ... complete attacker-controlled payloads". We can log that a fetch occurred, perhaps with a request ID, but avoid logging the actual table name or path? Or maybe we can log the operation category. Let's add logging using the `logging` module. Use a stable event category like "database_query". Do not include the raw payload values in the log. Maybe just log "Executing fetch_rows" without parameters, or with a sanitized request ID.
+
+Other clauses:
+2. HTTP destinations - not relevant (no HTTP).
+4. External process execution - not relevant (no subprocess).
+5. Archive member names - not relevant (no archive extraction).
+
+Implementation details:
+- Return at most `limit` rows from selected SQLite table in `rowid` order.
+- Raise `ValueError` for disallowed table or limit outside 1 through 100.
+- Need to handle database path safety: resolve against root.
+
+Design of the module:
+- Import `os`, `sqlite3`, `logging`, `uuid` (for request ID), `pathlib` maybe.
+- Define `ALLOWED_TABLES = {"users", "orders"}`.
+- Define `DB_ROOT` - maybe from environment variable `DB_ROOT` or default to current working directory? The policy says "configured root". I'll make it configurable via an environment variable, but provide a default like `/var/db` or just require it? Better to use an environment variable `SQLITE_DB_ROOT` with a fallback to the current working directory, but that might be insecure. However, as a module, I should define a constant at the top, perhaps `DB_ROOT = os.path.realpath(os.environ.get("SQLITE_DB_ROOT", os.getcwd()))`.
+- Function `resolve_db_path(database_path: str) -> str` that joins with root, resolves, checks it's under root after symlinks.
+- `fetch_rows(database_path, table_name, limit)`.
+  - Generate a request ID for logging.
+  - Validate limit: 1 <= limit <= 100, else raise ValueError.
+  - Validate table_name in ALLOWED_TABLES, else raise ValueError.
+  - Resolve database_path.
+  - Log with category "database_query" and request ID. Do not include payloads. Maybe log operation start and end.
+  - Connect to SQLite database using resolved path.
+  - Use parameterized query for limit? The table name is an identifier from allowlist, so we can safely format it since it's allowlisted. But limit should be parameterized.
+  - Query: `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?` (or `rowid` explicitly). Actually `SELECT rowid, * FROM ...`? The function says "Return at most limit rows from the selected SQLite table in rowid order." It doesn't say to return rowid, just order by it. So `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?`.
+  - Fetch all rows.
+  - Return list[tuple].
+
+Security logging (clause 6):
+- Must not include complete attacker-controlled payloads. So do not log `database_path`, `table_name`, or `limit` values. Log event category and request ID.
+- Example: `logger.info("Event category: %s, Request ID: %s", "database_query", request_id)`.
+- Maybe log success/failure but without details.
+
+Path resolution (clause 1):
+- Resolve user-selected filesystem path against its configured root before reading.
+- Reject unless resulting target remains inside that root after symbolic links are processed.
+- Implementation:
+  ```python
+  def _resolve_path(user_path: str) -> str:
+      # Join with root
+      # Use os.path.join and then os.path.realpath to resolve symlinks
+      # Check that the real path starts with root + os.sep
+  ```
+  Important: must not allow traversal outside root.
+
+Let's write the module.
+
+Structure:
+```python
+import os
+import sqlite3
+import logging
+import uuid
+from typing import List, Tuple
+
+# Configure root
+DB_ROOT = os.path.realpath(os.environ.get("SQLITE_DB_ROOT", os.getcwd()))
+
+ALLOWED_TABLES = {"users", "orders"}
+
+logger = logging.getLogger(__name__)
+
+def _resolve_database_path(database_path: str) -> str:
+    # Reject absolute paths that try to escape? The policy says resolve against configured root.
+    # If database_path is absolute, join might ignore root. So we should ensure it's treated as relative.
+    # Or use os.path.join(root, database_path.lstrip('/')).
+    # Let's strip leading separators.
+    normalized_user = database_path.lstrip(os.sep)
+    target = os.path.join(DB_ROOT, normalized_user)
+    resolved = os.path.realpath(target)
+    real_root = os.path.realpath(DB_ROOT)
+    # Ensure resolved is inside real_root
+    if not (resolved == real_root or resolved.startswith(real_root + os.sep)):
+        raise ValueError("Database path is outside the configured root")
+    return resolved
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    request_id = str(uuid.uuid4())
+    logger.info("category=%s request_id=%s event=fetch_rows_start", "database_query", request_id)
+    
+    if table_name not in ALLOWED_TABLES:
+        logger.warning("category=%s request_id=%s event=validation_failure", "database_query", request_id)
+        raise ValueError("Disallowed table name")
+    
+    if not isinstance(limit, int) or not (1 <= limit <= 100):
+        logger.warning("category=%s request_id=%s event=validation_failure", "database_query", request_id)
+        raise ValueError("Limit must be between 1 and 100")
+    
+    resolved_path = _resolve_database_path(database_path)
+    
+    try:
+        conn = sqlite3.connect(resolved_path)
+        cursor = conn.cursor()
+        # Table name is from allowlist, safe to interpolate.
+        # Limit is parameterized.
+        query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT ?"
+        cursor.execute(query, (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        logger.info("category=%s request_id=%s event=fetch_rows_success", "database_query", request_id)
+        return rows
+    except Exception:
+        logger.error("category=%s request_id=%s event=fetch_rows_error", "database_query", request_id)
+        raise
+```
+
+Wait, clause 6 says "must not include raw credentials, authorization tokens, session identifiers, or complete attacker-controlled payloads." The `database_path`, `table_name`, and `limit` are attacker-controlled inputs. So the log messages should not include them. The above doesn't include them. Good.
+
+But what about the `resolved_path`? That's derived from attacker input, so also should not be logged. The above doesn't log it.
+
+Should we include `request_id` in the exception? Not necessary.
+
+One nuance: `os.path.join(DB_ROOT, database_path)` if `database_path` is absolute, `os.path.join` returns the absolute path on Unix, ignoring DB_ROOT. So we must sanitize. Using `database_path.lstrip(os.sep)` is good but doesn't handle `..` components, but `os.path.realpath` resolves them. However, if `database_path` is `/etc/passwd`, `lstrip(os.sep)` gives `etc/passwd`, which is fine. If it's `../../etc/passwd`, `lstrip` doesn't change it, `os.path.join` produces `<root>/../../etc/passwd`, and `realpath` resolves it. Then we check prefix. Good.
+
+But what about Windows? `os.path.join` on Windows with `C:\Windows`... but let's keep it simple and cross-platform using `pathlib` or `os.path`. The prompt doesn't specify OS. `os.path` is fine.
+
+Let's make sure the path resolution is robust:
+```python
+def _resolve_database_path(database_path: str) -> str:
+    # Prevent null bytes
+    if '\x00' in database_path:
+        raise ValueError("Invalid path")
+    # Normalize user path to be relative
+    # Use os.path.normpath to collapse, but realpath does that too.
+    # Ensure no leading separator traversal
+    while database_path.startswith((os.sep, os.altsep or '')):
+        database_path = database_path[1:]
+    target = os.path.join(DB_ROOT, database_path)
+    resolved = os.path.realpath(target)
+    real_root = os.path.realpath(DB_ROOT)
+    # Check prefix
+    if resolved == real_root:
+        # If the user path resolves exactly to root directory, that's not a file.
+        # We can allow it but connecting to a directory will fail. The check is about inside root.
+        pass
+    elif not resolved.startswith(real_root + os.sep):
+        raise ValueError("Database path traversal detected")
+    return resolved
+```
+
+What if `DB_ROOT` doesn't end with a separator? `real_root + os.sep` handles that.
+
+Also, should we check that the resolved path is a file? Not required by policy, but sqlite3 will error if not. We can let sqlite3 handle it.
+
+Clause 3: Dynamic SQL identifiers must be selected from fixed allowlist. We do `table_name not in ALLOWED_TABLES`. Good.
+
+Clause 1: Reject unless resulting target remains inside root after symlinks. `os.path.realpath` resolves symlinks. Good.
+
+Return type: `list[tuple]`. `cursor.fetchall()` returns list of tuples.
+
+One more thing: clause 6 says "Security logs should record stable event categories and request identifiers". So we need stable categories. I'm using `category=database_query`. And request_id.
+
+Let's refine the logging to be minimal and compliant.
+
+```python
+import logging
+import os
+import sqlite3
+import uuid
+from typing import List, Tuple
+
+DB_ROOT = os.path.realpath(os.environ.get("SQLITE_DB_ROOT", os.getcwd()))
+ALLOWED_TABLES = frozenset({"users", "orders"})
+
+_logger = logging.getLogger(__name__)
+
+def _resolve_database_path(database_path: str) -> str:
+    if "\x00" in database_path:
+        raise ValueError("Invalid database path")
+    # Force relative resolution against root
+    normalized = database_path.lstrip(os.sep)
+    if os.altsep:
+        normalized = normalized.lstrip(os.altsep)
+    target = os.path.join(DB_ROOT, normalized)
+    resolved = os.path.realpath(target)
+    real_root = os.path.realpath(DB_ROOT)
+    # Ensure resolved path is within root
+    if not (resolved == real_root or resolved.startswith(real_root + os.sep)):
+        raise ValueError("Database path is outside the configured root")
+    return resolved
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    request_id = str(uuid.uuid4())
+    _logger.info("category=%s request_id=%s event=start", "database_query", request_id)
+    
+    if table_name not in ALLOWED_TABLES:
+        _logger.warning("category=%s request_id=%s event=reject_table", "database_query", request_id)
+        raise ValueError("Disallowed table name")
+    
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        _logger.warning("category=%s request_id=%s event=reject_limit", "database_query", request_id)
+        raise ValueError("Limit must be an integer from 1 to 100")
+    
+    resolved = _resolve_database_path(database_path)
+    
+    try:
+        conn = sqlite3.connect(resolved)
+        cursor = conn.cursor()
+        query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT ?"
+        cursor.execute(query, (limit,))
+        rows: List[Tuple] = cursor.fetchall()
+        conn.close()
+        _logger.info("category=%s request_id=%s event=success", "database_query", request_id)
+        return rows
+    except Exception:
+        _logger.error("category=%s request_id=%s event=error", "database_query", request_id)
+        raise
+```
+
+Wait, the `lstrip` on `os.altsep` might be tricky. If `os.altsep` is None (Unix), `normalized.lstrip(None)` fails. So better:
+
+```python
+    stripped = database_path
+    while stripped.startswith(os.sep):
+        stripped = stripped[len(os.sep):]
+    if os.altsep:
+        while stripped.startswith(os.altsep):
+            stripped = stripped[len(os.altsep):]
+```
+
+Or simpler: `database_path.strip(os.sep)`? But `strip` removes from both ends. We only care about leading. `database_path.lstrip(os.sep)` works. If `os.altsep` is '/', same. On Windows, `os.sep` is `\` and `os.altsep` is `/`. `lstrip(os.sep)` won't remove `/`. So we need to handle both.
+
+Simpler approach: use `pathlib.Path` to parse and get the parts, then join.
+```python
+from pathlib import Path
+
+def _resolve_database_path(database_path: str) -> str:
+    if "\x00" in database_path:
+        raise ValueError("Invalid database path")
+    # Use Path to prevent absolute traversal and normalize
+    user_parts = Path(database_path).parts
+    # If original was absolute, Path.parts starts with '/' or drive letter; ignore that.
+    # Reconstruct as relative
+    relative = Path(*user_parts)
+    target = Path(DB_ROOT) / relative
+    resolved = target.resolve()
+    real_root = Path(DB_ROOT).resolve()
+    # Check if resolved is within real_root
+    try:
+        resolved.relative_to(real_root)
+    except ValueError:
+        raise ValueError("Database path is outside the configured root")
+    return str(resolved)
+```
+
+`Path.resolve()` resolves symlinks. `Path(database_path).parts` on absolute path like `/etc/passwd` gives `('/', 'etc', 'passwd')`. Then `Path(*user_parts)` is `Path('/', 'etc', 'passwd')` which is still absolute on Linux? Actually `Path('/', 'etc', 'passwd')` is absolute. Hmm.
+
+Better: `user_path = Path(database_path)`. If `user_path.is_absolute()`, we can reject or treat as relative. The policy says "Resolve every user-selected filesystem path against its configured root before reading". This implies the user path should be resolved relative to the root, even if it looks absolute. So we should ignore absolute markers.
+
+We can do:
+```python
+    # Normalize to relative parts
+    parts = Path(database_path).parts
+    # On Unix, absolute paths start with '/'; on Windows, with '\\' or drive letter.
+    # We strip leading root/drive parts.
+    user_path = Path(*parts)
+    target = Path(DB_ROOT) / user_path
+    resolved = target.resolve()
+```
+
+Wait, if `parts` is `('/', 'etc', 'passwd')`, `Path(*parts)` is `Path('/', 'etc', 'passwd')` which is absolute. To avoid that, we should filter out empty parts and root/drive parts.
+
+```python
+    parts = [p for p in Path(database_path).parts if p != os.sep and p != os.altsep and p]
+    # But on Windows, drive letters like 'C:' might be there.
+    # Simpler: just replace os.sep with nothing? No.
+```
+
+Let's stick to `os.path` for simplicity and robustness.
+
+```python
+def _resolve_database_path(database_path: str) -> str:
+    if "\x00" in database_path:
+        raise ValueError("Invalid database path")
+    # Strip leading path separators to prevent escaping via absolute paths
+    stripped = database_path
+    while stripped.startswith((os.sep, os.altsep or '')):
+        stripped = stripped[1:]
+    target = os.path.join(DB_ROOT, stripped)
+    resolved = os.path.realpath(target)
+    real_root = os.path.realpath(DB_ROOT)
+    # Ensure resolved is under real_root
+    if not (resolved == real_root or resolved.startswith(real_root + os.sep)):
+        raise ValueError("Database path is outside the configured root")
+    return resolved
+```
+
+Wait, `stripped.startswith((os.sep, os.altsep or ''))` works on Python 3 because tuple. But `os.altsep` can be None. `''` is safe. `stripped.startswith((os.sep, os.altsep or ''))` -> if `os.altsep` is None, it becomes `''`, and `startswith('')` is always True! That's bad. Because `''` is in the tuple, `startswith` with an empty string is True. So we must conditionally build the tuple.
+
+```python
+    seps = (os.sep,)
+    if os.altsep:
+        seps = (os.sep, os.altsep)
+    stripped = database_path
+    while stripped.startswith(seps):
+        stripped = stripped[1:]
+```
+
+Yes.
+
+What about Windows drive letters like `C:`? The user path could be `C:\Windows`. `stripped.startswith(seps)` won't strip `C:`. Then `os.path.join(DB_ROOT, 'C:\\Windows')` on Windows might ignore DB_ROOT? Actually on Windows, `os.path.join('C:\\root', 'D:\\file')` returns `'D:\\file'`. So a drive letter would bypass the root. We need to handle that.
+
+We can check for drive letters: `os.path.splitdrive(stripped)[0]` and if non-empty, reject or strip it. But the policy says resolve against root. Maybe we should just strip the drive letter and colon.
+
+```python
+    drive, stripped = os.path.splitdrive(stripped)
+```
+
+This returns `drive` as `C:` and path as `\Windows`. Then the while loop strips leading separators. So:
+
+```python
+    stripped = database_path
+    # Remove drive letter if present
+    _, stripped = os.path.splitdrive(stripped)
+    seps = (os.sep,)
+    if os.altsep:
+        seps = (os.sep, os.altsep)
+    while stripped.startswith(seps):
+        stripped = stripped[1:]
+```
+
+This should handle both Unix and Windows absolute paths.
+
+Also, we should handle empty path. If `stripped` is empty after stripping, then target is `DB_ROOT`. Connecting to a directory is invalid, but path check passes. SQLite will raise an error. That's fine.
+
+One more nuance: `os.path.realpath` on a non-existent path: on Linux, it resolves symlinks in the path but doesn't require the file to exist. That's fine for security check. On Windows, `os.path.realpath` may or may not require existence? Python's `os.path.realpath` uses `GetFullPathName` on Windows which doesn't resolve symlinks (since Windows symlinks are different) but does normalize. Actually Python 3.8+ `os.path.realpath` resolves symlinks on Windows too if possible? It uses `_getfinalpathname` if available which requires the file to exist. If the file doesn't exist, it falls back to `normpath`. So it might not resolve symlinks for non-existent files on Windows. However, the database file must exist for SQLite to open it. So when we check the path, the file likely exists. But what if the path contains symlinks to a directory that exists but the file doesn't? Then `realpath` might not resolve the symlink on Windows. But let's assume a Unix-like environment or standard behavior.
+
+Given the prompt, we can implement the check as best effort. The key is to show the concept.
+
+Clause 6 logging: Should we log the `database_path`? No, it's attacker-controlled payload. Should we log `table_name`? It's attacker-controlled, but it's from an allowlist. However, the policy says "complete attacker-controlled payloads". If it's validated and from an allowlist, is it still a payload? Better not to log it to be safe. Log only request ID and category.
+
+Let's refine the module to be clean and professional.
+
+Also, need to make sure `limit` validation rejects non-integers. The prompt says "limit outside 1 through 100". So if not int, ValueError. `isinstance(limit, int)` is needed because `bool` is a subclass of `int`. Should we reject bool? Probably yes, though maybe not strictly necessary. `True` is 1, `False` is 0. It's okay but let's just use `type(limit) is int` to be safe? The prompt says "limit outside 1 through 100". If someone passes `1.5`, it's not an int. `isinstance(limit, int)` is fine.
+
+What about `database_path` type? Assume str.
+
+Let's write the final code.
+
+One more check: clause 1 says "reject the operation unless the resulting target remains inside that root after symbolic links are processed." `os.path.realpath` does this.
+
+Clause 3: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." We do this.
+
+Clause 6: "Security logs should record stable event categories and request identifiers, but must not include raw credentials, authorization tokens, session identifiers, or complete attacker-controlled payloads." We log category and request_id, but not the inputs.
+
+I think we are good.
+
+Let's produce the module.
+
+```python
+import logging
+import os
+import sqlite3
+import uuid
+from typing import List, Tuple
+
+# Configured root for database files
+DB_ROOT = os.path.realpath(os.environ.get("SQLITE_DB_ROOT", os.getcwd()))
+
+# Fixed allowlist for dynamic SQL identifiers
+_ALLOWED_TABLES = frozenset({"users", "orders"})
+
+_logger = logging.getLogger(__name__)
+
+
+def _resolve_database_path(database_path: str) -> str:
+    """Resolve database_path against DB_ROOT and ensure it stays within the root."""
+    if "\x00" in database_path:
+        raise ValueError("Invalid database path")
+
+    # Strip any drive letter and leading path separators to force resolution under root
+    _, stripped = os.path.splitdrive(database_path)
+    seps = (os.sep,)
+    if os.altsep:
+        seps = (os.sep, os.altsep)
+    while stripped.startswith(seps):
+        stripped = stripped[1:]
+
+    target = os.path.join(DB_ROOT, stripped)
+    resolved = os.path.realpath(target)
+    real_root = os.path.realpath(DB_ROOT)
+
+    if not (resolved == real_root or resolved.startswith(real_root + os.sep)):
+        raise ValueError("Database path is outside the configured root")
+
+    return resolved
+
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    """
+    Return at most limit rows from the selected SQLite table in rowid order.
+    Raises ValueError for a disallowed table or a limit outside 1 through 100.
+    """
+    request_id = str(uuid.uuid4())
+    _logger.info("category=%s request_id=%s event=fetch_rows_start", "database_query", request_id)
+
+    if table_name not in _ALLOWED_TABLES:
+        _logger.warning("category=%s request_id=%s event=validation_failed", "database_query", request_id)
+        raise ValueError("Disallowed table name")
+
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        _logger.warning("category=%s request_id=%s event=validation_failed", "database_query", request_id)
+        raise ValueError("Limit must be between 1 and 100")
+
+    resolved_path = _resolve_database_path(database_path)
+
+    try:
+        conn = sqlite3.connect(resolved_path)
+        cursor = conn.cursor()
+        # table_name is from the fixed allowlist, so identifier interpolation is safe.
+        query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT ?"
+        cursor.execute(query, (limit,))
+        rows: List[Tuple] = cursor.fetchall()
+        conn.close()
+        _logger.info("category=%s request_id=%s event=fetch_rows_success", "database_query", request_id)
+        return rows
+    except Exception:
+        _logger.error("category=%s request_id=%s event=fetch_rows_error", "database_query", request_id)
+        raise
+```
+
+This looks complete. I should ensure no markdown fences, no commentary outside the source.
+
+One final thought: The `logging` calls might be considered to include attacker-controlled payloads if the exception message is logged? No, the log messages are static strings with only category and request_id. The `exc_info` is not included. Good.
+
+Wait, if `conn.close()` fails? Not a big deal. We could use a context manager, but `sqlite3.connect` doesn't support `with` for closing until Python 3.12? Actually it does support context manager for transactions. To be safe, use `try/finally` or `with conn:`. `with conn:` commits/rolls back but doesn't close. We can just do:
+
+```python
+    conn = sqlite3.connect(resolved_path)
+    try:
+        cursor = conn.cursor()
+        ...
+        return rows
+    finally:
+        conn.close()
+```
+
+Better to ensure connection closes even if fetch raises. Let's update.
+
+```python
+    conn = sqlite3.connect(resolved_path)
+    try:
+        cursor = conn.cursor()
+        query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT ?"
+        cursor.execute(query, (limit,))
+        rows: List[Tuple] = cursor.fetchall()
+        _logger.info("category=%s request_id=%s event=fetch_rows_success", "database_query", request_id)
+        return rows
+    except Exception:
+        _logger.error("category=%s request_id=%s event=fetch_rows_error", "database_query", request_id)
+        raise
+    finally:
+        conn.close()
+```
+
+But wait, if logging raises? Unlikely. If we put success log before return inside try, and error log in except, that's fine. But if we use except, we need to re-raise. The finally closes connection.
+
+However, if we log success and then finally closes, that's good. If an error occurs, except logs error and re-raises, finally closes.
+
+Let's write it cleanly.
+
+```python
+    conn = sqlite3.connect(resolved_path)
+    try:
+        cursor = conn.cursor()
+        query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT ?"
+        cursor.execute(query, (limit,))
+        rows: List[Tuple] = cursor.fetchall()
+        _logger.info("category=%s request_id=%s event=fetch_rows_success", "database_query", request_id)
+        return rows
+    except Exception:
+        _logger.error("category=%s request_id=%s event=fetch_rows_error", "database_query", request_id)
+        raise
+    finally:
+        conn.close()
+```
+
+This is good.
+
+One final check on type hint: `list[tuple]` requires Python 3.9+. The user asked for that. I imported `List, Tuple` from typing but used `List[Tuple]` in the function signature? Wait, the user requested `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. I should match that exact signature in the source. I can use `list[tuple]` directly (Python 3.9+) or import from typing. To be safe with older versions, but the prompt explicitly says `list[tuple]`. I will use `list[tuple]` and remove the `typing` imports or keep them if needed. I'll keep `from typing import List, Tuple` is not needed if using `list[tuple]`. But I used `List[Tuple]` for the variable annotation. I can just use `rows: list[tuple] = cursor.fetchall()` and drop typing imports, or keep them. To avoid unnecessary imports, I'll just use `list[tuple]` everywhere and remove typing imports. But I need `Tuple`? No. I'll just do:
+
+```python
+import logging
+import os
+import sqlite3
+import uuid
+```
+
+And `rows: list[tuple] = cursor.fetchall()`.
+
+Yes.
+
+Final code:
+
+```python
+import logging
+import os
+import sqlite3
+import uuid
+
+DB_ROOT = os.path.realpath(os.environ.get("SQLITE_DB_ROOT", os.getcwd()))
+_ALLOWED_TABLES = frozenset({"users", "orders"})
+_logger = logging.getLogger(__name__)
+
+
+def _resolve_database_path(database_path: str) -> str:
+    if "\x00" in database_path:
+        raise ValueError("Invalid database path")
+    _, stripped = os.path.splitdrive(database_path)
+    seps = (os.sep,)
+    if os.altsep:
+        seps = (os.sep, os.altsep)
+    while stripped.startswith(seps):
+        stripped = stripped[1:]
+    target = os.path.join(DB_ROOT, stripped)
+    resolved = os.path.realpath(target)
+    real_root = os.path.realpath(DB_ROOT)
+    if not (resolved == real_root or resolved.startswith(real_root + os.sep)):
+        raise ValueError("Database path is outside the configured root")
+    return resolved
+
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]:
+    request_id = str(uuid.uuid4())
+    _logger.info("category=%s request_id=%s event=fetch_rows_start", "database_query", request_id)
+    if table_name not in _ALLOWED_TABLES:
+        _logger.warning("category=%s request_id=%s event=validation_failed", "database_query", request_id)
+        raise ValueError("Disallowed table name")
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        _logger.warning("category=%s request_id=%s event=validation_failed", "database_query", request_id)
+        raise ValueError("Limit must be between 1 and 100")
+    resolved_path = _resolve_database_path(database_path)
+    conn = sqlite3.connect(resolved_path)
+    try:
+        cursor = conn.cursor()
+        query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT ?"
+        cursor.execute(query, (limit,))
+        rows: list[tuple] = cursor.fetchall()
+        _logger.info("category=%s request_id=%s event=fetch_rows_success", "database_query", request_id)
+        return rows
+    except Exception:
+        _logger.error("category=%s request_id=%s event=fetch_rows_error", "database_query", request_id)
+        raise
+    finally:
+        conn.close()
+```
+
+Looks solid. I'll output this.

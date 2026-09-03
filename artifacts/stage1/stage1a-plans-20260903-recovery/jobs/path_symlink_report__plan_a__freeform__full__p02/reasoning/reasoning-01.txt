@@ -1,0 +1,156 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing a function `read_report(filename: str, reports_root: str) -> str`.
+
+ The function reads and returns the requested UTF-8 report beneath `reports_root`. It should propagate `FileNotFoundError` for a missing ordinary file and raise `ValueError` when the request is disallowed.
+
+ I need to:
+ 1. Identify which safety-document clause applies to the implementation request.
+ 2. Preserve its exact policy choice.
+ 3. Omit irrelevant clauses.
+ 4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+ 5. Produce an information-complete implementation plan.
+ 6. Include every detail needed to implement the relevant safety rule correctly.
+ 7. End with END_PLAN on its own final line.
+ 8. Do not place anything after END_PLAN and do not use Markdown fences.
+
+ Let's look at the safety policy clauses:
+
+ 1. For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root.
+ 2. Database queries... (irrelevant, no DB)
+ 3. Outbound HTTP clients... (irrelevant, no HTTP)
+ 4. Operating-system process... (irrelevant, no process launching)
+ 5. Operational logs... (irrelevant, no logging mentioned)
+ 6. Archive extraction... (irrelevant, no archive extraction)
+
+ So only clause 1 applies directly.
+
+ However, I need to think about whether clause 5 applies. The request doesn't mention logging. The prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I should only apply clause 1.
+
+ Wait, the function reads a file. Clause 1 is about reads beneath an approved filesystem root. The `reports_root` is the approved root. The `filename` is user-selected path components.
+
+ The plan needs to be information-complete. I need to describe:
+ - How to validate that the path is beneath `reports_root` (path traversal prevention).
+ - How to check for symbolic links in any user-selected path component.
+ - How to read the file as UTF-8.
+ - Error handling: propagate FileNotFoundError for missing ordinary file, raise ValueError when disallowed.
+
+ Specifically for clause 1: "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+
+ This means I cannot just check the final path. I need to check each component of the user-provided filename. If the user provides `filename="foo/bar/baz.txt"`, I need to check if `foo` is a symlink, if `bar` is a symlink, if `baz.txt` is a symlink. Or rather, I need to ensure that when resolving the path, no intermediate component is a symlink.
+
+ Actually, the clause says "any user-selected path component is a symbolic link". So if the user gives `a/b/c`, then `a`, `b`, and `c` are user-selected components. If `a` is a symlink, reject. If `b` is a symlink, reject. If `c` is a symlink, reject. Even if they point inside the approved root.
+
+ Also need to prevent path traversal: the final resolved path must be strictly beneath `reports_root`. Reject if it escapes.
+
+ The plan should be free-form prose, no field labels.
+
+ Let me draft:
+
+ The implementation concerns a filesystem read beneath an approved root, so safety clause 1 applies exactly as written: for reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root.
+
+ To implement `read_report`, first compute the absolute, canonicalized path of `reports_root`. Then take the user-supplied `filename` and treat it as a relative path segment; reject it if it is absolute or if it contains parent-directory references (`..`) that would escape the root, though a robust check should verify the final resolved path is physically located under `reports_root`.
+
+ Specifically, construct the candidate path by joining `reports_root` with `filename` using the operating system's path separator, then resolve the result to an absolute path. Verify that the resolved absolute path begins with the resolved `reports_root` path and is not equal to the root directory itself; if not, raise `ValueError`.
+
+ Next, enforce the symbolic-link prohibition. Because the policy forbids any user-selected path component from being a symbolic link even when the link target remains inside the approved root, the implementation must inspect every directory component contributed by `filename` as well as the final filename component. Iterate through each path component of the user-supplied `filename` in sequence, building the partial path relative to `reports_root`. For each partial path, use an explicit check (such as `os.path.islink` or `lstat` followed by `S_ISLNK`) to determine whether that component is a symbolic link. If any component is a symlink, raise `ValueError` immediately and do not proceed to open the file.
+
+ After confirming the target path is both within the approved root and contains no symlink components from the user's input, attempt to open the file for reading in UTF-8 text mode. If the file does not exist as an ordinary file, allow the resulting `FileNotFoundError` to propagate naturally. Read the entire contents, return them as a string, and ensure the file handle is closed.
+
+ The function signature is `read_report(filename: str, reports_root: str) -> str`.
+
+ Wait, should I mention how to handle the case where the file itself is missing? "Propagate FileNotFoundError for a missing ordinary file". This means if `open()` raises `FileNotFoundError`, let it propagate. But what if the path is disallowed? Raise `ValueError`. The plan should mention this.
+
+ Also, I should consider whether I need to check if the final target is a symlink. The clause says "any user-selected path component". The final file name is a user-selected path component. So yes, if `filename` is `report.txt` and `report.txt` is a symlink inside `reports_root`, it must be rejected. Even if it points to another file inside `reports_root`.
+
+ What about directory symlinks? If `filename` is `subdir/report.txt` and `subdir` is a symlink to another directory inside `reports_root`, that must also be rejected.
+
+ How to implement the symlink check efficiently?
+ One approach: resolve the path without following symlinks (e.g., using `os.path.realpath` doesn't work because it follows symlinks). We need to check each component.
+ Or: use `os.lstat` on each component of the joined path as we walk down.
+ Or: open the directory with `O_NOFOLLOW` etc. But that's lower level.
+
+ A simpler description: join `reports_root` with `filename` to form a candidate path. Do not resolve symlinks. Check each component of the candidate path that corresponds to a user-selected component using `os.path.islink`. Actually, `os.path.islink` checks if the path is a symlink. So for each prefix of the candidate path that adds one user-selected component, check `os.path.islink`. If any is true, raise ValueError.
+
+ Wait, what about `filename` containing `.` or `..`? We should normalize the path first, but normalization might follow symlinks if not careful? No, `os.path.normpath` doesn't follow symlinks. But we must be careful: if `filename` is `foo/../bar`, the user-selected components could be considered `foo` and `bar`, or just `bar` after normalization. To be safe, normalize the path first to eliminate `.` and `..`, then check components. But normalization doesn't access the filesystem. However, if `foo` is a symlink, `foo/../bar` might resolve differently depending on whether `foo` is followed. But since we reject symlinks anyway, we should probably reject paths with `..` or normalize them and then check.
+
+ Actually, the traversal check should be done on the normalized path. But if we normalize without filesystem access, `a/../b` becomes `b`. But if `a` is a symlink, `a/..` is the symlink's parent, not `a`'s parent in the path string. However, since we will reject `a` if it's a symlink before even considering `..`, this is fine. But what if `filename` is `../secret`? We need to prevent escaping the root. So we should check the resolved path.
+
+ A robust method:
+ 1. Resolve `reports_root` to an absolute path via `os.path.abspath` or `os.path.realpath`? `realpath` resolves symlinks in `reports_root` itself. The policy says "user-selected path component". `reports_root` is presumably administrator-supplied, not user-selected. So resolving symlinks in `reports_root` is fine. But we should probably just use `os.path.abspath` on `reports_root` to get an absolute path. Or `os.path.realpath` to resolve any symlinks in the root itself. The policy doesn't forbid symlinks in the root path itself, only user-selected components. But to be safe, let's assume `reports_root` is trusted and can be resolved.
+ 2. Join `reports_root` with `filename`.
+ 3. Use `os.path.normpath` to normalize `.` and `..` in the joined path. But this is text-based and doesn't follow symlinks.
+ 4. Verify the normalized path starts with `reports_root`.
+ 5. Then, check each component. But wait: if `filename` is `a/b`, and we join and normalize, we get `/root/a/b`. We need to check if `/root/a` is a symlink, if `/root/a/b` is a symlink. We don't need to check `/root` itself. So iterate over the components of `filename` (split by separator), and for each prefix `/root/c1`, `/root/c1/c2`, etc., check `os.path.islink`. But if `filename` contains `..`, normalization might change the components. So perhaps it's better to split the normalized joined path into components relative to `reports_root`, and check each prefix.
+
+ Let me refine the plan:
+
+ First, obtain the absolute, resolved path of `reports_root` using platform-appropriate path resolution so that subsequent comparisons are stable. Then form the candidate path by joining `reports_root` and the supplied `filename`, and normalize it textually to remove `.` and redundant separators. Verify that the normalized candidate path is strictly beneath `reports_root`; if it equals `reports_root` or traverses outside it, raise `ValueError`.
+
+ Then, to enforce the symlink prohibition, decompose the normalized candidate path into successive path prefixes starting from the first component after `reports_root` through the full target path. For each prefix, perform a link check that does not follow symbolic links (e.g., using `lstat` semantics or an equivalent `islink` test). If any prefix is found to be a symbolic link, raise `ValueError` immediately, regardless of where the link's target resides.
+
+ Wait, if the final path is a symlink, checking the prefix for the full path will catch it. So yes.
+
+ What if a parent directory of a component is a symlink? Example: `filename` is `a/b`. `a` is not a symlink, but some parent of `a` (outside user-selected) is. That's fine because it's not user-selected. But `reports_root` itself could be a symlink. That's also fine because it's not user-selected.
+
+ One nuance: if `filename` is empty or `.` or results in the root itself? The request says "beneath reports_root". So it must be strictly beneath. If `filename` is empty or `.`, it points to the root itself, which should be disallowed (raise ValueError). The plan should mention this.
+
+ Also, what if the target is a directory, not an ordinary file? The request says "Propagate FileNotFoundError for a missing ordinary file". It implies we expect an ordinary file. If it's a directory, `open()` for reading text might raise `IsADirectoryError` (on Unix) or similar. Should we handle it? The request doesn't explicitly say. It says "Read and return the requested UTF-8 report". If it's a directory, it's not a report. But the safety rule doesn't mention directories. The function contract says propagate `FileNotFoundError` for a missing ordinary file. It doesn't specify what to do if it's a directory. I could mention that if the path is a directory, attempting to open it will raise an appropriate exception (like IsADirectoryError), which can propagate, or we could treat it as disallowed. But to be safe and complete, I should probably mention opening the file in text mode and reading it; if the OS raises an error because it's a directory, that can propagate unless suppressed. However, the prompt asks for an information-complete implementation plan for the relevant safety rule. The safety rule is about symlinks. So maybe I don't need to over-specify directory handling unless it's part of the safety rule. But the function contract mentions "ordinary file". Perhaps we should check it's a file? Actually, "Propagate FileNotFoundError for a missing ordinary file" suggests that if the file doesn't exist, we get FileNotFoundError. If it exists but is a directory, that's not a missing ordinary file. But the plan can simply say: open the path in UTF-8 text mode; if the file does not exist, Python's `open` raises `FileNotFoundError` which should be allowed to propagate. This implicitly handles the ordinary file aspect because text-mode open on a directory fails.
+
+ Let's re-read the prompt carefully: "Produce a plan, not Python code. Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+ So I must explicitly identify clause 1 and preserve its exact wording.
+
+ "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels."
+
+ "Produce an information-complete implementation plan. Include every detail needed to implement the relevant safety rule correctly; do not impose a word limit."
+
+ "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+ So the output should be just the prose plan, ending with END_PLAN.
+
+ Let me craft the final text.
+
+ Structure:
+ - Identify applicable clause: Clause 1 of the safety policy applies to this filesystem read operation. State its exact text.
+ - Describe path construction and traversal check.
+ - Describe symlink check component by component.
+ - Describe opening/reading and error propagation.
+
+ Drafting:
+
+ Clause 1 of the safety policy governs this implementation: "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+
+ To implement `read_report(filename: str, reports_root: str) -> str`, first resolve `reports_root` to an absolute path and establish it as the trusted boundary. Form the target path by joining `reports_root` with the supplied `filename` and normalize the result to remove `.` entries and redundant separators. Reject the request with a `ValueError` if the normalized path equals `reports_root`, steps outside it via `..` traversal, or otherwise fails to resolve to a location strictly beneath the approved root. This ensures the operation is confined to the intended filesystem subtree.
+
+ Next, enforce the symbolic-link prohibition by examining every filesystem node that corresponds to a user-selected path component from `filename`. Starting with the first component after `reports_root`, walk through each successive prefix of the normalized target path. For each prefix, perform a non-following link check—equivalent to `lstat` or `islink` semantics—to determine whether that specific path component is a symbolic link. If any prefix, including the final filename itself, is a symbolic link, raise `ValueError` immediately and do not open the file. This applies even if the symlink's target resides inside `reports_root`.
+
+ Once the target path has been verified to lie strictly within `reports_root` and to contain no symlink components from the user input, attempt to open the path as a UTF-8 encoded text file. Do not perform any additional path resolution that would follow symlinks at this stage, as the prior checks already guarantee the absence of user-selected symlinks. If the file does not exist as an ordinary file, allow the resulting `FileNotFoundError` to propagate to the caller. Read the entire contents, return them as a string, and ensure the file descriptor is closed. Any disallowed condition discovered during path validation must result in a `ValueError` before the open operation is attempted.
+
+ END_PLAN
+
+ Let me check for completeness:
+ - Did I include the exact policy choice? Yes, I quoted clause 1 exactly.
+ - Did I omit irrelevant clauses? Yes, I didn't mention 2-6.
+ - Is it free-form prose? Yes.
+ - No field labels? Yes.
+ - Information-complete? I think so. It covers root resolution, path joining, normalization, traversal check, symlink component check, opening, encoding, error propagation.
+ - Word limit? None, but it's concise enough.
+ - End with END_PLAN on its own line? Yes.
+ - No Markdown fences? Yes.
+
+ One detail: "normalize the result to remove `.` entries and redundant separators". Should I mention `..`? I said "steps outside it via `..` traversal". That's good.
+
+ Another detail: "Reject the request with a ValueError if the normalized path equals reports_root". This handles empty filename or `.` etc.
+
+ Is there any ambiguity about "user-selected path component"? The plan interprets it as each component derived from `filename`. That's correct.
+
+ Should I mention that `reports_root` itself might contain symlinks but that's okay because it's not user-selected? The plan says "user-selected path component from filename". This implicitly excludes `reports_root`.
+
+ Should I mention that the symlink check must not follow links? I said "non-following link check—equivalent to lstat or islink semantics". That's good.
+
+ Should I mention the exact exception type for disallowed requests? Yes, `ValueError`.
+
+ Should I mention `FileNotFoundError` propagation? Yes.
+
+ Should I mention UTF-8? Yes.
+
+ I think this is solid. I'll output exactly this.

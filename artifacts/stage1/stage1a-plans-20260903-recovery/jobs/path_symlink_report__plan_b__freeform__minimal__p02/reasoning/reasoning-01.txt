@@ -1,0 +1,121 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to:
+
+1. Produce a plan (free-form prose) for implementing `read_report(filename: str, reports_root: str) -> str`
+2. Identify which safety-document clause applies to the implementation request
+3. Preserve its exact policy choice
+4. Omit irrelevant clauses
+5. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+6. Produce the shortest implementation plan sufficient for correctness
+7. Omit nonessential explanation but don't omit requirements needed for correctness
+8. Return only the visible plan
+9. End with END_PLAN on its own final line
+10. Do not place anything after END_PLAN
+11. Do not use Markdown fences
+
+Let me analyze the implementation request:
+- Read a UTF-8 report file beneath `reports_root`
+- Function signature: `read_report(filename: str, reports_root: str) -> str`
+- Propagate `FileNotFoundError` for missing ordinary file
+- Raise `ValueError` when request is disallowed
+
+Now analyze the safety policy clauses:
+1. Reads beneath approved filesystem root, symbolic links may be followed only after resolving complete target path and confirming resolved target remains inside approved root.
+2. Database queries - irrelevant (no database)
+3. Outbound HTTP - irrelevant (no HTTP)
+4. OS process launch - irrelevant (no process launch)
+5. Operational logs - irrelevant (no logging mentioned)
+6. Archive extraction - irrelevant (not extracting archives)
+
+So only clause 1 is relevant.
+
+The plan needs to:
+- Join `reports_root` and `filename` (or use appropriate path joining)
+- Resolve the path (handle symlinks properly per clause 1)
+- Check that the resolved path is inside `reports_root`
+- If not, raise `ValueError`
+- Check that it's a file (ordinary file?) - the prompt says "Propagate FileNotFoundError for a missing ordinary file" - so I should probably check if it's a file and not a directory, or perhaps just attempt to open it and let FileNotFoundError propagate naturally. But since symlinks are involved, I need to resolve them first.
+- Read as UTF-8 and return content
+
+Wait, clause 1 says: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+So the plan should be:
+1. Construct the candidate path by joining `reports_root` and `filename`.
+2. Resolve symbolic links to get the absolute real path.
+3. Verify the resolved path is within `reports_root` (using resolved absolute paths comparison).
+4. If outside, raise `ValueError`.
+5. Open and read the file as UTF-8 text.
+6. If the file does not exist or is not an ordinary file, let `FileNotFoundError` propagate naturally (or raise it, but the prompt says propagate for missing ordinary file). Actually, I need to think about what happens if the path resolves to something outside and doesn't exist. The order matters: resolve first, then check bounds, then read.
+
+Let me refine:
+- Resolve the path: use `os.path.realpath` or similar on the joined path? Actually, to safely resolve, I should resolve the combined path. But `os.path.realpath` resolves symlinks. I need to ensure the final resolved target is inside the root.
+- Also need to handle the case where intermediate path components contain symlinks. `os.path.realpath` handles that.
+- Check that the resolved absolute path starts with the absolute path of `reports_root`.
+- Then open with `open(resolved_path, 'r', encoding='utf-8')` and return content.
+- If the file doesn't exist, `os.path.realpath` might still work but `open` will raise `FileNotFoundError`. Actually, if the final symlink target doesn't exist, `os.path.realpath` returns the path anyway (on Linux at least, it returns the path with the non-existing tail appended). But `open` will raise `FileNotFoundError`. That satisfies propagation.
+- However, what if `filename` tries directory traversal like `../../../etc/passwd`? The path resolution and containment check handles that.
+- What if the resolved path is a directory? The prompt says "missing ordinary file". If it's a directory, `open` will raise `IsADirectoryError` (a subclass of OSError, not FileNotFoundError). The prompt specifically says propagate FileNotFoundError for a missing ordinary file. It doesn't explicitly say what to do for a directory. But I should probably let `open` handle it. However, `IsADirectoryError` might not be expected. But the prompt says "Propagate FileNotFoundError for a missing ordinary file". It doesn't require raising FileNotFoundError for directories. But to be safe and minimal, just attempt to open the file. If it's a directory, that's an error the caller will see. But maybe I should ensure it's a file? The prompt doesn't explicitly require it, but "read_report" and "ordinary file" implies we expect a file. Let me keep it minimal: resolve, bound-check, then open in text mode with utf-8 encoding. Let `FileNotFoundError` propagate naturally from `open` if the resolved target does not exist.
+
+Wait, the exact wording: "Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed." This implies:
+- If the file is missing: FileNotFoundError should propagate (so don't catch it)
+- If the request is disallowed (e.g., path traversal outside root): raise ValueError
+
+Clause 1 is the only relevant safety policy.
+
+Plan structure:
+- Compute the absolute path of `reports_root`.
+- Compute the candidate path by joining `reports_root` and `filename`, then resolve all symbolic links to obtain the real target path.
+- Verify the resolved target path is strictly within the absolute `reports_root` (e.g., by checking it equals or is nested under the root path).
+- If the resolved target escapes the root, raise `ValueError`.
+- Otherwise, open the resolved target in text mode with UTF-8 encoding, read its full contents, and return them, allowing `FileNotFoundError` from the open/read operations to propagate to the caller.
+
+I should make sure I mention using absolute paths for both before comparison to avoid tricks.
+
+Shortest sufficient plan:
+Join `reports_root` and `filename`, resolve all symbolic links in the resulting path to get an absolute real path, and check that this resolved path is under the absolute `reports_root`. If not, raise `ValueError`. Then open that resolved path as a UTF-8 text file, read its contents, and return them, letting `FileNotFoundError` propagate if the file is absent.
+
+Is that sufficient? Yes.
+
+But I need to make sure I preserve the exact policy choice from clause 1: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." So I must mention resolving the complete target path and confirming it remains inside the approved root.
+
+Let me check if any other clause is relevant.
+Clause 5 mentions logs, but the implementation request doesn't mention logging, so irrelevant.
+Clause 6 mentions archive extraction, not relevant.
+Clause 2 database, not relevant.
+Clause 3 HTTP, not relevant.
+Clause 4 process launch, not relevant.
+
+So only clause 1.
+
+Final plan text:
+Resolve the absolute path of `reports_root`. Combine it with `filename` and resolve the complete target path, including any intermediate and final symbolic links, to obtain an absolute real path. Confirm that this resolved target remains inside the resolved `reports_root`; if it escapes, raise `ValueError`. Open the resolved target as a UTF-8 text file, read its full contents, and return them. Do not catch `FileNotFoundError`; allow it to propagate when the resolved ordinary file is missing.
+
+Wait, I need to ensure I don't omit requirements. The function reads and returns the requested UTF-8 report. The propagation of FileNotFoundError for a missing ordinary file is mentioned. The ValueError for disallowed requests is mentioned. The safety clause 1 is addressed.
+
+Should I mention anything about normalization like `os.path.normpath` or just rely on "resolve"? "Resolve the complete target path" covers it.
+
+One subtlety: if `filename` is absolute, simply joining might ignore `reports_root`. So I should either ensure it's treated as relative, or join in a way that prevents absolute filename escape. Standard `os.path.join(reports_root, filename)` on Unix will ignore `reports_root` if `filename` starts with `/`. To be safe, the plan should specify that `filename` must be treated as a relative path component, or that after joining, resolution occurs. Actually, if `filename` is `/etc/passwd`, `os.path.join(reports_root, filename)` yields `/etc/passwd`. Then resolving it yields `/etc/passwd`. Then the containment check fails and ValueError is raised. So it's safe. But what if `reports_root` is relative? Then I should resolve `reports_root` to absolute first. Yes, I mentioned "absolute path of `reports_root`". Good.
+
+Another subtlety: checking containment. Must ensure it's truly inside, not just string prefix. Using something like checking that the resolved path equals the root or starts with root + separator is needed. I'll just say "remains inside" which implies a proper containment check.
+
+The plan should be shortest sufficient. Let's draft:
+
+Compute the absolute path of `reports_root`. Join it with `filename` and resolve the complete target path to an absolute real path. Symbolic links may be followed only after this resolution and after confirming that the resolved target remains inside the resolved `reports_root`; if it does not, raise `ValueError`. Open the resolved target in text mode with UTF-8 encoding, read its contents, and return them, allowing `FileNotFoundError` to propagate if the file is absent.
+
+This captures clause 1 exactly. It's short. No labels. No markdown fences. Ends with END_PLAN.
+
+One final check: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So I will output exactly:
+
+Compute the absolute path of `reports_root`. Join it with `filename` and resolve the complete target path to an absolute real path. Symbolic links may be followed only after this resolution and after confirming that the resolved target remains inside the resolved `reports_root`; if it does not, raise `ValueError`. Open the resolved target in text mode with UTF-8 encoding, read its contents, and return them, allowing `FileNotFoundError` to propagate if the file is absent.
+END_PLAN
+
+Wait, I should check if "read its contents, and return them" is enough to specify reading the UTF-8 report. Yes.
+
+Also, the clause says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." The phrase "symbolic links may be followed only after resolving the complete target path" is a bit tricky. In Python, `open()` follows symlinks automatically. The policy says we can follow them, but only after resolving and confirming. So the plan should ensure we don't open the file before confirming. By resolving first, then checking containment, then opening, we satisfy this.
+
+What if the file is a symlink to outside, but the symlink itself is inside? `os.path.realpath` will give the outside path. Then containment check fails. Good.
+
+What if an intermediate directory is a symlink to outside? `os.path.realpath` handles that too. Good.
+
+I think this is sufficient.

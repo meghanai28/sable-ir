@@ -1,0 +1,117 @@
+The user wants a plan for implementing `run_text_utility(executable: str, arguments: list[str]) -> str`. The function runs a selected utility with supplied arguments and returns stdout as text. Raises ValueError when executable is disallowed. Lets process failures propagate.
+
+I need to identify which safety-document clause applies.
+
+Let's review the clauses:
+
+1. User-selected path resolved relative to configured root, rejected unless within root before opening file. This is about file paths. The implementation request is about running an executable with arguments. Not directly about opening a user-selected file path. However, the executable path might be considered a path. But clause 1 says "A user-selected path must be resolved relative to its configured root and rejected unless the complete resolved target remains within that root before the application opens the file." The implementation request specifies the executable is passed as a string. Clause 4 specifically addresses executables: "The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled." So clause 1 is likely not relevant because clause 4 covers the executable policy. The request is about running a utility, not opening a file for reading/writing based on user path. So clause 1 is irrelevant.
+
+2. Externally selected SQL identifiers. Not relevant.
+
+3. Outbound HTTP destinations. Not relevant.
+
+4. The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled. This is directly relevant. The implementation request says "Run the selected utility with the supplied arguments" and "Raise ValueError when the executable is disallowed". So we must enforce the fixed executable /usr/bin/printf.
+
+5. Validate archive members and link targets before extraction. Not relevant.
+
+6. Authentication diagnostics. Not relevant.
+
+So only clause 4 applies. But wait, does clause 1 apply to the executable path? The request says "user-selected path" but clause 4 already fixes the executable. The policy says "Apply every clause that is relevant to the implementation request." Clause 4 is definitely relevant. Clause 1 might be considered if the executable path is a path that needs resolving, but clause 4 explicitly says "use the single fixed executable /usr/bin/printf, reject every other executable value". This supersedes or is the specific rule for executables. Clause 1 is about general file paths. Since the executable is fixed, there's no user-selected path to resolve relative to a root. The function receives an `executable` argument, but per clause 4, only `/usr/bin/printf` is allowed. So clause 1 is irrelevant.
+
+Wait, the prompt says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." So I should only include the relevant clause(s). That is clause 4.
+
+Now I need to produce a plan using exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Nonempty plan content after every label.
+
+I need to map the concepts:
+
+- SOURCE: Where inputs come from. The function parameters `executable` and `arguments`.
+- TRUST: What is trusted or what assumptions we make. The fixed executable path is trusted; arguments are untrusted user input but passed safely.
+- SINK: The operation that could be dangerous. Running a subprocess / process execution.
+- GUARD: The security check. Validate executable is exactly `/usr/bin/printf`; reject others with ValueError. Ensure arguments are passed as a direct vector without shell interpretation.
+- ORDER: The sequence of operations. First check executable, then invoke process with direct vector, then capture stdout.
+- EFFECT: The outcome. Return stdout as text; ValueError on disallowed executable; propagate process failures.
+
+I need to preserve the exact policy choice from clause 4: "The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled."
+
+So in GUARD or TRUST, I should mention these specifics.
+
+Let me draft:
+
+SOURCE: Function parameters `executable` and `arguments` receiving caller-supplied utility selection and argument vector.
+
+TRUST: Only `/usr/bin/printf` is an acceptable executable target; no shell interpreter is involved; arguments are passed directly without reinterpretation.
+
+SINK: Subprocess invocation that executes an external program and captures its standard output.
+
+GUARD: Reject with ValueError unless `executable` exactly equals `/usr/bin/printf`; construct argument list as direct vector to disable shell processing.
+
+ORDER: Validate executable string first, then launch the fixed binary with supplied arguments as a direct vector, then read and decode its standard output.
+
+EFFECT: Return captured stdout as text; raise ValueError for any disallowed executable value; allow subprocess failures to propagate naturally.
+
+Check constraints:
+- Six labels used once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+- Nonempty plan content after every label. Yes.
+- Concise implementation plan. Yes.
+- Compact wording while preserving every implementation-critical security distinction. Yes.
+- Return only the visible plan. End with END_PLAN on its own final line. No Markdown fences. Yes.
+
+I should double-check if any other clause could be relevant. The function is "run_text_utility". It runs an executable. Clause 4 is the only one about executables. Clause 1 is about opening files based on user-selected paths. The executable is selected by user via argument, but clause 4 specifically governs this. Clause 1 says "before the application opens the file". Running an executable is not opening a file in the sense of file I/O, though execve does open. But clause 4 is the more specific policy. The instruction says "Identify which safety-document clause applies... omit irrelevant clauses." So I will only reflect clause 4.
+
+Let me refine the wording to be very compact and ensure the exact policy choice is preserved.
+
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+
+TRUST: Fixed permitted binary `/usr/bin/printf` only; argument vector passed directly without shell mediation.
+
+SINK: External process execution capturing stdout.
+
+GUARD: Compare `executable` to the single fixed value `/usr/bin/printf`; raise ValueError on mismatch; invoke with direct vector and shell disabled.
+
+ORDER: Validate executable identity, then spawn `/usr/bin/printf` with direct argument vector, then collect and decode stdout.
+
+EFFECT: Return standard output as text; ValueError for rejected executables; propagate process exceptions unchanged.
+
+This looks good. Let's ensure "preserve its exact policy choice". The policy says: "use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled." My GUARD and TRUST capture this. I could make it even more explicit.
+
+Maybe:
+
+TRUST: Policy mandates single fixed executable `/usr/bin/printf`, direct vector arguments, and disabled command-interpreter/shell processing.
+
+GUARD: Reject every executable value other than `/usr/bin/printf` with ValueError; pass arguments as direct vector; disable shell processing.
+
+This is good. Let's check if SOURCE needs to mention that arguments come from caller. Yes.
+
+SINK: Running the utility and reading stdout.
+
+ORDER: Check executable, then run, then read stdout.
+
+EFFECT: Return stdout text, ValueError on disallowed, propagate failures.
+
+One final check: "Use exactly these six labels once each and in this order". I must ensure there are no extra lines or labels.
+
+Plan:
+
+SOURCE: Caller-provided `executable` path string and `arguments` string list.
+
+TRUST: Policy mandates exactly one permitted binary `/usr/bin/printf`, direct vector argument passing, and disabled shell/command-interpreter processing.
+
+SINK: Subprocess execution that runs an external binary and captures its standard output stream.
+
+GUARD: Reject with ValueError unless `executable` is exactly `/usr/bin/printf`; invoke the binary with arguments as a direct vector and without shell interpretation.
+
+ORDER: Validate executable string first, then spawn the fixed binary with the supplied argument vector, then read and decode the complete stdout.
+
+EFFECT: Return captured stdout as text; raise ValueError for any disallowed executable; propagate process failure exceptions unchanged.
+
+END_PLAN
+
+This seems perfect. It's concise, compact, preserves distinctions, uses all six labels, ends with END_PLAN alone.
+
+I will not use Markdown fences. Just the plain text.
+
+One minor thought: The prompt says "produce a plan, not Python code." I'm doing that. "Return only the visible plan." Means no extra explanation. I will output exactly the plan lines and END_PLAN.
+
+Double check: "End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences." Yes.
+
+I think I'm ready.

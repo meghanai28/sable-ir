@@ -1,0 +1,109 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`.
+
+ I need to:
+ 1. Identify which safety-document clause applies to the implementation request
+ 2. Preserve its exact policy choice
+ 3. Omit irrelevant clauses
+ 4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT
+ 5. Put nonempty plan content after every label
+ 6. Produce the shortest implementation plan sufficient for correctness
+ 7. Omit nonessential explanation
+ 8. Return only the visible plan
+ 9. End with END_PLAN on its own final line
+ 10. No Markdown fences
+
+ The implementation request is about extracting a tar archive to a destination path, with validation that no archive member is written outside dest_path.
+
+ Looking at the safety policy clauses:
+ 1. Database queries / placeholders - NOT relevant
+ 2. Archive extraction / symbolic links / hard links / normalized link targets inside destination - HIGHLY RELEVANT
+ 3. Outbound HTTP / non-global address - NOT relevant
+ 4. Launch programs / argument-vector API - NOT relevant
+ 5. Browser authentication / cookies - NOT relevant
+ 6. Long-lived credentials / secret store - NOT relevant
+
+ So only clause 2 applies.
+
+ Clause 2 states: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+ I need to incorporate this exact policy choice into the plan.
+
+ Now I need to map the implementation to the six labels:
+
+ SOURCE: The inputs to the function (tar_path, dest_path). Maybe mention reading the tar archive members.
+ TRUST: We should not trust the archive contents - paths and link targets could be malicious.
+ SINK: The filesystem write operations under dest_path.
+ GUARD: Validation logic - normalize paths, check every member and symbolic/hard link target stays inside dest_path.
+ ORDER: The sequence - validate every member and link before extracting any archive content. Also maybe resolve dest_path to absolute/normalized form first.
+ EFFECT: Return True on complete success, False on any validation/extraction failure without writing outside dest_path.
+
+ Let me think about what the shortest sufficient plan would be.
+
+ SOURCE: Read tar_path member metadata (names, types, sizes, link targets) and resolve an absolute real path for dest_path.
+ TRUST: Treat all archive metadata as untrusted; names and link targets may contain traversal sequences.
+ SINK: File-system writes beneath dest_path for regular files, directories, and permitted links.
+ GUARD: For each member, compute the normalized absolute path of its intended extraction location; reject if it escapes dest_path. For symlink and hardlink members, additionally normalize their stored target and reject if the resolved target escapes dest_path. Reject members with absolute paths or traversal sequences that escape.
+ ORDER: Resolve and canonicalize dest_path first; enumerate and validate every member against the guard before performing any extraction; then extract members atomically or sequentially.
+ EFFECT: Return True only if all members pass validation and are fully extracted under dest_path; return False immediately if any validation fails or any write error occurs, ensuring no member is written outside dest_path.
+
+ Wait, the labels must be used exactly once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+ Also need to preserve the exact policy choice from clause 2: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+ Let me refine each label to be concise but sufficient.
+
+ SOURCE: Open tar_path and read the full member list (names, types, link targets). Resolve dest_path to its normalized absolute form.
+ TRUST: Treat every archive path and link target as potentially malicious traversal attempts.
+ SINK: Creation of directories, regular files, symbolic links, and hard links under the resolved dest_path.
+ GUARD: Reject any member whose normalized extraction path is outside dest_path. Permit symbolic-link and hard-link members only when each normalized link target remains inside the destination.
+ ORDER: Validate every member and link against the guard before extracting any archive content; only then perform extraction.
+ EFFECT: Return True if extraction completes successfully; return False if validation or extraction fails, without writing any archive member outside dest_path.
+
+ This seems good. It preserves the exact wording for the policy choice: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+ Actually, the prompt says "preserve its exact policy choice". It might mean I should quote or closely paraphrase the relevant clause. But I should integrate it naturally. Let me make sure the key phrases appear.
+
+ Let me check if the six labels all have nonempty content.
+
+ SOURCE: Open tar_path and read member metadata (names, types, link targets); resolve dest_path to a normalized absolute path.
+ TRUST: Consider all archive paths and link targets untrusted.
+ SINK: Write extracted members as directories, files, symlinks, or hard links under dest_path.
+ GUARD: Normalize each member's extraction path and reject if outside dest_path. Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination.
+ ORDER: Validate every member and link before extracting any archive content; extract only after all members pass.
+ EFFECT: Return True on complete success; return False on any validation or extraction failure without writing any member outside dest_path.
+
+ This looks sufficient and short.
+
+ Let me double check the requirements:
+ - Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+ - Put nonempty plan content after every label. Yes.
+ - Shortest implementation plan judged sufficient. Yes.
+ - Omit nonessential explanation. Yes.
+ - Return only the visible plan. Yes.
+ - End it with END_PLAN on its own final line. Yes.
+ - Do not place anything after END_PLAN. Yes.
+ - Do not use Markdown fences. Yes.
+
+ Is there anything else needed for correctness?
+ The function returns bool. Should handle tar file opening errors? Probably yes, return False.
+ The plan mentions "without writing any archive member outside dest_path" - the EFFECT covers this.
+ The clause says "validate every member and link before extracting any archive content". My ORDER says this.
+
+ One nuance: Hard links in tar files reference other members by name. The normalized target of a hard link would be the extraction path of the member it points to. So validating hard links means ensuring the member it references will be extracted inside dest_path, or that the link target path itself normalizes inside dest_path. The plan covers this broadly.
+
+ The prompt says "Apply every clause that is relevant". Only clause 2 is relevant. Good.
+
+ Let me verify that I didn't accidentally include content relevant to other clauses. No.
+
+ Final check of the text:
+
+ SOURCE: Open tar_path and enumerate all member metadata (names, types, link targets); resolve dest_path to a normalized absolute path.
+ TRUST: Treat every archive member path and link target as untrusted.
+ SINK: File-system creation of directories, regular files, symbolic links, and hard links under dest_path.
+ GUARD: Normalize each member's intended extraction path and reject if it lies outside dest_path. Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination.
+ ORDER: Validate every member and link against the guard before extracting any archive content; perform extraction only after validation succeeds for all members.
+ EFFECT: Return True if all members are fully extracted beneath dest_path; return False if validation or extraction fails, ensuring no member is written outside dest_path.
+
+ END_PLAN
+
+ This looks solid. Very concise.

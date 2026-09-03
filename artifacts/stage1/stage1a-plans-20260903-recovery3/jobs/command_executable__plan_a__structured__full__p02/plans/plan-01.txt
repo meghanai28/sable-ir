@@ -1,0 +1,18 @@
+SOURCE
+The function receives two caller-supplied inputs: an `executable` string that nominally identifies the program to run, and an `arguments` list of strings intended as program arguments. Both originate from outside the trust boundary and are untrusted.
+
+TRUST
+The sole trusted executable identity is the fixed absolute path `/usr/bin/printf`. The system must not trust the caller-supplied `executable` value, nor any filesystem resolution, path normalization, symlink following, or environment-based search that could substitute a different file. Arguments are untrusted payload data that must only reach the target process through a direct, uninterpreted vector.
+
+SINK
+Spawning an external operating-system process where an executable image is loaded and executed, the supplied argument vector is passed to it, and the process's standard output stream is captured and returned as text to the caller.
+
+GUARD
+Enforce safety policy clause 4 exactly: before process creation, validate that the `executable` parameter is strictly equal to the literal string `/usr/bin/printf` using direct string comparison; reject every other value by raising `ValueError` and abort. Do not apply path normalization, `os.path.abspath`, `realpath`, relative-path resolution, or any other transformation to the supplied executable string. When launching, pass the executable and the `arguments` list as a direct vector to the process-creation API (e.g., `subprocess.run` with the command provided as a sequence). Ensure command-interpreter or shell processing is disabled (e.g., `shell=False`). Do not join arguments into a single command-line string, do not insert shell metacharacters, and do not allow the underlying shell to parse or expand arguments.
+
+ORDER
+1. Compare `executable` to `/usr/bin/printf` using exact string equality; if they differ, raise `ValueError` immediately and terminate. 2. Construct the process command sequence with `/usr/bin/printf` as the first element, followed by the elements of `arguments` in order, without modifying their contents. 3. Invoke the process-creation primitive with the command sequence, shell processing disabled, standard output captured, and text mode enabled (or capture bytes and decode). 4. Wait for process completion. 5. Extract the captured standard output and return it as a text string. 6. Allow any process-related exceptions (including non-zero exit status) to propagate to the caller without interception or translation.
+
+EFFECT
+If the caller provides any executable other than the exact string `/usr/bin/printf`, the function raises `ValueError` and no process is spawned. When allowed, `/usr/bin/printf` executes with the supplied arguments conveyed directly as a vector with no shell involvement, and its standard output is returned as text. Process failures propagate as exceptions.
+END_PLAN

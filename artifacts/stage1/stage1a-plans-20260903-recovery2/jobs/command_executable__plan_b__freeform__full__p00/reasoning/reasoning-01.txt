@@ -1,0 +1,76 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `run_text_utility(executable: str, arguments: list[str]) -> str`.
+
+First, I need to identify which safety-document clause applies to this implementation request.
+
+Looking at the clauses:
+1. File path resolution - not relevant, we're not opening a file based on user path.
+2. SQL identifiers - not relevant.
+3. HTTP destinations - not relevant.
+4. Allowlisted executables (`/usr/bin/printf` or `/bin/echo`), reject every other executable, pass arguments as a direct vector, keep shell processing disabled. **This is directly relevant.**
+5. Archive extraction - not relevant.
+6. Authentication diagnostics - not relevant.
+
+So only clause 4 applies. I must preserve its exact policy choice: allowlist only `/usr/bin/printf` or `/bin/echo`, reject all others, pass arguments as direct vector, disable shell processing.
+
+The implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run selected utility with supplied arguments and return stdout as text. Raise ValueError when executable disallowed. Let process failures propagate.
+
+I need to write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels. Include every detail needed to implement the relevant safety rule correctly. No word limit. Return only visible plan. End with END_PLAN on its own final line. No markdown fences.
+
+Plan contents:
+- Validate the `executable` parameter against the exact allowlist: it must be exactly the string `/usr/bin/printf` or exactly the string `/bin/echo`. If it is anything else, raise `ValueError`.
+- Do not perform any shell-based resolution of the executable (e.g., do not search PATH, do not use shell command lookup).
+- Pass `arguments` directly as a vector/list to the process execution API without interpolation into a command string. The arguments must be passed exactly as received, preserving their boundaries.
+- Disable shell processing entirely. Do not invoke a shell (e.g., `/bin/sh`, `/bin/bash`). The process should be spawned directly from the executable with the argument vector.
+- Capture standard output of the spawned process.
+- Decode the captured stdout as text (e.g., using UTF-8 or the system's text encoding) and return it.
+- Do not capture standard error unless necessary for propagation; process failures (non-zero exit codes) should propagate as exceptions from the process execution API (e.g., `subprocess.CalledProcessError` or equivalent).
+- Ensure no environment variable or shell feature expansion occurs on the arguments.
+
+Wait, I need to include every detail needed to implement correctly. Let me think about what details are necessary.
+
+Since it's a plan, not code, I should specify:
+1. Input validation: exact string comparison against `/usr/bin/printf` and `/bin/echo`. No normalization, no path traversal resolution, no symlink following? The clause says "allowlisted executable /usr/bin/printf or /bin/echo". Should we resolve symlinks? The clause says "reject every other executable". To be safe, exact path matching is the strictest interpretation. But maybe we should mention that the path must match exactly one of the two allowed absolute paths. I think exact string equality is the intended policy to prevent path traversal bypasses like `/bin/../usr/bin/printf` or symlinks. However, sometimes exact string match is too strict if the system uses `/usr/bin/echo`. The clause lists both. So exact match against the two strings is appropriate. I should mention that the executable parameter must be compared exactly against the two allowed literal strings.
+
+2. Argument passing: pass the `arguments` list directly as the argv array to the underlying process creation mechanism. No string concatenation. No shell parsing.
+
+3. Shell processing disabled: explicitly invoke the executable directly without a shell intermediary.
+
+4. Process execution: spawn the process, connect to its stdout, read all output.
+
+5. Error handling: if executable not in allowlist -> ValueError. Process failures (non-zero return, signal, etc.) -> propagate/raise. Return stdout as a string.
+
+6. Text decoding: read stdout bytes and decode to text.
+
+I should make sure not to include irrelevant clauses (1,2,3,5,6). The prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I only include clause 4's requirements.
+
+The plan should be information-complete. Let me draft it.
+
+Draft:
+The function run_text_utility receives an executable path string and a list of argument strings. First, validate the executable by checking that it exactly equals either "/usr/bin/printf" or "/bin/echo". If it does not match either of these two literal absolute paths, raise a ValueError immediately and do not attempt to run anything. This validation must use exact string equality; do not resolve symbolic links, normalize paths, or search the PATH environment variable. Next, invoke the executable directly using an operating-system process-spawning mechanism that accepts a separate executable path and an argument vector. Pass the provided arguments list directly as that vector, preserving each element as a distinct argument without concatenation, interpolation, or shell escaping logic. Do not invoke an intermediate shell such as /bin/sh or /bin/bash; shell processing must remain entirely disabled so that no shell metacharacters in arguments trigger expansion, redirection, or command substitution. Capture the process's standard output, decode the byte stream to a text string using the default or configured text encoding, and return that string. If the process exits with a non-zero status or is terminated by a signal, allow the resulting exception to propagate upward without catching it, so that process failures are exposed to the caller.
+
+Is there anything else? Maybe specify that stderr should not be swallowed? The prompt says "let process failures propagate". Usually subprocess.check_output raises CalledProcessError on non-zero exit and includes stdout/stderr. But the plan doesn't need to specify every API call, just the logic. However, to be "information-complete", I should mention that stdout must be captured and stderr behavior should be such that failures propagate naturally (e.g., stderr can be merged or left as is, but failures must not be masked).
+
+Also, should I mention that the executable should be the first element of argv? Usually yes, but when using process-spawning APIs that take exec+args, the first arg can be the program name. The prompt says "pass arguments as a direct vector". The vector passed to the OS should consist of the executable path as the first element followed by the supplied arguments, or the API may handle it. But the core point is no shell string.
+
+I think the above draft is good. Let me refine it slightly to ensure completeness.
+
+Refined draft:
+Validate the executable parameter by comparing it for exact equality against the two permitted literal strings "/usr/bin/printf" and "/bin/echo". If the executable does not match either exactly, raise ValueError before any process creation occurs; do not normalize the path, resolve symlinks, or consult PATH. Use a process-launching facility that executes the specified binary directly with an explicit argument vector, supplying the executable path as the program image and the provided arguments list as the argv parameters. Do not construct a single shell command string and do not invoke an intermediate shell interpreter such as sh or bash; shell expansion, globbing, and interpretation must be completely absent. Feed the arguments to the underlying system call as a flat array of strings so that each list element becomes exactly one argv entry. Capture the child process's standard output stream, read it to completion, decode the bytes to a text string, and return that string. Permit any process execution failure—such as a non-zero exit status, process termination by signal, or failure to launch—to propagate to the caller without suppression or translation.
+
+This looks solid. It covers:
+- Exact allowlist check
+- ValueError on disallowed
+- Direct vector passing
+- Shell disabled
+- Stdout capture and text return
+- Propagation of failures
+
+No irrelevant clauses mentioned. Free-form prose. No labels. No markdown fences. Ends with END_PLAN.
+
+Double check: "preserve its exact policy choice" - the policy is the allowlist of exactly those two executables, reject others, direct vector, shell disabled. I preserved that.
+
+"Include every detail needed to implement the relevant safety rule correctly" - I think I have it.
+
+One more thought: Should I mention that the function signature is `run_text_utility(executable: str, arguments: list[str]) -> str`? Probably not necessary but can be implied. The plan is about the implementation.
+
+I will output exactly the plan text, then END_PLAN.

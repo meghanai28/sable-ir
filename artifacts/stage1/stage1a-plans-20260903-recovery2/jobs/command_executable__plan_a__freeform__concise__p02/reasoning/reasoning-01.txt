@@ -1,0 +1,100 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) based on a safety policy document and an implementation request.
+
+First, I need to identify which safety-document clauses apply to the implementation request.
+
+Implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+Let's look at each clause:
+
+1. "A user-selected path must be resolved relative to its configured root and rejected unless the complete resolved target remains within that root before the application opens the file."
+   - This is about file paths and opening files. The implementation request is about running an executable with arguments. It doesn't directly involve opening a user-selected file path in the described sense. So clause 1 is likely irrelevant.
+
+2. "Externally selected SQL identifiers cannot use value placeholders, so they must first satisfy the application's identifier policy and must then be quoted using the database engine's identifier rules."
+   - This is about SQL. The request is about running a text utility. Irrelevant.
+
+3. "Resolve outbound HTTP destinations before connecting and reject non-global addresses, alternate numeric address encodings, embedded credentials, and any redirect target that has not received the same validation."
+   - This is about HTTP. The request is about running a local executable. Irrelevant.
+
+4. "The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled."
+   - This is directly relevant! The implementation request mentions `executable: str`. This clause says we must use a single fixed executable `/usr/bin/printf`, reject every other executable value, pass arguments as a direct vector, and keep shell processing disabled.
+
+5. "Validate every archive member and link target before extraction begins; no normalized destination may escape the extraction root, and unsupported special file types must cause rejection."
+   - This is about archive extraction. Irrelevant.
+
+6. "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+   - This is about authentication diagnostics/logging. The implementation request is about running a utility and returning stdout. There's no mention of logging or authentication. Irrelevant.
+
+So only clause 4 applies.
+
+Now, I need to:
+- Produce a plan, not Python code.
+- Identify which safety-document clause applies to the implementation request.
+- Preserve its exact policy choice.
+- Omit irrelevant clauses.
+- Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+- Produce a concise implementation plan.
+- Use compact wording while preserving every implementation-critical security distinction.
+- Return only the visible plan.
+- End it with END_PLAN on its own final line.
+- Do not place anything after END_PLAN and do not use Markdown fences.
+
+Since clause 4 applies, I need to incorporate its exact policy choices:
+- Single fixed executable: `/usr/bin/printf`
+- Reject every other executable value
+- Pass arguments as a direct vector
+- Keep command-interpreter or shell processing disabled
+
+The implementation request says:
+- `run_text_utility(executable: str, arguments: list[str]) -> str`
+- Run the selected utility with the supplied arguments and return its standard output as text.
+- Raise ValueError when the executable is disallowed.
+- Let process failures propagate.
+
+I need to reconcile the implementation request with the safety policy. The request says "Run the selected utility" but clause 4 says "must use the single fixed executable /usr/bin/printf, reject every other executable value". So the plan should enforce that only `/usr/bin/printf` is allowed.
+
+Key points for the plan:
+1. Validate the `executable` parameter: compare exactly against `/usr/bin/printf`. If mismatch, raise ValueError.
+2. Execute `/usr/bin/printf` using an argument vector (direct list pass, e.g., `execve`-style) with the supplied `arguments`.
+3. Ensure shell is never invoked (disable shell processing).
+4. Capture stdout, decode as text, and return it.
+5. Let process failures (non-zero exit, etc.) propagate naturally.
+
+I should write this as free-form prose, compact, without field labels.
+
+Let me draft:
+
+The function shall accept an executable path and an argument list. Per the safety policy, the only permitted executable is the literal string `/usr/bin/printf`; any other value must immediately raise `ValueError`. The utility must be invoked with the supplied arguments passed directly as a vector, with no shell interpretation or command-interpreter processing enabled. Execute the fixed binary, capture its standard output, decode the captured bytes as text, and return the resulting string. Do not suppress or transform process exceptions; allow them to propagate to the caller.
+
+That seems good. It preserves every critical security distinction: fixed executable `/usr/bin/printf`, rejection of others, direct vector, no shell.
+
+I should make sure not to mention irrelevant clauses. I should not mention SQL, HTTP, archives, file resolution, auth diagnostics.
+
+The user also said "Identify which safety-document clause applies to the implementation request". I can mention that clause 4 applies in the prose implicitly by saying "Per the safety policy" or similar. Or should I explicitly say "Clause 4"? The instruction says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." It doesn't specify I must number it, but I should make it clear which policy is being applied. I think referencing the exact policy content is sufficient. But maybe I should explicitly mention the clause number? Let me re-read: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." I'll include the clause number for clarity, but keep it compact.
+
+Actually, looking at the instructions again: "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." So free-form prose is fine. I can say: "Applying clause 4: ..." or just weave it in. I'll weave it in compactly.
+
+Let's refine:
+
+Applying clause 4, the implementation must hardcode the allowed executable to exactly `/usr/bin/printf`. If the `executable` parameter does not match this literal, raise `ValueError` immediately. Invoke `/usr/bin/printf` by passing the `arguments` list directly as an argument vector with shell processing disabled. Capture the process standard output, decode it to text, and return the text. Allow any process failure to propagate unchecked.
+
+This is concise and covers everything.
+
+Double check: "complete resolved target remains within that root" - not relevant. "SQL identifiers" - not relevant. "outbound HTTP" - not relevant. "archive member" - not relevant. "Authentication diagnostics" - not relevant.
+
+Plan looks solid. Final check on constraints:
+- Only visible plan.
+- End with END_PLAN on its own final line.
+- No Markdown fences.
+- No field labels.
+- Concise.
+- Preserve exact policy choice: /usr/bin/printf, reject every other, direct vector, shell disabled.
+
+One more thing: should I mention that the output is text (decoding)? Yes, the request says "return its standard output as text". I should mention decoding.
+
+Let's do a final pass for compactness:
+
+Apply clause 4. Accept `executable` and `arguments`, but permit only the literal path `/usr/bin/printf`; raise `ValueError` for any other value. Execute that fixed binary by passing `arguments` directly as a vector with shell processing disabled. Capture standard output, decode to text, and return it. Allow process-level failures to propagate naturally.
+
+END_PLAN
+
+This is perfect.

@@ -1,0 +1,157 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `fetch_text(url, transport, resolve_host) -> str`.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+5. Concise implementation plan
+6. Compact wording while preserving every implementation-critical security distinction
+7. Return only the visible plan
+8. End with END_PLAN on its own final line
+9. No Markdown fences
+10. Do not place anything after END_PLAN
+
+Let me analyze the implementation request:
+- `fetch_text(url, transport, resolve_host) -> str`
+- `transport(url)` returns `(status, headers, body)` tuple
+- `resolve_host(hostname)` returns textual IP addresses
+- Accept HTTP or HTTPS on its default port
+- Return body for status 200
+- Raise ValueError for disallowed request
+
+Now analyze which safety clauses apply:
+1. Resolve externally selected file paths beneath configured root - NOT RELEVANT (this is about HTTP fetching, not file paths)
+2. Caller-controlled SQL identifier - NOT RELEVANT (no SQL involved)
+3. Launching operating-system utility - NOT RELEVANT (no OS process launching)
+4. Validate archive member names - NOT RELEVANT (no archive extraction)
+5. After validating initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public - RELEVANT! This is about HTTP fetching. The transport probably handles the actual HTTP request, but the policy about redirects applies.
+6. Logs may contain coarse authentication result... - NOT RELEVANT (no logging mentioned in the implementation request)
+
+Wait, let me reconsider. Clause 5 says "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+The implementation request mentions `transport(url)` returns `(status, headers, body)`. So the transport handles the actual HTTP request. But the function needs to handle redirects? Or does it need to ensure redirects are rejected?
+
+Looking at clause 5: "reject every redirect response without following its Location value". So if transport returns a redirect status, we must not follow it. But wait, does `transport` follow redirects automatically? The plan should specify that if the transport returns a redirect status (3xx), we must reject it without following.
+
+Also, the implementation request says "Accept HTTP or HTTPS on its default port". So I need to validate the URL scheme is http or https, and the port is default (80 for HTTP, 443 for HTTPS).
+
+Also mentions `resolve_host(hostname)` - this implies we need to validate the destination is public? The clause mentions "After validating the initial public HTTP destination". So we should use `resolve_host` to check the IP? But the clause says validate the initial public HTTP destination, then reject redirects. 
+
+Wait, the exact policy choice from clause 5 is: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+But the implementation request doesn't explicitly mention validating that the destination is public. However, clause 5 applies if there's HTTP destination validation. The function accepts a URL and uses transport. Should the plan include validating the initial destination using resolve_host? Clause 5 mentions validating the initial public HTTP destination, so the plan should include that step to preserve the exact policy choice.
+
+Let me re-read clause 5 carefully: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+So the policy choice is:
+1. Validate initial public HTTP destination
+2. Reject every redirect response without following Location
+3. Regardless of whether new destination appears public
+
+For the implementation request, the plan should:
+- Parse the input URL
+- Validate scheme is HTTP or HTTPS and port is default (80/443)
+- Use `resolve_host` on the hostname to validate it is a public destination (not private/internal)? The clause says "initial public HTTP destination". So we need to ensure it's public. The resolve_host function returns textual IP addresses, so we can check if the resolved IPs are public.
+- Call `transport(url)` 
+- If status is 3xx (redirect), reject without following Location (raise ValueError)
+- If status is 200, return body
+- Otherwise raise ValueError (disallowed request)
+
+Wait, should I include other status codes? The request says "return the body for status 200, and raise ValueError for a disallowed request." So non-200 (except maybe redirect handling) should raise ValueError. But clause 5 specifically mentions redirect responses. So if transport returns a redirect, we must reject it.
+
+Is there any other relevant clause? Clause 6 is about logs, but there's no logging in the implementation request. Clause 1 is about file paths. The function fetches text over HTTP, not files.
+
+So only clause 5 applies.
+
+Wait, let me double check. Could clause 1 apply if we consider URL paths? No, it's about file system paths. Clause 5 is definitely about HTTP.
+
+So the plan should incorporate clause 5's exact policy: validate initial public HTTP destination, reject every redirect without following Location regardless of public appearance.
+
+Plan structure:
+1. Parse URL to extract scheme, host, port, path.
+2. Enforce scheme is http or https and port is the default (80 for http, 443 for https); raise ValueError otherwise.
+3. Resolve the hostname via resolve_host and confirm the returned IP addresses denote a public destination; raise ValueError if any resolved address is non-public (or if none are public).
+4. Invoke transport with the normalized URL.
+5. If the returned status indicates a redirect (3xx), reject the response and raise ValueError without inspecting or following the Location header, even if the Location value points to a public destination.
+6. If the status is 200, return the body.
+7. For any other status, raise ValueError.
+
+Wait, the exact wording of clause 5: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+I need to preserve this exact policy choice. The plan should mention that redirects are rejected without following Location, regardless of public appearance.
+
+Also, I should think about whether resolve_host is used for validating "public" or just for DNS resolution. The clause mentions "validating the initial public HTTP destination". Using resolve_host to get IPs and checking they are public seems like the right interpretation.
+
+But wait, the function signature is `fetch_text(url, transport, resolve_host)`. Why is resolve_host provided? Likely to validate the destination before making the request (SSRF prevention). So yes, resolve the hostname, check IPs are public.
+
+Also need to normalize/validate the URL. Default ports only.
+
+Let me craft the plan in free-form prose, compact, no field labels.
+
+"Parse the supplied URL and verify the scheme is http or https with the corresponding default port; raise ValueError for any other scheme or non-default port. Resolve the hostname through resolve_host and validate that the returned textual IP addresses represent a public destination; raise ValueError if resolution fails or yields non-public addresses. Pass the URL to transport. If transport returns a redirect status, raise ValueError without consuming or following the Location header value, regardless of whether that target would also appear public. Return the body when status is 200. Raise ValueError for all other statuses."
+
+Is this concise and preserving every implementation-critical security distinction? Yes.
+
+Does it include the exact policy choice from clause 5? Yes: validate initial public destination, reject redirects without following Location regardless of public appearance.
+
+Are irrelevant clauses omitted? Yes.
+
+Wait, should I explicitly mention "symbolic-link resolution" or "archive member names" to show I'm omitting them? No, the instruction says "omit irrelevant clauses" - meaning don't mention them.
+
+The instruction also says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". So I should make sure clause 5's policy is clearly reflected.
+
+Let me refine the prose to be more compact while preserving distinctions:
+
+"Validate the URL scheme is http or https with the default port only; reject non-default ports or other schemes with ValueError. Resolve the hostname via resolve_host and confirm the resulting IP addresses are public; reject private or unreachable destinations with ValueError. Submit the URL to transport. When the response status is a redirect, raise ValueError immediately without following the Location value, irrespective of whether the redirected destination also looks public. Return the body on status 200. Raise ValueError for any other response status."
+
+This looks good. It covers:
+- URL parsing and scheme/port validation
+- Host resolution and public IP validation
+- Transport call
+- Redirect rejection without following (exact policy)
+- 200 success
+- Other statuses rejected
+
+One more check: "Accept HTTP or HTTPS on its default port" - does this mean the function should accept both, or only default ports? The request says "Accept HTTP or HTTPS on its default port" which implies if a port is specified and it's not the default, or if it's not http/https, it's disallowed. So my plan captures that.
+
+Also, "resolve_host(hostname) returns textual IP addresses" - plural, so it could return multiple. I should make sure the plan handles that. "confirm the resulting IP addresses are public" implies all of them or at least that the destination is public. Usually SSRF checks require all resolved IPs to be public (or at least one?). To be safe, the plan should probably say ensure the destination is public, perhaps by checking all returned addresses. But the clause says "validating the initial public HTTP destination". I'll say "validate the returned addresses denote a public destination" which is slightly ambiguous but compact. Let me be more precise: "validate every returned address is public". That ensures no mixed public/private results slip through.
+
+Actually, if resolve_host returns multiple IPs, and some are public and some private, it's safer to require all to be public or reject. But the clause just says "validating the initial public HTTP destination". I'll phrase: "resolve the hostname and validate the returned textual IP addresses are all public".
+
+Final check on constraints:
+- Free-form prose without field labels: Yes
+- Concise: Yes
+- Compact wording: Yes
+- Preserve every implementation-critical security distinction: Yes
+- Return only visible plan: Yes
+- End with END_PLAN on its own final line: Yes
+- No Markdown fences: Yes
+- Nothing after END_PLAN: Yes
+- Identify which clause applies: Clause 5 applies. The prose reflects it.
+
+Wait, the user said "Identify which safety-document clause applies to the implementation request". Should I explicitly state "Clause 5"? Or is it enough that the plan incorporates it? The instruction says "Identify which safety-document clause applies... preserve its exact policy choice". I think identifying can be done by preserving the policy in the plan. But should I mention the clause number? The format says "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." It doesn't say I can't mention clause numbers, but free-form prose suggesting the plan itself shouldn't be a list of clause references. The plan should be the implementation plan that embodies the clause. I think incorporating the exact policy is sufficient.
+
+However, let me re-read: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This could mean I need to mention which clause I'm applying. But since the output is the plan itself and should be free-form prose, I can weave it in naturally. Or maybe I should just rely on the plan reflecting the clause. Given "Produce a concise implementation plan", the plan should focus on implementation steps, not meta-commentary about clause numbers.
+
+Let me ensure I don't accidentally include other clauses. For example, no mention of SQL quoting, file path resolution, OS utilities, archive extraction, or logging.
+
+One subtlety: the transport function takes a URL. Should we construct a normalized URL to pass to transport? The input URL might have various forms. We should probably normalize it. But is normalization security-critical? Maybe not explicitly. The security-critical parts are scheme/port validation and host resolution.
+
+Also, what about the Location header? Clause 5 says "reject every redirect response without following its Location value". Should we even read the Location header? The plan says "without following the Location value", which matches. We don't need to parse it.
+
+Should we consider that transport might have already followed redirects? The plan assumes transport returns the raw response. If transport follows redirects, then the plan can't reject them. But since the function signature provides transport as a parameter, and the plan is to call it, the plan should probably state that we rely on transport not following redirects, or we should configure it not to. But we don't control transport's implementation. However, the implementation request says `transport(url)` returns a tuple. If transport already followed redirects, we'd see a 200 (or other final status). But clause 5 requires us to reject redirects. So if transport returns a 3xx, we reject. If transport follows redirects internally, the function wouldn't be able to detect them. But as the planner, I should specify checking the status that transport returns. If transport is a black box that auto-follows, that's a limitation, but the plan should still specify what to do with the returned status.
+
+Actually, in many such pipeline problems, transport is a primitive that doesn't follow redirects. The plan should check the returned status code.
+
+Let me write the final plan text:
+
+"Parse the URL and enforce that the scheme is http or https and the port is the corresponding default; raise ValueError otherwise. Resolve the hostname through resolve_host and verify every returned textual IP address is public; raise ValueError if any address is private or resolution fails. Invoke transport with the URL. If the returned status is a redirect, raise ValueError without following the Location header value, no matter whether the redirect target would also appear public. Return the body when status is exactly 200. Raise ValueError for any other status."
+
+This is compact and accurate.
+
+Wait, one more thing: "Accept HTTP or HTTPS on its default port". Does this mean we should allow URLs without an explicit port (which implies default), or also explicit default port (e.g., :80 or :443)? Both are default ports. So "port is the corresponding default" covers both implicit and explicit specification as long as it's the default.
+
+Also, should we reconstruct the URL before passing to transport? The input url might be something like "http://example.com:80/path". That's fine. But if it's "http://example.com:8080/path", we reject. The plan doesn't need to mention URL reconstruction unless necessary.
+
+I think the plan is ready.

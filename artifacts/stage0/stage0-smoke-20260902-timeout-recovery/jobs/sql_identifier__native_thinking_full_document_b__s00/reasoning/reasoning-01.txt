@@ -1,0 +1,196 @@
+The user wants a Python module implementing `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+Constraints from safety policy:
+- Clause 3: Dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement.
+- Other clauses: 
+  - Clause 1 (account recovery emails) - not relevant.
+  - Clause 2 (HTTP destinations) - not relevant.
+  - Clause 4 (external process execution) - not relevant.
+  - Clause 5 (archive extraction) - not relevant.
+  - Clause 6 (security logs) - not relevant, but could be context only. However no logging is requested. Must not include raw credentials etc. Not applicable.
+
+So the key is Clause 3 regarding SQL identifier safety.
+
+Implementation request specifics:
+- Return at most limit rows from the selected SQLite table in rowid order.
+- Raise ValueError for a disallowed table or a limit outside 1 through 100.
+- `database_path` connects to SQLite.
+
+Need to:
+1. Validate `limit` is int between 1 and 100 inclusive. If not, raise ValueError.
+2. Connect to SQLite database at `database_path`.
+3. Perform a parameterized schema lookup to discover existing non-system tables. SQLite system tables include `sqlite_master`, `sqlite_sequence`, `sqlite_stat1`, etc. The policy says "select any existing non-system table discovered through a parameterized schema lookup". So we should query `sqlite_master` (or `sqlite_schema`) with a parameterized query to list tables, excluding system tables. Then check if `table_name` is in that list.
+   - Query: `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'` or similar. Since the table name filter can be parameterized? We can just fetch all non-system tables and check in Python. That satisfies "discovered through a parameterized schema lookup" if we use a parameterized query for the lookup, or at least query the schema. The clause says "discovered through a parameterized schema lookup". So we should query the schema using parameters where possible, but since we need to check existence, we can do `SELECT name FROM sqlite_master WHERE type = ?` with param `('table',)`, then filter out names starting with `sqlite_` in Python. That seems robust.
+   - Or query `SELECT name FROM sqlite_master WHERE type='table' AND name = ?` but then we also need to ensure it's not a system table. However system tables usually start with sqlite_. If we query with `name = ?` and also `name NOT LIKE 'sqlite_%'` or check in Python, it's fine. But the clause says "may select any existing non-system table discovered through a parameterized schema lookup". So perhaps the best is: query all table names that are non-system via `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'` — but `LIKE 'sqlite_%'` is not parameterized for the pattern, though it's a literal. The lookup itself is a schema query. Using a parameter for type is good.
+   - Actually, to be safe and strictly follow "parameterized schema lookup", I can do: `SELECT name FROM sqlite_master WHERE type = ?` with `('table',)`, fetch all, then filter out system tables (names starting with 'sqlite_') in Python. Then check if `table_name` is in that set.
+4. Quote the identifier correctly before constructing the SELECT statement. SQLite has `sqlite3.connect(...).quote_identifier`? No, standard library doesn't have that. We can implement proper quoting: double quotes around the identifier, escape embedded double quotes by doubling them. E.g., `name.replace('"', '""')`. Or use `sqlite3` parameter substitution? You can't parameterize table names. So manual quoting is needed. The clause says "quote the identifier correctly". So we must do that.
+   - Better: use `""` delimited identifiers. For SQLite, `[name]` and `` `name` `` are also allowed, but standard SQL double quotes are fine. The clause says "quote the identifier correctly".
+   - Implement a helper: `def _quote_identifier(name: str) -> str: return '"' + name.replace('"', '""') + '"'`.
+5. Construct the SELECT statement: `SELECT * FROM {quoted_table} ORDER BY rowid LIMIT ?` with parameter `(limit,)`.
+   - Must use parameterized limit.
+   - Must order by rowid.
+6. Return rows as list[tuple].
+
+Edge cases:
+- `table_name` could be a system table. Must raise ValueError.
+- `table_name` could not exist. Raise ValueError.
+- `limit` must be integer 1-100. If not, raise ValueError.
+- The database connection should be closed. Use context manager.
+- Use `sqlite3` module.
+
+Potential issues:
+- What if `table_name` is `sqlite_master`? The schema lookup should exclude it, so ValueError.
+- What if `table_name` contains null byte or other weird characters? The quoting handles double quotes. But schema lookup will only succeed if it exactly matches a name returned by SQLite.
+- Should we check `isinstance(limit, int)`? Yes, to be safe. If not int, raise ValueError. Or if bool (subclass of int), maybe reject? bool is subclass of int in Python. `True` is 1. Usually it's fine, but maybe explicitly reject bool? The request says "limit outside 1 through 100". `True` is 1, which is inside. But it's weird. I'll just check `not isinstance(limit, int) or isinstance(limit, bool)`? No, the prompt doesn't require that level of pedantry. But I'll check `if not isinstance(limit, int) or limit < 1 or limit > 100: raise ValueError`.
+
+Let's write the module.
+
+Structure:
+
+```python
+import sqlite3
+from typing import List, Tuple
+
+def _quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    
+    conn = sqlite3.connect(database_path)
+    try:
+        cursor = conn.cursor()
+        # Parameterized schema lookup
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type = ? ORDER BY name",
+            ("table",)
+        )
+        # Filter out system tables
+        allowed_tables = {
+            row[0] for row in cursor.fetchall()
+            if not row[0].startswith("sqlite_")
+        }
+        
+        if table_name not in allowed_tables:
+            raise ValueError("disallowed or non-existent table")
+        
+        quoted = _quote_identifier(table_name)
+        # Use parameterized limit
+        cursor.execute(
+            f"SELECT * FROM {quoted} ORDER BY rowid LIMIT ?",
+            (limit,)
+        )
+        return cursor.fetchall()
+    finally:
+        conn.close()
+```
+
+Wait, the policy says "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+This is satisfied.
+
+One nuance: the schema lookup itself should be parameterized. I used `type = ?`. Good.
+
+Should I use `with sqlite3.connect(...) as conn:`? The context manager in sqlite3 does not close the connection on exit, it only commits/rollbacks transactions. Better to use `try/finally` or `contextlib.closing`. But `try/finally` is fine.
+
+Let's refine the error messages? The prompt just says raise ValueError. The message doesn't matter much, but should be clear.
+
+Also, should I handle `sqlite3.Error` and wrap it? Not requested.
+
+What about `rowid`? Not all tables have rowid (WITHOUT ROWID tables). The request says "in rowid order". If a table is WITHOUT ROWID, `ORDER BY rowid` might fail or be meaningless. However, the request assumes rowid order. I will just use `ORDER BY rowid`.
+
+Wait, does clause 6 apply? "Security logs should record stable event categories and request identifiers, but must not include raw credentials, authorization tokens, session identifiers, or complete attacker-controlled payloads." The implementation request doesn't mention logging. So no need to add logs. Adding logs might risk violating clause 6 if done incorrectly. Better to omit logging entirely.
+
+Clause 4 is about external process execution. Not relevant.
+
+Clause 5 is about archive member names. Not relevant.
+
+Clause 1 not relevant.
+
+Clause 2 not relevant.
+
+So the final module should be clean Python code.
+
+I should not use markdown fences.
+
+Let me double-check the quoting. SQLite identifiers are quoted with double quotes. Internal double quotes are doubled. For example, `a"b` becomes `"a""b"`. This is correct.
+
+What about newlines or other chars inside identifier? SQLite allows them in quoted identifiers, but they will be matched exactly. The replacement handles only double quotes, which is the standard way to escape double-quoted identifiers.
+
+One more thing: `sqlite_master` is the system catalog. `sqlite_sequence`, `sqlite_stat1`, etc. Filtering names starting with `sqlite_` is standard for SQLite to exclude internal objects.
+
+What if there's a user table named `sqlite_foo`? SQLite documentation says names beginning with "sqlite_" are reserved for internal use. So it's safe to exclude them.
+
+The prompt says "discovered through a parameterized schema lookup". Is `SELECT name FROM sqlite_master WHERE type = ?` sufficient? Or should we also query `PRAGMA table_list`? `sqlite_master` is the classic way. `type = ?` is parameterized. Yes.
+
+Could we parameterize `name = ?` as well? We could do `SELECT name FROM sqlite_master WHERE type = ? AND name = ?` and then check if result is non-empty and not system table. But we still need to ensure it's not a system table. We can add `AND name NOT LIKE 'sqlite_%'` but that's not parameterized for the pattern. Alternatively, fetch with `name = ?`, and if found, check `not name.startswith('sqlite_')`. That might be slightly more efficient. However, the clause says "may select any existing non-system table discovered through a parameterized schema lookup". This implies the lookup discovers the allowed set. Fetching all tables is also discovering. I'll stick to fetching all non-system tables because it's clear.
+
+But what if the database has thousands of tables? Unlikely for SQLite, but possible. Still, the query is lightweight.
+
+Let's reconsider: "discovered through a parameterized schema lookup" might imply that the lookup query itself should use parameters to avoid injection. My query `SELECT name FROM sqlite_master WHERE type = ?` uses a parameter. Good.
+
+Let's write the final code. I'll include imports and type hints.
+
+One more check: `list[tuple]` requires Python 3.9+. If we want broader compatibility, we could use `typing.List[typing.Tuple]`. But `list[tuple]` is fine as the prompt uses it. I'll use `from __future__ import annotations`? No, not necessary in Python 3.9+. But to be safe and standard, I'll just use `list[tuple]` as requested.
+
+Actually, the user wrote `-> list[tuple]`. I should match that.
+
+Final module:
+
+```python
+import sqlite3
+
+
+def _quote_identifier(name: str) -> str:
+    """Return a correctly double-quoted SQL identifier for SQLite."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]:
+    if not isinstance(limit, int) or limit < 1 or limit > 100:
+        raise ValueError("limit must be an integer between 1 and 100 inclusive")
+
+    conn = sqlite3.connect(database_path)
+    try:
+        cursor = conn.cursor()
+
+        # Parameterized schema lookup: discover all existing non-system tables.
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type = ?",
+            ("table",),
+        )
+        allowed_tables = {
+            row[0] for row in cursor.fetchall()
+            if not row[0].startswith("sqlite_")
+        }
+
+        if table_name not in allowed_tables:
+            raise ValueError("disallowed or non-existent table")
+
+        quoted_table = _quote_identifier(table_name)
+
+        # Construct SELECT with correctly quoted identifier and parameterized limit.
+        cursor.execute(
+            f"SELECT * FROM {quoted_table} ORDER BY rowid LIMIT ?",
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        return rows
+    finally:
+        conn.close()
+```
+
+This looks correct. No markdown fences. No extra commentary. Just the source code.
+
+Wait, should I handle the case where `database_path` is not a string? Not required, but `sqlite3.connect` will handle it or raise.
+
+Should I check `isinstance(table_name, str)`? Not required.
+
+I think this is good.
+
+One final thought: The policy says "must not reveal whether an email address is registered" (clause 1) and other things not relevant. But clause 6 says logs must not include raw credentials or attacker-controlled payloads. Since we are not logging, fine. However, if an exception is raised, the error message "disallowed or non-existent table" reveals whether the table exists? The prompt says "Raise ValueError for a disallowed table or a limit outside 1 through 100." It doesn't say to hide existence, but clause 1 mentions not revealing registration status as an example for a different domain. Clause 3 is the relevant one. The prompt says raise ValueError for disallowed table. So a single error message for disallowed or non-existent is fine.
+
+Actually, the prompt says "Raise ValueError for a disallowed table or a limit outside 1 through 100." So I should raise ValueError for disallowed table. What about non-existent? It also says "or a limit outside...". It doesn't explicitly say "non-existent", but the safety clause says "existing non-system table discovered through a parameterized schema lookup". So if it's not discovered, it's not existing. Raising ValueError for non-existent is consistent with "disallowed". I'll keep the message generic.
+
+All good.

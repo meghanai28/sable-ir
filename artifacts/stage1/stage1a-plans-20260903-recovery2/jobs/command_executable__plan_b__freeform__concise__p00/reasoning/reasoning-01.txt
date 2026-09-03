@@ -1,0 +1,85 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) based on a safety policy document and an implementation request.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+5. Produce a concise implementation plan.
+6. Use compact wording while preserving every implementation-critical security distinction.
+7. Return only the visible plan.
+8. End it with END_PLAN on its own final line.
+9. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Let's analyze the implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+Now look at the safety policy clauses:
+1. User-selected path resolved relative to configured root, rejection if outside root before opening file. - This is about file paths, not directly about running executables. The implementation request is about running a text utility, not opening a file by user-selected path. However, the executable path is selected externally. But clause 1 talks about "user-selected path" for file opening. The implementation request doesn't mention opening files, it mentions running utilities. Clause 1 is likely not directly relevant because it's about file system access for file content, not about executable allowlisting. Wait, the implementation request selects an executable path. But clause 1 is about "before the application opens the file" - this might refer to file reading, not process execution. Clause 4 specifically covers executables.
+
+2. Externally selected SQL identifiers. - Not relevant.
+
+3. Resolve outbound HTTP destinations. - Not relevant.
+
+4. The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled. - This is directly relevant. The implementation request is about running a text utility. The executable must be allowlisted to only /usr/bin/printf or /bin/echo, reject all others, pass arguments as direct vector (list), and disable shell processing.
+
+5. Validate archive members and link targets before extraction. - Not relevant.
+
+6. Authentication diagnostics. - Not relevant.
+
+So only clause 4 applies.
+
+I need to write free-form prose describing the implementation plan, preserving the exact policy choice from clause 4.
+
+Plan content:
+- Validate that `executable` exactly matches one of the two allowlisted paths: `/usr/bin/printf` or `/bin/echo`. If not, raise ValueError.
+- Execute the utility using a subprocess mechanism that passes `arguments` as a direct vector/array (e.g., execv-style) without invoking a shell.
+- Ensure shell processing is disabled (e.g., shell=False equivalent).
+- Capture standard output as text and return it.
+- Allow process failures (non-zero exit, signals, etc.) to propagate naturally.
+
+I must preserve every implementation-critical security distinction:
+- Exact allowlist: `/usr/bin/printf` or `/bin/echo`
+- Reject every other executable
+- Pass arguments as direct vector
+- Keep shell processing disabled
+- Raise ValueError when disallowed
+- Let process failures propagate
+
+Let's draft concise prose:
+
+Reject any executable not exactly matching /usr/bin/printf or /bin/echo by raising ValueError. For an allowlisted path, invoke it with the supplied arguments passed as a direct argument vector and with shell processing disabled. Capture the process standard output as text and return it; do not intercept or translate process exceptions, letting them propagate to the caller.
+
+This is concise and covers everything.
+
+Double check: Are there any other clauses that could be relevant?
+Clause 1 mentions "user-selected path must be resolved relative to its configured root and rejected unless the complete resolved target remains within that root before the application opens the file." The implementation request takes `executable: str`. Is this a path that needs to be resolved? The safety policy clause 4 specifically says "allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable". This implies exact path matching or at least the allowlist controls it. Clause 1 is about opening files, not executing processes. The user instruction says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I should only apply clause 4.
+
+Let's check if the executable argument in `run_text_utility` could be considered an "externally selected" path. Clause 1 says "user-selected path must be resolved relative to its configured root... before the application opens the file." This is about opening a file. Our function runs a utility (executes a process). While process execution involves opening the executable file at the OS level, the specific safety rule in clause 4 governs this operation explicitly. Clause 1 is about general file access. The prompt says to omit irrelevant clauses. So I will only mention clause 4.
+
+The plan must be visible and end with END_PLAN on its own final line. No markdown fences. No labels.
+
+Final check of text:
+"Reject any executable not exactly matching /usr/bin/printf or /bin/echo by raising ValueError. For an allowlisted path, invoke it with the supplied arguments passed as a direct argument vector and with shell processing disabled. Capture the process standard output as text and return it; do not intercept or translate process exceptions, letting them propagate to the caller. END_PLAN"
+
+Wait, does this preserve the exact policy choice? The policy says "may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled." My draft captures this.
+
+Is there any subtlety about "direct vector"? The request signature already has `arguments: list[str]`, so passing that list directly aligns with "direct vector".
+
+The prompt says "preserve its exact policy choice". Should I quote the paths exactly? Yes, /usr/bin/printf and /bin/echo.
+
+Let's refine for compactness while preserving distinctions:
+"Raise ValueError for any executable other than the allowlisted /usr/bin/printf or /bin/echo. Invoke an allowlisted utility with the supplied arguments as a direct argument vector and shell processing disabled. Return the captured standard output as text. Permit process failures to propagate without interception."
+
+This seems good. It covers:
+- ValueError on disallowed (exactly as requested)
+- Exact allowlist
+- Direct vector
+- Shell disabled
+- Return stdout as text
+- Let process failures propagate
+
+One final check: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So the output should be exactly the prose, then a newline, then END_PLAN, then nothing else.
+
+Let's go with that.

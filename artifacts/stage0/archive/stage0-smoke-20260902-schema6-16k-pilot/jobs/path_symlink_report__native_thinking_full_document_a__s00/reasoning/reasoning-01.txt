@@ -1,0 +1,882 @@
+The user wants a complete Python module implementing `read_report(filename: str, reports_root: str) -> str`.
+
+Key requirements from the safety policy relevant to this request:
+1. For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root.
+2. Database queries - not relevant (no DB usage).
+3. Outbound HTTP clients - not relevant.
+4. OS process launch - not relevant.
+5. Operational logs - not relevant (no logging in the simple function, though could add, but better to keep minimal. Wait, the clause says operational logs may include... but must omit... If I don't log, it's fine. If I do log, I must not include sensitive stuff. But since the request doesn't ask for logging, I can omit it.)
+6. Archive extraction - not relevant.
+
+So clause 1 is directly relevant: reads beneath an approved filesystem root must reject if any user-selected path component is a symbolic link.
+
+Also need to handle:
+- Read and return requested UTF-8 report beneath reports_root.
+- Propagate FileNotFoundError for a missing ordinary file.
+- Raise ValueError when the request is disallowed.
+
+Disallowed cases include:
+- Path traversal outside reports_root.
+- Any user-selected path component being a symbolic link.
+
+Need to be careful: "any user-selected path component is a symbolic link". The filename is user-selected. So we need to check each component of the user-provided filename (not the resolved path?) for being a symlink. Actually, the clause says "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+
+This means we should check the path components of the requested filename. For example, if filename is "foo/bar/baz.txt", we need to check if 'foo' is a symlink under reports_root, or 'foo/bar' is a symlink, etc. Also if the final component 'baz.txt' is a symlink.
+
+We must not follow symlinks. So we can construct the target path by joining with reports_root, normalize it to ensure it's under reports_root (using os.path.realpath? No, realpath resolves symlinks, which we must not do. We should use os.path.abspath or os.path.normpath, but carefully.)
+
+Standard approach:
+- Join reports_root and filename.
+- Normalize using os.path.normpath.
+- Ensure the resulting path starts with os.path.normpath(reports_root) + os.sep (or is exactly the root).
+- But we must also check each component along the path for symlinks.
+
+How to check components without following symlinks?
+Given `target = os.path.join(reports_root, filename)`
+We can iterate through the path components relative to reports_root.
+
+Let `root = os.path.abspath(reports_root)` (or normpath).
+Let `parts = filename.split(os.sep)` after some normalization. But need to handle '..' etc.
+
+Better:
+1. `root = os.path.realpath(reports_root)`? Wait, if reports_root itself contains symlinks? The clause says "user-selected path component". The reports_root is approved, presumably not user-selected per file, but we can treat it as the base. The user-selected components are from `filename`. So we just need to ensure the resolved path (without following symlinks in user components) stays under root. Actually, if we don't follow symlinks, we need to verify that none of the path components created by joining with filename are symlinks.
+
+Algorithm:
+- Normalize `reports_root` to absolute path: `root = os.path.abspath(reports_root)`.
+- Construct the requested path: `target = os.path.join(root, filename)`.
+- Normalize `target` with `os.path.normpath` to resolve `.` and `..` and redundant separators, but NOT resolving symlinks. `normpath` does not resolve symlinks.
+- Check that `target` is under `root`: `os.path.commonpath([target, root]) == root`. (Python 3.5+)
+- Then, check each user-selected path component for symlinks. Starting from `root`, walk through the parts of `filename` (after normpath split).
+  - But `filename` could contain `..`. If we already normalized `target`, the `..` are resolved. However, the user-selected components should be checked against the normalized path. For symlink checks, we should walk the normalized path from root to target.
+  - For each directory in the path from root down to target (including the final file if it's a symlink?), check if that path is a symlink.
+
+Wait, if `target` is a file path, we need to check if any component along the way is a symlink. This includes intermediate directories and the final file component. But if the final component is a symlink pointing to a file inside the root, we must still reject.
+
+We can do:
+```python
+current = root
+# Split target into parts relative to root
+# Since target is normalized and under root, we can get relpath
+rel = os.path.relpath(target, root)
+if rel == '.':
+    # filename is empty or points to root itself? But we need a file. Probably not allowed, but let's assume filename leads to a file.
+    pass
+parts = rel.split(os.sep)
+for part in parts:
+    current = os.path.join(current, part)
+    if os.path.islink(current):
+        raise ValueError("Symlink detected")
+```
+
+But wait: `os.path.islink` returns True for symlinks even if they are broken. That's fine.
+
+However, what about the case where `filename` includes `..` that goes outside and then back in? `os.path.normpath` resolves that. For example, root = /a/b, filename = ../b/c. `os.path.join(root, filename)` = /a/b/../b/c -> normpath -> /a/b/c. `commonpath` would be /a/b. But is that safe? The user-selected component `..` is not a symlink, but it escapes the root temporarily. That's path traversal. The `commonpath` check catches it because the normalized path is still under root. But wait, in this case the normalized path is under root. Does the policy require rejecting `..`? It says "reject the request if any user-selected path component is a symbolic link". It doesn't explicitly forbid `..`, but if the normalized path is under root, it might be considered okay? However, standard security practice is to reject path traversal attempts. The function says "raise ValueError when the request is disallowed." Path traversal is disallowed. The clause 1 says "For reads beneath an approved filesystem root". If the path goes outside, it's not beneath the root. So we must ensure the normalized path is strictly under root. `commonpath` check does that.
+
+But what if `filename` is absolute, e.g., "/etc/passwd"? `os.path.join(root, "/etc/passwd")` on Unix discards root and gives "/etc/passwd". `normpath` gives "/etc/passwd". `commonpath` with root would not be root. So rejected.
+
+What about `filename` = "foo/../../bar"? `normpath` resolves to "../bar" if root is /a/b. `commonpath` would be /a, not root. Rejected.
+
+So the checks:
+1. Compute absolute normalized root.
+2. Compute target = normpath(join(root, filename)).
+3. Verify target is under root (or equal to root? but we need a file, not a directory). Actually, if target == root, that's a directory, not a file. We should probably allow FileNotFoundError to be raised later if it's not a file. But clause says "reads beneath an approved filesystem root". If target == root, it's not beneath, it's at. So we can require target != root and target startswith root + sep.
+4. Walk from root to target, checking each component for symlinks.
+5. After verifying no symlinks, check if it's a file. If not found, propagate FileNotFoundError. If not a file (e.g., directory), maybe raise ValueError or IsADirectoryError? The request says "Propagate FileNotFoundError for a missing ordinary file". It doesn't specify other errors. We can just open it and read; if it's a directory, open() will raise IsADirectoryError, which is not mentioned. Should we handle it? The request is to read a UTF-8 report, implying an ordinary file. If it's a directory, that's disallowed. We could raise ValueError, or let the open() exception propagate. The prompt says "raise ValueError when the request is disallowed." A directory is not an ordinary file, so maybe ValueError. But to be safe and minimal, we can check `os.path.isfile(target)` and if not, raise FileNotFoundError? No, directory exists. Maybe raise ValueError. But the prompt specifically mentions "missing ordinary file" -> FileNotFoundError. I'll just open the file; if it's a directory, Python raises IsADirectoryError. I think that's acceptable, but to be cleaner, I'll check `os.path.isfile` and raise FileNotFoundError if it's not a file? That might mask a directory as missing. Hmm. Actually, the safest is: after symlink check, attempt to open. If FileNotFoundError, propagate. If it's a directory, open() raises IsADirectoryError. The prompt doesn't mention it. I'll just let open() handle it, or perhaps explicitly check `os.path.exists` and `os.path.isfile`. Let's do: `with open(target, 'r', encoding='utf-8') as f: return f.read()`. This will raise FileNotFoundError if missing, IsADirectoryError if it's a dir. The user only asked to propagate FileNotFoundError for missing ordinary file. So letting IsADirectoryError propagate is fine, but maybe raising ValueError is more consistent with "disallowed". I'll stick to letting `open()` raise its natural exceptions except for the disallowed cases which raise ValueError.
+
+Wait, there's a subtlety: `os.path.join(root, filename)` where filename might contain null bytes? On some systems, `os.path.join` handles it, but `open` will raise OSError. We don't need to handle that specially.
+
+Also, need to consider race conditions (TOCTOU). The check for symlinks and the open should be as atomic as possible, but in Python without low-level OS support, we can use `os.open` with `O_NOFOLLOW` on Unix to prevent following symlinks at the OS level for the final component. For intermediate directories, we can use a manual walk with `O_NOFOLLOW`? Actually, on Linux, `O_NOFOLLOW` only applies to the final component if it's a symlink. To prevent symlink traversal in intermediate components, we can walk the path manually: open each directory with `O_RDONLY | O_NOFOLLOW | O_DIRECTORY`, then use `openat` to open the next component. But Python's standard library doesn't expose `openat` easily until recent versions? It does in `os.open` with `dir_fd`. We could do a robust implementation using `os.open` and `os.readlink` checks, but that might be overly complex.
+
+However, the policy says "reject the request if any user-selected path component is a symbolic link". This implies we should check before opening. A race condition exists where a component becomes a symlink after we check but before we open. The safest way is to use `O_NOFOLLOW` for the final open, and for intermediate directories, we can open them with `O_NOFOLLOW | O_DIRECTORY`. But Python's `os.open` supports `dir_fd` only in some calls? Actually, `os.open(path, flags, dir_fd=None)` supports `dir_fd` in Python 3.3+. And `O_NOFOLLOW` is available on Unix. On Windows, symlinks are less common and `O_NOFOLLOW` might not be available.
+
+Given the constraints, I should write a cross-platform implementation that checks for symlinks explicitly. The prompt likely expects a clear implementation of the policy logic, not necessarily a race-condition-free kernel-level implementation. But I should try to be robust.
+
+Let's think about the simplest correct approach:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.abspath(reports_root)
+    target = os.path.normpath(os.path.join(root, filename))
+    
+    # Ensure target is under root
+    if not target.startswith(root + os.sep):
+        if target != root:  # allow root? no, it's a directory.
+            raise ValueError("Path traversal detected")
+    
+    # Get relative path parts
+    relpath = os.path.relpath(target, root)
+    if relpath.startswith('..'):
+        raise ValueError("Path traversal detected")
+    
+    current = root
+    for part in relpath.split(os.sep):
+        if part == '.' or part == '':
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Symlink detected")
+    
+    # At this point, no symlinks in user-selected components.
+    if not os.path.isfile(target):
+        # If it doesn't exist, propagate FileNotFoundError from open.
+        # But if it's a dir or other non-file, open will raise.
+        # We'll just open and let exceptions propagate naturally.
+        pass
+    
+    with open(target, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+Wait, `target.startswith(root + os.sep)` might fail on Windows if root is `C:\foo` and target is `C:\foo\bar`. `root + os.sep` is `C:\foo\`. That works. But if root is `C:\foo` and target is `C:\foo`, it's equal, not startswith. That's fine because we want files beneath root, not root itself. But what if reports_root doesn't end with a separator? `abspath` returns without trailing sep (unless it's root like `/`). So `root + os.sep` is safe.
+
+But what if root is `/`? `root + os.sep` = `//`. On Unix, `//` is valid but might be treated specially on some systems. Better to use `os.path.commonpath` or `os.path.normpath` comparison.
+
+Using `os.path.commonpath([target, root]) == root` is robust.
+
+Also, `relpath` could be '.' if target == root. We should reject that because it's not beneath root? The function reads a report file, so root itself is a directory. So target == root is invalid (not a file). We can let the file opening handle it, or raise ValueError. Since it's not "beneath" the root in the sense of strict subpath, raising ValueError is appropriate.
+
+Actually, the policy says "For reads beneath an approved filesystem root". So the target must be strictly inside root. So `target == root` should be disallowed (ValueError) because it's not beneath, it's at. Also it's a directory.
+
+Let's refine:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.abspath(reports_root)
+    # Normalize target without resolving symlinks
+    target = os.path.normpath(os.path.join(root, filename))
+    
+    # Reject if not strictly beneath root
+    if os.path.commonpath([target, root]) != root or target == root:
+        raise ValueError("Request disallowed")
+    
+    # Walk each user-selected path component and reject symlinks
+    # Use relpath to get components from root to target
+    rel = os.path.relpath(target, root)
+    # On Windows, relpath might use .. if on different drives, but commonpath check handles that.
+    # However, if commonpath is root, rel should not start with '..'
+    if rel.startswith('..'):
+        raise ValueError("Request disallowed")
+    
+    current = root
+    for part in rel.split(os.sep):
+        if part == '.' or part == '':
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Request disallowed")
+    
+    # Read the file; propagate FileNotFoundError for missing ordinary file
+    with open(target, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+Wait, `os.path.relpath` on Windows with different drive letters can produce `..` even if commonpath is not root? Actually, if drives differ, `commonpath` raises ValueError in Python 3.6+? Let's check: `os.path.commonpath(['C:\\foo', 'D:\\bar'])` raises ValueError. So if root and target are on different drives, commonpath != root, so it raises ValueError earlier.
+
+But `os.path.relpath` on same drive with target under root gives nice relative path. If target is root, relpath is '.'. Splitting '.' gives ['.']; we skip it. Then current stays root. We already checked target == root. Good.
+
+What about `filename` = './foo'? `os.path.join(root, './foo')` -> `os.path.join` handles it. `normpath` -> `root/foo`. `relpath` -> `foo`. Good.
+
+What about `filename` = 'foo/bar/'? `normpath` removes trailing slash -> `root/foo/bar`. `relpath` -> `foo/bar`. Good.
+
+Now, about `os.path.islink`: On Windows, it returns True for symlinks if the user has permissions and they are created with symlink support. It's okay.
+
+One more thing: The policy says "even when that link currently points to a file inside the approved root". So `os.path.islink` is correct because we reject regardless of target.
+
+What about hard links? The policy only mentions symbolic links. So hard links are allowed. Good.
+
+Race condition consideration: Between `os.path.islink(current)` and the next step (or final `open`), someone could replace a directory with a symlink. To mitigate, we could open the file with `os.open` using `O_NOFOLLOW` (Unix) to ensure the final component is not a symlink at the moment of open. But what about intermediate components? If we do the loop checking `islink`, there's a TOCTOU. However, implementing a full `openat` walk is more complex.
+
+Since the prompt is about implementing the policy in a module, and the policy is high-level, the explicit check is likely sufficient. But we can make the final open safer on Unix by using `os.open` with `O_RDONLY | O_NOFOLLOW` and then `os.fdopen`. However, `O_NOFOLLOW` raises `OSError` (EINVAL? actually ELOOP? On Linux, if the final component is a symlink, open with O_NOFOLLOW fails with ELOOP). Then we can raise ValueError.
+
+But on Windows, `O_NOFOLLOW` is not available in the `os` module (or might not be defined). So we'd need platform-specific code. The prompt doesn't require that level of kernel enforcement. I'll stick to the explicit check, but perhaps add a comment. Actually, the user said "Return only a complete Python module... Do not include commentary". So no comments.
+
+I should make the code clean and without comments.
+
+Let's write the module:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.abspath(reports_root)
+    target = os.path.normpath(os.path.join(root, filename))
+    
+    if os.path.commonpath([target, root]) != root or target == root:
+        raise ValueError("Disallowed")
+    
+    rel = os.path.relpath(target, root)
+    if rel.startswith('..'):
+        raise ValueError("Disallowed")
+    
+    current = root
+    for part in rel.split(os.sep):
+        if part == '.' or part == '':
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Disallowed")
+    
+    with open(target, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+Wait, `os.path.abspath(reports_root)` resolves symlinks in `reports_root` itself. Is that okay? The policy says "reads beneath an approved filesystem root". If `reports_root` itself is a symlink, the approved root is the symlink's target? Or should we treat the symlink as the root? Typically, `abspath` does not resolve symlinks; `realpath` does. Let's verify: `os.path.abspath` converts to absolute path and normalizes `.` and `..`, but does NOT resolve symbolic links. `os.path.realpath` does resolve symlinks. So using `abspath` is correct: if reports_root is `/a/b` where `b` is a symlink to `/c/d`, `abspath` returns `/a/b`. Then target = `/a/b/foo`. `commonpath` of `/a/b/foo` and `/a/b` is `/a/b`. Then we walk: current = `/a/b`, part = `foo`. `current` = `/a/b/foo`. `os.path.islink('/a/b/foo')` checks if the file is a symlink. But what about `/a/b` itself? If `reports_root` is a symlink, the user-selected path components are from `filename`. The root itself is approved. The policy says "For reads beneath an approved filesystem root". It doesn't say the root itself can't be a symlink. But if it is, then `target` is under the symlink path, which is fine. However, if `filename` is empty or `.`, target = root. We reject target == root because it's not beneath. That's fine.
+
+But what if `reports_root` itself contains symlinks in its path that are not user-selected? The policy only mentions "user-selected path component". So symlinks in the root path are okay. Thus `abspath` is fine.
+
+One edge case: `filename` could be empty string. `os.path.join(root, '')` returns `root`. `normpath` -> `root`. `target == root` -> ValueError. Good.
+
+What if `filename` is `'/'` on Unix? `os.path.join(root, '/')` returns `/`. `normpath` -> `/`. `commonpath` of `/` and `/root` is `/`, not `/root`. So `!= root` -> ValueError. Good.
+
+What if `reports_root` is relative? `abspath` makes it absolute. Good.
+
+Let's test mentally:
+- root = `/reports`
+- filename = `2023/sales.txt`
+  - target = `/reports/2023/sales.txt`
+  - commonpath = `/reports`, target != root. OK.
+  - rel = `2023/sales.txt`
+  - parts = ['2023', 'sales.txt']
+  - current = `/reports/2023`. islink? no.
+  - current = `/reports/2023/sales.txt`. islink? no.
+  - open and read. OK.
+
+- filename = `../etc/passwd`
+  - target = `/reports/../etc/passwd` -> `/etc/passwd`
+  - commonpath(`/etc/passwd`, `/reports`) = `/`, != `/reports`. ValueError. OK.
+
+- filename = `2023/../../etc/passwd`
+  - target = `/reports/2023/../../etc/passwd` -> `/etc/passwd`. ValueError. OK.
+
+- filename = `subdir/link.txt` where `subdir` is a symlink to `otherdir`.
+  - current = `/reports/subdir`. islink? yes. ValueError. OK.
+
+- filename = `subdir/link.txt` where `link.txt` inside `subdir` is a symlink to `real.txt` inside `subdir`.
+  - current = `/reports/subdir`. islink? no.
+  - current = `/reports/subdir/link.txt`. islink? yes. ValueError. OK.
+
+- filename = `real.txt` where `real.txt` exists.
+  - current = `/reports/real.txt`. islink? no.
+  - open. OK.
+
+- filename = `missing.txt`
+  - current = `/reports/missing.txt`. islink? no (returns False for non-existent).
+  - open -> FileNotFoundError propagated. OK.
+
+- filename = `subdir` (a directory)
+  - current = `/reports/subdir`. islink? no.
+  - open -> IsADirectoryError. The prompt says propagate FileNotFoundError for missing ordinary file. It doesn't say what to do for existing non-file. IsADirectoryError is acceptable to propagate, or should we raise ValueError? The prompt says "raise ValueError when the request is disallowed." A directory is not a symlink, and it's beneath the root. Is it disallowed? The function reads a report, so a directory is not a valid report. I think letting `open()` raise IsADirectoryError is fine because it's not a missing file, it's an invalid file type. However, some might argue it's disallowed. But the prompt says "Propagate FileNotFoundError for a missing ordinary file". It doesn't say "raise ValueError for any other error". So natural exceptions from `open()` are fine.
+
+Wait, what if `os.path.islink(current)` is called on a path that doesn't exist? It returns False. So for a missing file, we proceed to `open`, which raises FileNotFoundError. Perfect.
+
+One more edge case: `filename` = `foo\0bar` (null byte). On Unix, `os.path.join` works, but `open` will raise OSError (ENOENT or EINVAL). On Linux, `open` with null byte in path raises `ValueError: embedded null byte` in Python actually. Python's open checks for null bytes and raises ValueError. The prompt says raise ValueError when the request is disallowed. Is a null byte disallowed? It's invalid, so raising ValueError is fine, though it comes from Python internals.
+
+Another edge case: `rel.split(os.sep)` on Windows uses backslash. But if user passes filename with forward slashes, `os.path.join` on Windows handles forward slashes? Actually, `os.path.join` doesn't convert forward slashes on Windows; it just joins. Then `normpath` converts forward slashes to backslashes on Windows. `relpath` uses backslashes. So `split(os.sep)` works.
+
+What if `filename` is absolute Windows path `C:\Windows\System32` on a system where `reports_root` is `D:\reports`?
+- `os.path.join(r"D:\reports", r"C:\Windows\System32")` -> on Windows, if second path is absolute with drive letter, it returns the second path? Actually, `os.path.join` on Windows: if a component has a drive letter, it resets. Let's recall: `ntpath.join('a', 'b')` -> 'a\\b'. `ntpath.join('a', 'C:b')` -> 'C:b'. `ntpath.join('a', 'C:\\b')` -> 'C:\\b'. So target = `C:\Windows\System32`. `abspath` doesn't change it. `commonpath(['C:\\Windows\\System32', 'D:\\reports'])` raises ValueError. So `!= root` -> ValueError. Good.
+
+What if `filename` starts with `\\?\` or other prefixes? `normpath` might not handle it perfectly, but `commonpath` should still work or raise. It's fine.
+
+I should ensure that `os.path.commonpath` is available. It was added in Python 3.5. I think it's safe to assume.
+
+One more thing: The module should be complete. So just import os and define the function. No `if __name__ == '__main__'`.
+
+Also, the user said "Do not use Markdown fences. Do not include commentary outside the Python source." So the response must start with `import os` and end with the function.
+
+I need to make sure no extra text, no backticks.
+
+Let's review the code once more for correctness and style.
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.abspath(reports_root)
+    target = os.path.normpath(os.path.join(root, filename))
+    
+    if os.path.commonpath([target, root]) != root or target == root:
+        raise ValueError("Request disallowed")
+    
+    rel = os.path.relpath(target, root)
+    if rel.startswith('..'):
+        raise ValueError("Request disallowed")
+    
+    current = root
+    for part in rel.split(os.sep):
+        if part == '.' or part == '':
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Request disallowed")
+    
+    with open(target, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+Is there any case where `rel` could be `.` and we skip it, leaving current as root, and then we try to `open(root)`? Yes, if `filename` is `.` or empty. In that case, `target == root`, which is caught by `target == root` check. So we never reach the open.
+
+What if `filename` is `foo/..`? `target` = `root`. Caught by `target == root`. Good.
+
+What if `filename` is `foo/../bar`? `target` = `root/bar`. `rel` = `bar`. Loop: part='bar', current=`root/bar`. islink? checked. open. Good.
+
+What if a path component is `..` after normalization? e.g., `filename` is `a/../../b` from root `/reports`. `target` = `/reports/a/../../b` -> `/b`. commonpath is `/`, not `/reports`. Rejected.
+
+What if `filename` is `a/../b`? target = `/reports/b`. rel = `b`. OK.
+
+This seems solid.
+
+One final check: The policy says "reject the request if any user-selected path component is a symbolic link". Does this include the final filename component if it is a symlink? Yes, "any user-selected path component". The loop checks every component including the final one. Good.
+
+Does it include intermediate directories? Yes. Good.
+
+Does it check the path after normalization? Yes, `rel` is computed from normalized `target`. So `foo/bar/../baz` becomes `foo/baz`. The components checked are `foo` and `baz`. The user didn't select `bar`, but if `bar` was a symlink, it's not in the normalized path. However, `bar` existed as a path component in the user input. Should we check `bar` even though it's resolved away by `..`? The policy says "user-selected path component". A component resolved away by `..` is not part of the final path. But it's still a user-selected component. Should we reject if the resolved-away component is a symlink? For example, `filename = "symlink_to_parent/../allowed.txt"`. The normalized path is `allowed.txt`. `symlink_to_parent` is a symlink. Should this be rejected?
+
+The policy says "if any user-selected path component is a symbolic link". Strictly speaking, `symlink_to_parent` is a user-selected path component. So yes, even if resolved away, if it exists as a component and is a symlink, we should reject. However, if we only check the normalized path, we miss this.
+
+Is this a real concern? In a path traversal context, `symlink_to_parent/..` is a classic trick. If `symlink_to_parent` points outside the root, then `symlink_to_parent/..` could resolve to a directory outside, and then `allowed.txt` might be something else. But our `commonpath` check on the normalized `target` ensures the final normalized path is under root. However, during resolution, the `..` is resolved relative to the symlink's target. Actually, `os.path.normpath` does NOT resolve symlinks; it purely manipulates the string. So `os.path.normpath("root/symlink_to_parent/../allowed.txt")` -> `root/allowed.txt`. It doesn't know that `symlink_to_parent` points to `/secret_dir`. So the normalized string is under root, but if we actually walked the filesystem following symlinks, we might end up outside. But our symlink check prevents following symlinks. If `symlink_to_parent` is a symlink, we reject it in the loop. Wait, in my current code, `rel` is `allowed.txt` (since target is `root/allowed.txt`). The loop only checks `allowed.txt`. It does NOT check `symlink_to_parent` because it's not in the normalized relative path.
+
+This is a gap! If `filename = "link/.."` where `link` is a symlink to `/etc`, the normalized target is `root`. We reject `target == root`. But if `filename = "link/../allowed.txt"`, target is `root/allowed.txt`. We would not check `link`. But `link` is a user-selected path component and is a symlink. The policy says reject if ANY user-selected path component is a symbolic link.
+
+So I should check the components of the original `filename`, not the normalized `target`. But I must also ensure path traversal isn't possible.
+
+How to reconcile?
+- Parse `filename` into components.
+- Reject `..` or `.`? No, we can allow `.`, but `..` is tricky.
+- Actually, we can walk the original components while keeping track of the current path, but rejecting symlinks at each step BEFORE resolving `..`. But `..` resolution depends on the filesystem if symlinks are involved.
+
+Better approach:
+- Split the original `filename` by separators.
+- Ignore empty parts (from leading slash or double slash).
+- Keep a stack of components.
+- For each part:
+  - If part is `..`, pop from stack (if empty, it goes above root -> reject).
+  - If part is `.`, ignore.
+  - Otherwise, push part.
+- At the same time, we need to check for symlinks. But we need to know the actual path to check.
+
+Wait, the policy is about symbolic links in the user-selected path components. The user-selected components are the parts of `filename`. So if `filename` is `a/b/c`, the components are `a`, `b`, `c`. If any of the corresponding paths under root are symlinks, reject.
+
+If `filename` is `a/../b`, the components are `a`, `..`, `b`. The path `a` corresponds to `root/a`. Is `root/a` a symlink? If yes, reject. Then `..` goes up. Then `b` corresponds to `root/b`. Is `root/b` a symlink? If yes, reject. This matches the policy.
+
+But what if `a` is a symlink to `/secret`? Then `a/..` is `/secret/..` which is `/`. Then `b` would be `/b`. But `os.path.normpath` gives `root/b`. So if we only check normalized path, we miss that `a` is a symlink. However, if we walk the components manually and apply `..` to the stack, we are doing string manipulation, not filesystem-aware. We need to check if `root/a` is a symlink. If it is, reject immediately. We don't need to follow it.
+
+So the algorithm should be:
+1. `root = os.path.abspath(reports_root)`.
+2. Normalize the filename's components manually to compute the target path, while checking for symlinks along the way.
+   - Split `filename` by `os.sep` and `/`? On Windows, both might be used. But `os.path.normpath` normalizes separators. We can split using `os.path.normpath` first on the filename alone? No, `os.path.normpath` on `filename` might change `..` behavior if there are symlinks, but we're not following symlinks.
+
+Actually, simpler:
+- Use `filename` as provided.
+- Split into parts using `os.sep` and also `/` for cross-platform? The user might pass filename with forward slashes on Windows. `os.path.normpath` would convert them. But we can just do: `parts = filename.replace(os.altsep or os.sep, os.sep).split(os.sep)`? Or rely on `os.path.normpath` to convert separators and then split.
+
+Let's do:
+```python
+normalized_filename = os.path.normpath(filename)
+parts = normalized_filename.split(os.sep)
+```
+
+But `os.path.normpath(filename)` on Unix with `filename = 'a/../b'` gives `'b'`. Then parts are `['b']`. We lose `a`. So we can't normalize the filename string before checking symlinks.
+
+Instead, split the raw filename:
+```python
+parts = filename.replace('\\', '/').split('/')
+```
+But on Windows, `os.sep` is `\`. If user passes `foo/bar`, that's actually valid on Windows too but treated as `foo\\bar` by normpath. Using `split('/')` would handle it. But what if user passes `foo\\bar` on Unix? That's a valid filename with a backslash. Hmm.
+
+Maybe better: Process the path using `os.path.normpath` but also check symlinks on the original components? No.
+
+Actually, we can use `pathlib.PurePosixPath` or just split on `/` and `os.sep`. But this is getting messy.
+
+Alternative: Walk the filesystem using the original filename components sequentially with `os.path.join` and `os.path.islink`, but manually handle `..` and `.` without letting Python's `normpath` strip them.
+
+Pseudo-code:
+```python
+current = root
+stack = []
+parts = filename.split(os.sep)  # might miss '/' on Windows, but os.sep is platform-specific
+# Actually, on Windows, filename could use '/'. os.path.split and os.sep might not handle it.
+# To be safe, we can normalize separators first:
+parts = os.path.normpath(filename).split(os.sep)
+```
+Wait, if we `os.path.normpath(filename)`, `a/../b` becomes `b` on all platforms. That loses `a`. But if `a` is a symlink, the user selected it. The policy says reject if any user-selected path component is a symlink. Does a component that gets eliminated by `..` count? It's ambiguous. But from a strict security standpoint, if the user selects `a`, and `a` is a symlink, we should reject, because the presence of `..` doesn't erase the fact that `a` was selected.
+
+However, consider `filename = "../b"`. The user selected `..`. `..` is not a symlink, but it's path traversal. We reject via `commonpath`.
+
+Consider `filename = "a/../b"` where `a` is a symlink. In many systems, `a/..` is resolved by the kernel to the parent of `a`'s target, not the parent of `a`. So if `a` points to `/secret`, `a/..` is `/`, and `b` is `/b`. But `os.path.normpath("root/a/../b")` is `root/b`. If we only check `root/b`, we miss that the user attempted to use a symlink. The policy explicitly says reject if any user-selected path component is a symlink. So `a` must be checked.
+
+Therefore, we must parse the original filename components and walk them one by one, checking for symlinks, and handling `..` by moving up the directory tree (string-wise, but checking each node).
+
+But wait: if `a` is a symlink, we reject immediately. We don't need to know where it points. So we can do:
+
+```python
+current = root
+for part in filename.split(os.sep):
+    if part == '' or part == '.':
+        continue
+    if part == '..':
+        # Move current up one level, but ensure we don't go above root.
+        # current is an absolute path.
+        parent = os.path.dirname(current)
+        if os.path.commonpath([parent, root]) != root:
+            raise ValueError("Disallowed")
+        current = parent
+        continue
+    current = os.path.join(current, part)
+    if os.path.islink(current):
+        raise ValueError("Disallowed")
+```
+
+At the end, `current` is the target path (without normalization of redundant separators, but that's fine). We then check that `current` is under `root` (it should be, because `..` is bounded). Then we open `current`.
+
+Wait, what about Windows path separator `\`? `split(os.sep)` will handle it. But if the user passes forward slashes on Windows, `os.sep` is `\`, so `split('\')` won't split on `/`. However, `os.path.join` on Windows handles `/` by treating it as a separator? Actually, `ntpath.join('a', 'b/c')` returns `'a\\b/c'`. It doesn't normalize slashes. Then `os.path.islink('a\\b/c')` might not work correctly on Windows because the path contains mixed separators. Windows APIs generally accept forward slashes, but Python's `os.path` might normalize them. Actually, on Windows, `os.path.islink` calls `os.lstat`, which uses the OS API that accepts forward slashes. But `os.path.join` doesn't normalize.
+
+To handle this robustly, we can normalize the filename by replacing `/` with `os.sep` before splitting, or use `os.path.normpath` on the joined path at each step? Let's think.
+
+If we do `parts = os.path.normpath(filename).split(os.sep)`, we lose intermediate `..` resolution. But we could avoid `os.path.normpath` and instead just replace `/` with `os.sep` and split:
+
+```python
+sep = os.sep
+if os.altsep:
+    filename = filename.replace(os.altsep, sep)
+parts = filename.split(sep)
+```
+
+This preserves `.` and `..`.
+
+Then in the loop:
+```python
+current = root
+for part in parts:
+    if part == '' or part == '.':
+        continue
+    if part == '..':
+        parent = os.path.dirname(current)
+        if os.path.commonpath([parent, root]) != root:
+            raise ValueError("Disallowed")
+        current = parent
+        continue
+    current = os.path.join(current, part)
+    if os.path.islink(current):
+        raise ValueError("Disallowed")
+```
+
+After the loop, `current` is the resolved path (without string-level normalization, but structurally correct). We need to ensure `current` is a file under root. `current` could be a directory. We open it.
+
+But what about redundant separators like `foo//bar`? `split` gives `['foo', '', 'bar']`. We skip empty strings. That works.
+
+What about a filename like `/foo` on Unix? `split` gives `['', 'foo']`. Skip empty. `current` becomes `root/foo`. Good.
+
+What about `filename` starting with `\\?\` on Windows? That prefix might cause issues. But it's an edge case.
+
+One more issue: `os.path.dirname(current)` when `current` is `root` and we do `..`. `dirname('/reports')` is `/`. `commonpath(['/', '/reports'])` is `/`, not `/reports`. So `!= root` -> ValueError. Good.
+
+What if root is `C:\reports` and current is `C:\reports`? `dirname` is `C:\`. `commonpath(['C:\\', 'C:\\reports'])` is `C:\`, not `C:\reports`. ValueError. Good.
+
+What if root is `/`? Then `target` must be under `/`, which is anywhere. But `target == root` should be rejected because it's not beneath. If `filename` is `..`, parent is `/`. `commonpath(['/', '/'])` is `/`, which equals root (`/`). So the check `commonpath([parent, root]) != root` would NOT trigger for root `/` when doing `..` from `/`? Let's see:
+- root = `/`
+- current = `/`
+- part = `..`
+- parent = `os.path.dirname('/')` -> `/`
+- `commonpath(['/', '/'])` -> `/` == root. So it passes, current stays `/`.
+- Then we try to open `/`. That's a directory. IsADirectoryError.
+But is `..` from `/` a problem? On Unix, `..` in `/` is `/`. So it doesn't escape. But `target == root` check at the end? We should add a check that `current != root`. Also, if filename is `foo/..`, current ends up as `/`. We should reject because it's not beneath root, it's at root.
+
+But wait, if root is `/reports` and filename is `foo/..`, current becomes `/reports`. `current == root`. We should reject because it's not a file beneath root. So add `if current == root: raise ValueError`.
+
+What about `filename = 'foo/bar/.'`? part is `.`, skipped. current becomes `root/foo/bar`. Good.
+
+What about `filename = 'foo/bar/./../baz'`?
+- foo: current = root/foo, check islink.
+- bar: current = root/foo/bar, check islink.
+- .: skip.
+- ..: parent = root/foo. commonpath ok. current = root/foo.
+- baz: current = root/foo/baz, check islink.
+This is correct and checks all user-selected components that exist as filesystem nodes.
+
+But what about `filename = 'foo/../bar'` where `foo` doesn't exist? `current = root/foo`. `os.path.islink(root/foo)` returns False (since it doesn't exist). Then `..` brings current back to root. Then `bar`: `current = root/bar`. `os.path.islink(root/bar)` checks. This means we didn't reject a non-existent `foo`. That's fine because it's not a symlink. But is there a risk? If `foo` doesn't exist, `foo/..` is meaningless in the filesystem but we handle it logically. Since the user selected `foo`, and it's not a symlink, it's okay. The path traversal is bounded.
+
+But what if `foo` is a symlink to `/secret`, and `foo/..` should resolve to `/`? Our algorithm doesn't follow `foo`, so it treats `foo/..` as `root`. This is the "logical" resolution (string-based), not the "physical" resolution (filesystem-based). Which one is correct for security?
+
+The policy says "reject if any user-selected path component is a symbolic link". So if `foo` is a symlink, we should reject regardless of `..`. Our algorithm checks `os.path.islink(root/foo)` and rejects. Good. So even though we don't follow it, we still reject it. Thus the physical resolution issue is moot because symlinks are rejected before following.
+
+If `foo` is NOT a symlink, then `foo/..` is safe to resolve logically to the parent directory. Even if `foo` is a mount point or something else, `..` is handled by the filesystem, but since it's not a symlink, it's okay per policy. The `commonpath` check ensures we don't go above root.
+
+So this manual walk algorithm satisfies the policy better than the normalized-path approach.
+
+Let's refine the algorithm:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.abspath(reports_root)
+    
+    # Normalize separators
+    sep = os.sep
+    if os.altsep:
+        filename = filename.replace(os.altsep, sep)
+    parts = filename.split(sep)
+    
+    current = root
+    for part in parts:
+        if part == '' or part == '.':
+            continue
+        if part == '..':
+            parent = os.path.dirname(current)
+            # Ensure we do not go above root
+            if os.path.commonpath([parent, root]) != root:
+                raise ValueError("Request disallowed")
+            current = parent
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Request disallowed")
+    
+    if current == root:
+        raise ValueError("Request disallowed")
+    
+    # Final safety check that the resolved path is still under root
+    if os.path.commonpath([current, root]) != root:
+        raise ValueError("Request disallowed")
+    
+    with open(current, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+Wait, `os.path.commonpath([parent, root]) != root` allows `parent == root` because `commonpath([root, root]) == root`. That's correct: moving up to root is allowed as long as we don't go above.
+
+If root is `C:\reports` and current is `C:\reports\foo`, part is `..`, parent is `C:\reports`. commonpath is `C:\reports` == root. OK.
+
+If root is `C:\reports` and current is `C:\reports`, part is `..`, parent is `C:\`. commonpath is `C:\` != root. ValueError. OK.
+
+What about `filename` = `..` when root is `/reports`? current starts as `/reports`. part `..`: parent = `/`. commonpath(`/`, `/reports`) = `/` != `/reports`. ValueError. Good.
+
+What about `filename` = `../foo`? After first `..`, ValueError. Good.
+
+What about `filename` = `foo/../../bar` when root is `/reports`?
+- foo: current = `/reports/foo`. islink? checked.
+- ..: parent = `/reports`. commonpath ok. current = `/reports`.
+- ..: parent = `/`. commonpath(`/`, `/reports`) = `/` != `/reports`. ValueError. Good.
+
+What about `filename` = `foo/bar/baz` where `bar` is a symlink? current becomes `/reports/foo/bar`. `islink` -> True. ValueError. Good.
+
+What about `filename` = `foo/bar` where `bar` is a symlink to `qux` inside the same dir? `islink` -> True. ValueError. Good.
+
+What about `filename` = `foo` where `foo` is a symlink? `islink` -> True. ValueError. Good.
+
+What about `filename` = `foo` where `foo` doesn't exist? `islink` -> False. Then `open` raises FileNotFoundError. Propagated. Good.
+
+What about `filename` = `foo` where `foo` is a regular file? `islink` -> False. `open` reads it. Good.
+
+What about `filename` = `foo` where `foo` is a directory? `islink` -> False. `open` raises IsADirectoryError. Good.
+
+What about empty string `filename = ""`? `parts = ['']`. Loop: part '' -> skip. current stays root. After loop, `current == root` -> ValueError. Good.
+
+What about `filename = "."`? `parts = ['.']`. Loop: skip. current == root -> ValueError. Good.
+
+What about `filename = "./."`? same.
+
+What about `filename = "foo/"`? `split` gives `['foo', '']`. `foo` -> current = root/foo. `''` -> skip. current = root/foo. islink checked for foo. But the trailing slash implies it might be a directory. `open` will raise if it's a dir. Good.
+
+What about `filename` containing null bytes? `split` will include null byte part. `os.path.join(root, 'foo\x00bar')` -> path with null byte. `os.path.islink` with null byte raises TypeError or ValueError? In Python, `os.path.islink` calls `os.lstat`, which might raise `TypeError` or `ValueError` for embedded null. On Python 3, it raises `ValueError: embedded null byte`. The prompt says raise ValueError when disallowed. So that's fine.
+
+What about very long paths? Not our concern.
+
+One more nuance: `os.path.abspath(reports_root)` might contain symlinks. But as discussed, that's okay. `current` is built from `root`. If `root` itself is a symlink, `current` paths are under the symlink path. `islink` checks are on those paths. For example, root = `/a/b` (where `b` is a symlink to `/c/d`). current = `/a/b/foo`. `os.path.islink('/a/b/foo')` checks if `foo` is a symlink. `os.path.islink('/a/b')` is True, but we don't check it because it's not a user-selected component. The user-selected components start from `filename`. The policy says "any user-selected path component". So root components are not user-selected. This seems correct.
+
+However, consider `reports_root` = `/a/b`, and `filename` = `../c`. After normalization manually:
+- part `..`: parent = `/a`. commonpath(`/a`, `/a/b`) = `/a` != `/a/b`. ValueError. Good.
+
+So the manual walk approach is robust.
+
+Let's check Windows behavior with `os.path.commonpath`. On Windows, it handles drive letters and case insensitivity? It normalizes case? `os.path.commonpath(['C:\\Reports', 'c:\\reports\\foo'])` returns `'C:\\Reports'`? Actually, on Windows, `ntpath.commonpath` is case-insensitive and returns lowercase? I think it returns the path as it appears in the first argument or normalized. But `== root` comparison might fail due to case if `abspath` returns `C:\Reports` and `commonpath` returns `c:\reports`. Let's check: `ntpath.commonpath` uses `splitdrive` and lowercases for comparison but returns the original casing? Actually, looking at CPython source: `ntpath.commonpath` normalizes the path separators and cases for comparison but returns the path from the input with the original case? Wait, no: it returns the common prefix using the casing of the first path? Let's not rely on exact string equality for case-insensitive filesystems.
+
+On Windows, `os.path.abspath` returns a path with the drive letter and path using the casing provided by the OS? Actually, `abspath` calls `GetFullPathNameW` on Windows, which can change case to the actual filesystem case? Or it preserves? It might not be consistent. And `commonpath` returns the common path with the original casing of the first argument? Actually, `commonpath` returns the common prefix in lowercase on Windows? I need to be careful.
+
+To avoid case-sensitivity issues on Windows, we can use `os.path.normcase` for comparison, or `pathlib.Path` for resolution. But `commonpath` on Windows uses `normcase` internally for comparison but returns the path from the first argument. Wait, from docs: "Return the longest common sub-path of each pathname in the sequence. ... On Windows, the drive letter is not compared, and the comparison is case-insensitive."
+
+But the return value might have the case of the first path. So `commonpath([target, root]) == root` might be False on Windows if casing differs, even though it's the same path. To fix, we can compare using `os.path.normcase`:
+
+```python
+if os.path.normcase(os.path.commonpath([current, root])) != os.path.normcase(root):
+    raise ValueError
+```
+
+Or simply, after computing `root = os.path.abspath(reports_root)`, we can also ensure `target` is under `root` by checking `os.path.normcase(current).startswith(os.path.normcase(root) + os.sep)`. But `startswith` is less robust.
+
+Actually, `commonpath` on Windows is case-insensitive in its *comparison*, but what does it *return*? The docs say: "On Windows, the drive letter is not compared, and the comparison is case-insensitive." It doesn't specify return value casing. Looking at CPython implementation (approximate):
+```python
+def commonpath(paths):
+    ...
+    if os.name == 'nt':
+        # ...
+        # returns path using the original case from the input? Or lower?
+```
+In CPython 3.11, `ntpath.commonpath` returns the path using the original case of the first path for the common prefix? Actually, it might normalize to the case of the first path. To be safe, we should compare using `os.path.normcase`.
+
+So:
+```python
+if os.path.normcase(os.path.commonpath([current, root])) != os.path.normcase(root):
+    raise ValueError("Request disallowed")
+```
+
+But `commonpath` raises ValueError if paths are on different drives. We catch that? No, we want to raise ValueError for disallowed. So:
+```python
+try:
+    if os.path.normcase(os.path.commonpath([current, root])) != os.path.normcase(root):
+        raise ValueError("Request disallowed")
+except ValueError:
+    raise ValueError("Request disallowed")
+```
+Wait, if `commonpath` raises ValueError (e.g., different drives), that's also disallowed. So we can catch it and raise our ValueError. But if `commonpath` raises ValueError due to empty sequence, that won't happen because we pass two paths.
+
+But wait, `os.path.commonpath` on Unix with empty string? Not relevant.
+
+Alternatively, we can avoid `commonpath` and use a manual check:
+
+```python
+def _is_under(current, root):
+    current = os.path.normcase(os.path.abspath(current))
+    root = os.path.normcase(os.path.abspath(root))
+    # Ensure root ends with sep for prefix check
+    if not root.endswith(os.sep):
+        root += os.sep
+    return current.startswith(root)
+```
+
+But `abspath` doesn't resolve symlinks, good. `normcase` handles Windows case. `startswith` is simple but has edge cases (e.g., root `/foo` and current `/foo-bar`). If root doesn't end with sep, `startswith('/foo')` matches `/foo-bar`. So we must add `os.sep`. `root += os.sep`. Then `current.startswith(root)` is safe. And we also need `current != root`. Since root ends with sep, current == root won't startswith root+sep.
+
+Let's use this instead of `commonpath` to avoid exceptions and case issues.
+
+```python
+root = os.path.abspath(reports_root)
+root_prefix = os.path.normcase(root)
+if not root_prefix.endswith(os.sep):
+    root_prefix += os.sep
+```
+
+In the loop, `current` is built using `os.path.join(root, ...)`. It should be absolute. After loop, `current_norm = os.path.normcase(current)`. Check `current_norm.startswith(root_prefix)`. If not, ValueError. Also `current == root` is rejected because it doesn't startwith `root+sep`.
+
+But what about `current` being `root` with a trailing slash? `os.path.join` doesn't add trailing slash unless joining with empty string. `current` will never have trailing slash except if root is `/` on Unix. If root is `/`, `root_prefix` is `/`. `root_prefix + os.sep` = `//`. On Unix, `//` is valid but weird. `current` like `/etc` starts with `//`? No, `/etc` does not start with `//`. So `startswith('//')` fails for `/etc`. That's a problem for root `/`.
+
+If root is `/`, then any path under it should be allowed. `root_prefix = '/'`. `root_prefix += os.sep` -> `'//'`. But `/foo` does not start with `//`. However, on Unix, `//` is treated as `//` (or `/` depending on OS). To handle root `/`, we can special-case it: if root is `/`, then everything is under it. But we still reject `current == '/'`.
+
+Better approach for prefix check:
+```python
+root = os.path.abspath(reports_root)
+# Ensure root ends with separator only if it's not already the root of a drive
+if root == os.path.dirname(root) and not root.endswith(os.sep):
+    # root is something like / or C:\
+    root_prefix = os.path.normcase(root)
+else:
+    root_prefix = os.path.normcase(root) + os.sep
+```
+
+Wait, `os.path.dirname('/')` is `/`. So `root == os.path.dirname(root)` is True for `/` and for `C:\`. For `C:\`, `os.path.dirname('C:\\')` is `C:\`. So this works. But what about `C:\foo`? `dirname` is `C:\`. Not equal. So we add sep.
+
+Actually, simpler: we can just use `os.path.commonpath` and wrap it:
+
+```python
+try:
+    common = os.path.commonpath([current, root])
+except ValueError:
+    raise ValueError("Request disallowed")
+if os.path.normcase(common) != os.path.normcase(root):
+    raise ValueError("Request disallowed")
+```
+
+This avoids the startswith issue and handles `/` correctly. `commonpath(['/etc', '/'])` returns `/`. `normcase('/') == normcase('/')`. OK. `commonpath(['C:\\foo', 'C:\\'])` returns `C:\`. OK. And if current goes above root, e.g., `commonpath(['/foo', '/reports'])` returns `/`. `normcase('/') != normcase('/reports')` on Unix. On Windows, `commonpath(['C:\\foo', 'C:\\reports'])` returns `C:\`. `normcase('C:\\') != normcase('C:\\reports')`. Good.
+
+What about case difference? `commonpath` is case-insensitive on Windows, so `commonpath(['C:\\Reports', 'c:\\reports\\foo'])` returns `C:\Reports` (or maybe `c:\reports`?). Let's check Python docs/behavior. Actually, I just want to be safe. We can do:
+
+```python
+try:
+    common = os.path.commonpath([current, root])
+except ValueError:
+    raise ValueError("Request disallowed")
+if os.path.normcase(common) != os.path.normcase(root):
+    raise ValueError("Request disallowed")
+```
+
+Since `commonpath` on Windows compares case-insensitively, it will return the correct common path regardless of case. The return value might have some case, but `normcase` both sides ensures equality check works.
+
+Let's test mentally:
+- root = `C:\Reports`, current = `C:\reports\foo`. `commonpath` returns `C:\Reports` (assuming it takes from first arg). `normcase('C:\\Reports')` == `c:\\reports`. `normcase(root)` == `c:\\reports`. Equal. OK.
+- root = `C:\Reports`, current = `C:\Other`. `commonpath` returns `C:\`. `normcase('C:\\')` != `c:\\reports`. ValueError. OK.
+
+This seems robust.
+
+Now, what about `os.path.dirname(current)` when `current` has trailing slash? `current` is built via `os.path.join`, which doesn't add trailing slash. The only time `current` might have trailing slash is if `root` has one? `abspath` removes trailing slash except for root. If root is `C:\`, `abspath` returns `C:\`. `os.path.join('C:\\', 'foo')` -> `C:\\foo`. No trailing slash. If root is `/`, `os.path.join('/', 'foo')` -> `/foo`. No trailing slash. So `dirname` is fine.
+
+One more thing: `os.path.islink(current)` where `current` is a path that doesn't exist. It returns False. That's fine.
+
+Let's also consider if `current` could be a broken symlink. `os.path.islink` returns True for broken symlinks. We reject. Good.
+
+Could there be a symlink in the path that is not user-selected? E.g., root itself contains a symlink in its absolute path (e.g., root is `/a/b`, and `/a` is a symlink). We don't check that because it's not user-selected. Good.
+
+Let's write the final module.
+
+Wait, I need to make sure the module is syntactically correct and handles all cases.
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.abspath(reports_root)
+    
+    # Normalize alternative separators to os.sep for splitting
+    if os.altsep:
+        filename = filename.replace(os.altsep, os.sep)
+    parts = filename.split(os.sep)
+    
+    current = root
+    for part in parts:
+        if part == '' or part == '.':
+            continue
+        if part == '..':
+            parent = os.path.dirname(current)
+            try:
+                common = os.path.commonpath([parent, root])
+            except ValueError:
+                raise ValueError("Request disallowed")
+            if os.path.normcase(common) != os.path.normcase(root):
+                raise ValueError("Request disallowed")
+            current = parent
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Request disallowed")
+    
+    if current == root:
+        raise ValueError("Request disallowed")
+    
+    try:
+        common = os.path.commonpath([current, root])
+    except ValueError:
+        raise ValueError("Request disallowed")
+    if os.path.normcase(common) != os.path.normcase(root):
+        raise ValueError("Request disallowed")
+    
+    with open(current, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+This looks good.
+
+One optimization: we can avoid calling `commonpath` inside the loop for every `..` by checking if `parent == current` (i.e., already at filesystem root) and root is not filesystem root? No, that's not enough. The `commonpath` check is fine.
+
+But `os.path.commonpath` inside the loop might be slightly expensive, but it's negligible.
+
+Let's double-check `os.path.dirname` behavior on Windows for UNC paths, etc. Not needed.
+
+Another edge: `filename` = `foo\` on Windows. `split` gives `['foo', '']`. `foo` processed, `''` skipped. `current` = `root\foo`. Good.
+
+What about `filename` = `\foo` on Windows? `split` gives `['', 'foo']`. `''` skipped. `foo` processed. `current` = `root\foo`. Good. But the user might have intended an absolute path `C:\foo`. However, since we split by sep and join back, leading backslash is lost, making it relative. Is that correct? `os.path.join(root, '\foo')` on Windows would normally discard root and give `\foo`. But our manual splitting loses that. This is a problem!
+
+On Windows, `os.path.join('C:\\reports', '\\foo')` returns `\\foo` (absolute path on current drive). Our manual split and join would treat it as `reports\foo`. That's incorrect and a security issue: it could allow reading `C:\foo` if root is `C:\reports`, because we treat `\foo` as relative.
+
+Similarly on Unix, `os.path.join('/reports', '/foo')` returns `/foo`. Our manual split would treat `/foo` as relative `foo` because leading empty string is skipped. So we'd read `/reports/foo` instead of `/foo`. That means we might incorrectly allow a file under root when the user asked for an absolute path outside. Wait, that's actually safe (we read inside root instead of outside). But we should reject absolute paths in the filename because they are user-selected and potentially attempt to bypass the root.
+
+If `filename` starts with a separator (or is absolute on Windows with a drive letter), the request should be disallowed or treated as a path traversal. Our current manual splitting treats it as relative, which is safe but might not match expected behavior. However, `os.path.normpath(os.path.join(root, filename))` would have caught it because `join` discards root. But our manual walk doesn't.
+
+We need to detect absolute paths in `filename`.
+On Unix: `filename.startswith('/')`.
+On Windows: `filename` starts with `\\` or `X:` or `X:\` or `/`.
+
+The simplest way: before splitting, check if `os.path.isabs(filename)`. If it is, raise ValueError.
+
+```python
+if os.path.isabs(filename):
+    raise ValueError("Request disallowed")
+```
+
+Then proceed with splitting. Since `os.path.isabs` handles both Unix and Windows correctly.
+
+Let's add that.
+
+Also, what about Windows drive-relative paths like `C:foo` (no backslash)? `os.path.isabs('C:foo')` returns False. `os.path.join('D:\\reports', 'C:foo')` returns `C:foo` on Windows. Our manual splitting would treat it as relative and join to `D:\reports\C:foo`. That's different from `os.path.join`. But `os.path.isabs` returns False for `C:foo`, so it would slip through. However, `os.path.join(root, 'C:foo')` on Windows returns `C:foo` if `C:` is a drive letter? Actually, `ntpath.join` behavior: if the path component has a drive letter, it resets. Let's check: `ntpath.join('D:\\reports', 'C:foo')` -> `'C:foo'`. `ntpath.join('D:\\reports', 'C:\\foo')` -> `'C:\\foo'`. Our manual walk would produce `D:\reports\C:foo` or `D:\reports\C:\foo` which is invalid. `os.path.islink` on `D:\reports\C:foo` returns False (doesn't exist). Then `open` would try to open `D:\reports\C:foo`, which is not `C:foo`. This is actually safe (we don't open `C:foo`), but the path is weird. However, to be safe, we should probably just use `os.path.join` and `os.path.normpath` to compute the target path for opening, but still do the manual component walk for symlink checking based on the raw parts.
+
+Actually, we can compute the target path using `os.path.normpath(os.path.join(root, filename))` and then do the manual walk using `filename` parts (after handling absolute). The manual walk checks symlinks. The final `current` from manual walk should be the same as `os.path.normpath(os.path.join(root, filename))` if no symlinks exist. But if `filename` contains `..`, they may differ if symlinks are present. However, we reject symlinks, so they will never be present. Thus, the manual walk's `current` will be the same as the normpath-join result. So we can just use `current` from manual walk for opening.
+
+But the issue with drive letters remains: if user passes `C:foo` on Windows, our manual walk produces `root\C:foo`. This is not a valid path (colon in filename). `os.path.join` would produce `C:foo`. Which is correct? The user passed `C:foo`, which is a drive-relative path on Windows. The policy says user-selected path component. `C:foo` is not a valid single component; it's a drive-relative path. Should we reject it? It's not a symlink, but it's potentially a path traversal (drive-relative). To be safe, we can reject any `filename` that contains a drive letter on Windows, or any `:` on Unix. But the prompt says "Return only a complete Python module". We can be pragmatic.
+
+Actually, `os.path.isabs('C:foo')` is False. But it's still a special path. If we pass `C:foo` to `open` on Windows, it opens `C:foo` relative to the current directory on drive C. Our manual walk opens `root\C:foo`, which is different and likely non-existent. So it's safe (we don't open the wrong file), but might be confusing.
+
+Given the constraints, I think checking `os.path.isabs(filename)` is sufficient for absolute paths. For drive-relative paths like `C:foo`, it's an edge case that likely won't be tested. But to be thorough, we could reject if `filename` contains `:` on Windows and is not a drive letter at the start? Actually, `os.path.splitdrive` can help.
+
+Let's keep it simple: check `os.path.isabs(filename)`. If True, raise ValueError.
+
+For splitting, use `parts = filename.split(os.sep)`. If `os.altsep` is present and different, also replace. But if `filename` is `C:\foo`, `os.path.isabs` catches it.
+
+If `filename` is `foo/bar` on Windows, `split(os.sep)` gives `['foo/bar']` because `os.sep` is `\`. Wait, if user passes forward slash on Windows, `os.sep` is `\`, so `split('\')` won't split. Then `part = 'foo/bar'`. `os.path.join(current, 'foo/bar')` on Windows gives `current\foo/bar`. `os.path.islink('current\\foo/bar')` on Windows might work because Windows APIs accept forward slashes. But then `open` might also work. However, the `..` check inside the string `foo/bar` won't trigger because it's a single part. But there is no `..`. The symlink check is on `foo/bar` as a single file name. If `foo/bar` is actually `foo\bar` in the filesystem, `islink` returns False. So we miss that `foo` is a directory. But `islink` on `current\foo/bar` checks if the file named `foo/bar` exists. It doesn't check `foo`. This means if there's a directory `foo` and inside it a file `bar`, and `foo` is a symlink, we won't detect it because we didn't split on `/`.
+
+So we MUST normalize `/` to `os.sep` before splitting. Do `filename = filename.replace('/', os.sep)` universally? On Unix, `os.sep` is `/`, so no change. On Windows, it converts `/` to `\`. Then `split(os.sep)` works correctly.
+
+But what if the filename legitimately contains a backslash on Unix? That's a valid character in a filename. Converting `/` to `os.sep` on Unix is a no-op. On Windows, converting `/` to `\` is correct because `/` is a path separator on Windows. So `filename.replace('/', os.sep)` is safe.
+
+What about `os.altsep`? On Windows, `os.altsep` is `/`. So `filename.replace(os.altsep, os.sep)` does the same. On Unix, `os.altsep` is None. So we should check.
+
+So:
+```python
+if os.altsep:
+    filename = filename.replace(os.altsep, os.sep)
+parts = filename.split(os.sep)
+```
+
+This handles Windows forward slashes.
+
+Now, back to absolute path check. After replacing altsep, `os.path.isabs(filename)` might change? E.g., on Windows, `/foo` becomes `\foo`. `isabs('\foo')` is True. Good.
+
+So the code:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.abspath(reports_root)
+    
+    if os.path.isabs(filename):
+        raise ValueError("Request disallowed")
+    
+    if os.altsep:
+        filename = filename.replace(os.altsep, os.sep)
+    parts = filename.split(os.sep)
+    
+    current = root
+    for part in parts:
+        if part == '' or part == '.':
+            continue
+        if part == '..':
+            parent = os.path.dirname(current)
+            try:
+                common = os.path.commonpath([parent, root])
+            except ValueError:
+                raise ValueError("Request disallowed")
+            if os.path.normcase(common) != os.path.normcase(root):
+                raise ValueError("Request disallowed")
+            current = parent
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            raise ValueError("Request disallowed")
+    
+    if current == root:
+        raise ValueError("Request disallowed")
+    
+    try:
+        common = os.path.commonpath([current, root])
+    except ValueError:
+        raise ValueError("Request disallowed")
+    if os.path.normcase(common) != os.path.normcase(root):
+        raise ValueError("Request disallowed")
+    
+    with open(current, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+Wait, the `commonpath` check after the loop is somewhat redundant because the `..` checks inside the loop already ensure we don't go above root. However, if `filename` is empty or `.`, `current == root` catches it. If `filename` contains no `..`, `current` is root + joined parts, which is under root. The only way to escape is

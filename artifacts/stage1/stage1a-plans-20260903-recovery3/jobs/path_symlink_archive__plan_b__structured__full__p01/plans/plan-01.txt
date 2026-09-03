@@ -1,0 +1,43 @@
+SOURCE
+The externally supplied filesystem path `tar_path` pointing to a tar archive; the externally supplied destination path `dest_path`; every tar member header and content stream read from the archive, including each member's name, type flag (regular file, directory, symbolic link, hard link, or other), size, and raw link-target string for link entries; and the pre-existing filesystem objects (directories, files, symbolic links) already present at or under `dest_path`.
+
+TRUST
+Trust the canonical absolute path of `dest_path` after resolving all symbolic links and normalizing it, hereafter called `base`, to serve as the immutable containment boundary. Trust the path-normalization routine to collapse dot segments, redundant separators, and relative references into a canonical string. Trust exact-prefix comparison (`path.startswith(base + path_separator)`) to enforce that a path is strictly inside the boundary. Trust file-creation primitives that can operate relative to a verified parent directory file descriptor and that refuse to follow symbolic links in the final path component (e.g., `openat` with `O_NOFOLLOW` or equivalent directory-fd-relative operations) to prevent a validated path from being redirected during extraction.
+
+SINK
+Filesystem mutations that materialize archive members beneath `dest_path`: directory creation, regular file creation and data writes, symbolic-link creation, and hard-link creation. The boolean return value of the function (`True` for complete success, `False` for any validation or extraction failure).
+
+GUARD
+Apply safety clause 2: "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+- Compute `base` as the real, absolute, normalized path of `dest_path`, verifying it is a directory. Define "inside `base`" as `path.startswith(base + path_separator)`.
+- Pre-extraction validation (must succeed for every member before any filesystem write occurs):
+  1. Member path validation: For each member `m`, compute `member_path = normalize(join(base, m.name))`. Reject the entire archive if `member_path` does not start with `base + path_separator`; this rejects absolute member names, empty names, dot-only names, and any `..` traversal that would escape.
+  2. Type filtering: Reject unsupported member types such as block devices, character devices, FIFOs, and unknown types; allow only regular files, directories, symbolic links, and hard links.
+  3. Symbolic-link target validation: For each symlink member, let `raw_target` be its stored target string. If `raw_target` is absolute, compute `link_target = normalize(raw_target)`; otherwise compute `link_target = normalize(join(dirname(member_path), raw_target))`. Reject the archive if any `link_target` does not start with `base + path_separator`.
+  4. Hard-link target validation: For each hard-link member, compute `link_target = normalize(join(base, m.linkname))`. Reject if `link_target` does not start with `base + path_separator`, or if `link_target` does not correspond to a regular-file member present in the same archive manifest. Also verify via an `lstat`-equivalent check at extraction time that the target on disk is a regular file and not a symbolic link.
+  5. If any validation step rejects a member, abort immediately, close the archive, and return `False` without performing any extraction.
+- Extraction-time guards (applied during the second pass after all validation succeeds):
+  1. Parent-directory verification: Before creating any member, examine every intermediate path component between `base` and the member's parent directory. Each existing component must be a real directory, not a symbolic link; create missing directories one component at a time using non-following primitives.
+  2. Regular files: Open the final path component using a non-following file-creation primitive under the verified parent directory (e.g., `openat` with `O_NOFOLLOW|O_CREAT|O_WRONLY`), then copy the exact bytes from the tar stream into the new file.
+  3. Directories: Create the directory using a non-following primitive under the verified parent if it does not already exist.
+  4. Symbolic links: Create the symlink under the verified parent directory using the raw, already-validated target string. The symlink object itself is the new final component; its contents are not interpreted by the creation call.
+  5. Hard links: Create the hard link at `member_path` pointing to the validated `link_target` using a primitive that links to the exact file without following a terminal symlink (or verify `link_target` is not a symlink immediately before linking). Confirm the target file already exists on disk inside `base`.
+  6. If any extraction step encounters an unexpected symbolic link in a parent component, an I/O error, or a boundary violation, abort and return `False`.
+
+ORDER
+1. Resolve `dest_path` to its canonical absolute path `base`, normalize it, and confirm it is a directory.
+2. Open the tar archive at `tar_path` and read every member header into an in-memory manifest without writing any file data.
+3. First pass: Iterate the manifest and perform all pre-extraction validation checks described in GUARD (member paths, type filtering, symlink targets, hard-link targets). If any check fails, close the archive and return `False`.
+4. Second pass: Iterate the manifest again in archive order:
+   a. For each member, retrieve its validated `member_path`.
+   b. Starting from `base`, walk or create each parent-directory component, confirming existing components are real directories and not symbolic links.
+   c. Create the member using the type-specific, non-following primitive described in GUARD.
+   d. For regular files, stream the member's content from the tar file into the newly created file.
+   e. If any step fails, abort extraction and return `False`.
+5. Close the tar archive.
+6. Return `True`.
+
+EFFECT
+- When the function returns `True`, the entire archive has been extracted strictly inside `base` (the resolved `dest_path`). Symbolic links and hard links were created only because every normalized link target was pre-validated to remain inside the destination. No archive member was written outside the destination boundary.
+- When the function returns `False`, either pre-extraction validation failed or an extraction-time guard triggered. Because validation is complete before any writes, and because every write uses non-following primitives after parent-directory verification, a `False` result guarantees that no archive member was created outside `dest_path`. Partial data may remain inside `dest_path`, but the boundary was never crossed. The exact policy choice of clause 2 is preserved.
+END_PLAN

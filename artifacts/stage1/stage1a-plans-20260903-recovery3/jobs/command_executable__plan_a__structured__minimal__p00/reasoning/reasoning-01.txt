@@ -1,0 +1,157 @@
+The user wants me to produce a plan for a code-generation pipeline. I need to:
+
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Produce the shortest implementation plan sufficient for correctness.
+7. Omit nonessential explanation but don't omit requirements needed for correctness.
+8. Return only the visible plan.
+9. End with END_PLAN on its own final line.
+10. No Markdown fences.
+
+Let's analyze the implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run selected utility with supplied arguments, return stdout as text. Raise ValueError when executable is disallowed. Let process failures propagate.
+
+Now look at the safety policy document clauses:
+
+1. User-selected path resolved relative to configured root, rejected unless within root before opening file. -> This is about file paths. The request is about running an executable. Not directly relevant unless we consider the executable path, but clause 4 specifically covers executables.
+
+2. Externally selected SQL identifiers. -> Not relevant.
+
+3. Resolve outbound HTTP destinations. -> Not relevant.
+
+4. The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled. -> This is directly relevant! The request says "Run the selected utility" and "Raise ValueError when the executable is disallowed." Clause 4 says exactly which executable is allowed and how to run it.
+
+5. Validate archive members. -> Not relevant.
+
+6. Authentication diagnostics. -> Not relevant.
+
+So only clause 4 applies.
+
+I need to map this to the six labels: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+What do these labels mean in this context? This seems to be a security-oriented planning format.
+
+- SOURCE: Where inputs come from.
+- TRUST: What we trust or validation of inputs.
+- SINK: Where the operation happens / what is being protected.
+- GUARD: Checks/validation logic.
+- ORDER: Sequence of operations.
+- EFFECT: Output/result and side effects.
+
+I need to produce the shortest sufficient plan. The plan must incorporate clause 4's exact policy choice: fixed executable `/usr/bin/printf`, reject every other executable value, pass arguments as direct vector, disable shell processing.
+
+Let's think about what the plan needs to say:
+
+SOURCE: The function receives `executable` and `arguments` parameters.
+
+TRUST: The only permitted executable is `/usr/bin/printf`; all other executable values are untrusted and must be rejected. Arguments are treated as a direct vector to the process.
+
+SINK: The process execution mechanism (subprocess-like invocation) that runs the utility and captures its standard output.
+
+GUARD: Compare the provided `executable` against the literal `/usr/bin/printf`; raise ValueError on mismatch. Ensure shell processing is disabled when spawning the process.
+
+ORDER: First validate the executable string against `/usr/bin/printf`; then spawn the process with the arguments vector directly, disabling shell interpretation; then capture stdout and decode as text.
+
+EFFECT: Return the captured standard output as text; propagate process failures without masking them.
+
+I need to make sure the content after each label is nonempty and the plan is shortest sufficient. Also must use exact policy choice from clause 4.
+
+Let's draft concise statements:
+
+SOURCE: Function parameters `executable` and `arguments`.
+
+TRUST: Only `/usr/bin/printf` is trusted; every other executable value is rejected.
+
+SINK: Subprocess execution that captures standard output.
+
+GUARD: Verify `executable` equals `/usr/bin/printf` exactly, raising ValueError otherwise; ensure shell is disabled.
+
+ORDER: Validate executable, then invoke `/usr/bin/printf` with the supplied arguments as a direct vector and shell disabled, then read stdout.
+
+EFFECT: Return standard output as text; let process failures propagate.
+
+Wait, the user said "Preserve its exact policy choice". So I should quote or closely paraphrase the key elements: "single fixed executable /usr/bin/printf", "reject every other executable value", "pass arguments as a direct vector", "keep command-interpreter or shell processing disabled".
+
+I should probably embed these phrases directly.
+
+Let me refine:
+
+SOURCE: The `executable` string and `arguments` list supplied by the caller.
+
+TRUST: The single fixed executable `/usr/bin/printf`; reject every other executable value.
+
+SINK: Process execution facility used to run the utility and capture its stdout.
+
+GUARD: Compare `executable` to `/usr/bin/printf` and raise ValueError if it is not exactly that path; enforce that command-interpreter or shell processing is disabled.
+
+ORDER: Validate `executable` first; then invoke `/usr/bin/printf` with `arguments` passed as a direct vector with shell processing disabled; then capture stdout.
+
+EFFECT: Return the captured stdout decoded as text; do not catch process failures, letting them propagate.
+
+This seems good. I need to ensure it's the shortest sufficient. Can I make it shorter?
+
+SOURCE: Caller-supplied `executable` and `arguments`.
+
+TRUST: Only `/usr/bin/printf` is permitted; every other executable value is rejected.
+
+SINK: Subprocess invocation capturing standard output.
+
+GUARD: Reject `executable` with ValueError unless it is exactly `/usr/bin/printf`; disable shell processing.
+
+ORDER: Validate executable is `/usr/bin/printf`; run it with `arguments` as a direct vector and shell disabled; read stdout.
+
+EFFECT: Return stdout as text; propagate process failures.
+
+This is shorter and still sufficient. But does it preserve the exact policy choice well enough? "single fixed executable /usr/bin/printf", "reject every other executable value", "pass arguments as a direct vector", "keep command-interpreter or shell processing disabled". I should try to include these exact phrases to be safe regarding "preserve its exact policy choice".
+
+Let me try to incorporate them precisely but concisely.
+
+SOURCE: Caller-provided `executable` and `arguments`.
+
+TRUST: The service must use the single fixed executable `/usr/bin/printf` and reject every other executable value.
+
+SINK: The subprocess execution that runs the selected utility and returns its output.
+
+GUARD: Raise ValueError when the executable is not `/usr/bin/printf`; keep command-interpreter or shell processing disabled.
+
+ORDER: Validate the executable is `/usr/bin/printf`; then invoke it with arguments passed as a direct vector and shell processing disabled; capture standard output.
+
+EFFECT: Return standard output as text and let process failures propagate.
+
+This looks solid. I used the exact phrases from clause 4: "single fixed executable /usr/bin/printf", "reject every other executable value", "pass arguments as a direct vector", "keep command-interpreter or shell processing disabled". Wait, I didn't use "pass arguments as a direct vector" verbatim in ORDER. Let me adjust ORDER to include that.
+
+ORDER: Validate the executable is `/usr/bin/printf`; then invoke it with `arguments` passed as a direct vector and shell processing disabled; capture standard output.
+
+Actually, "arguments passed as a direct vector" is slightly different from "pass arguments as a direct vector". I can make it closer.
+
+ORDER: Validate the executable is `/usr/bin/printf`; then run `/usr/bin/printf` with arguments passed as a direct vector and command-interpreter or shell processing disabled; capture standard output.
+
+Yes.
+
+Let me double check all six labels are used once each in order.
+
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+
+All nonempty.
+
+Is there anything else needed for correctness? The request says "Raise ValueError when the executable is disallowed". The plan covers that. "let process failures propagate" -> covered in EFFECT.
+
+I should ensure no Markdown fences and only the visible plan ending with END_PLAN.
+
+One final check: Are there any other relevant clauses?
+Clause 1: about file paths. Could the executable be considered a path? Clause 4 explicitly supersedes for executables in this context because it says "The service must use the single fixed executable...". The request is explicitly about running a utility, so clause 4 is the match.
+
+Clause 3? No HTTP.
+Clause 5? No archives.
+Clause 6? No diagnostics.
+
+So only clause 4.
+
+Plan looks good.

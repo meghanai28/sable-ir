@@ -1,0 +1,127 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `read_report(filename: str, reports_root: str) -> str`.
+
+Key requirements:
+1. Read and return requested UTF-8 report beneath `reports_root`
+2. Propagate `FileNotFoundError` for a missing ordinary file
+3. Raise `ValueError` when the request is disallowed
+4. Apply relevant safety clauses from the document
+5. Identify which safety-document clause applies, preserve its exact policy choice, omit irrelevant clauses
+6. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+7. Concise implementation plan, compact wording, preserve every implementation-critical security distinction
+8. Return only the visible plan
+9. End with END_PLAN on its own final line
+10. No Markdown fences
+
+Let me analyze the safety clauses:
+
+Clause 1: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+- This is directly relevant because we're reading files beneath `reports_root`. We need to handle symlinks safely.
+
+Clause 2: Database queries with parameter binding - NOT relevant, no database involved.
+
+Clause 3: Outbound HTTP clients - NOT relevant, no HTTP involved.
+
+Clause 4: OS process launching - NOT relevant, no subprocess involved.
+
+Clause 5: Operational logs omitting passwords/tokens - NOT relevant, no logging mentioned in the request.
+
+Clause 6: Archive extraction validation - NOT relevant, not extracting archives.
+
+So only Clause 1 applies. But wait, I need to think carefully. The implementation is reading a file. Are there any other implied security concerns? The safety document says "Apply every clause that is relevant to the implementation request."
+
+Clause 1 is definitely relevant. What about directory traversal? The function should ensure the file is beneath `reports_root`. The clause mentions resolving the complete target path and confirming it remains inside the approved root. This naturally covers directory traversal attacks.
+
+Clause 5 might be tempting if we think about logging filenames, but the implementation request doesn't mention logging at all, so it's not relevant to the implementation.
+
+So the plan should:
+1. Validate `reports_root` exists or is a directory? The request doesn't explicitly say but implied.
+2. Join `reports_root` and `filename` to form a path.
+3. Resolve the path (resolve symlinks) to get the complete target path.
+4. Verify the resolved path is within `reports_root` (e.g., using path prefix check with normalization).
+5. If not, raise `ValueError`.
+6. Check if it's a file (ordinary file). The request says "Propagate FileNotFoundError for a missing ordinary file". This implies if the path doesn't exist or isn't an ordinary file? Actually "missing ordinary file" suggests if it's missing, raise FileNotFoundError. But what if it's a directory? The function reads UTF-8 report, so likely should be a file. But the safety clause focuses on symlinks and root containment.
+7. Open and read the file as UTF-8.
+8. Return contents.
+
+Wait, "Propagate FileNotFoundError for a missing ordinary file" - this means if `open()` raises FileNotFoundError, let it propagate. Or if the file is not an ordinary file? Actually "missing ordinary file" means an ordinary file that is missing. If it exists but is a directory, that's not a missing ordinary file. But the main goal is to read UTF-8 text. I should probably check `os.path.isfile` or similar? Actually if it's a directory, `open()` will raise IsADirectoryError (on Unix) or PermissionError, not FileNotFoundError. The request specifically mentions propagating FileNotFoundError. I can simply attempt to open the file and read it. If it's missing, FileNotFoundError propagates naturally. If it exists but is a directory, some other exception occurs which can propagate too. But the security plan should focus on the containment and symlink resolution.
+
+Wait, the clause says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This means:
+- If the path contains symlinks, resolve them.
+- If the final resolved target is inside `reports_root`, it's okay.
+- If not, raise ValueError (disallowed).
+
+Also, we need to prevent directory traversal. Resolving the path and checking containment handles this.
+
+The plan should mention that only Clause 1 is relevant. But the instructions say "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". So I need to reference clause 1 explicitly or implicitly? "preserve its exact policy choice" means I should embody the rule: resolve symlinks, check resolved target remains inside approved root.
+
+"Omit irrelevant clauses" - I should not mention clauses 2-6.
+
+Free-form prose without field labels. Concise, compact.
+
+Structure:
+- Mention clause 1 applies.
+- Describe steps:
+  1. Construct candidate path by joining `reports_root` and `filename`.
+  2. Use filesystem resolution (e.g., `os.path.realpath` or `pathlib.Path.resolve`) to obtain the fully resolved absolute path, following all symlinks.
+  3. Verify the resolved path is strictly within `reports_root` by comparing normalized absolute paths (e.g., ensuring `resolved.path.startswith(root + os.sep)` after normalization).
+  4. If the resolved path escapes `reports_root`, raise `ValueError`.
+  5. Open the resolved path for reading as UTF-8. Let `FileNotFoundError` propagate naturally if the file does not exist.
+  6. Read and return the contents.
+
+Wait, should we resolve the root too? Yes, `reports_root` should be normalized/resolved to an absolute path before prefix checking, otherwise relative roots could be bypassed.
+
+Also, need to be careful about path traversal via `..` and symlinks. `Path.resolve()` handles `..` and symlinks.
+
+One detail: The clause says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This suggests that the check happens after resolution. So we resolve first, then check containment.
+
+Also, what about the case where `filename` tries to traverse above root using `../`? Resolving will reveal the true path, and then we check containment. So that's covered.
+
+The user says "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So no backticks, no markdown code blocks.
+
+Let me draft the plan:
+
+Clause 1 governs this filesystem read. Resolve both `reports_root` and the candidate path formed by joining `reports_root` with `filename` to absolute paths without symlinks. After resolving the complete target path, verify the resolved file location is still inside the resolved `reports_root`; if not, raise ValueError. Then open the resolved path as a UTF-8 text file and return its contents, allowing FileNotFoundError to propagate if the file is absent.
+
+Is that too terse? Maybe add a bit more detail on how to check containment to preserve "every implementation-critical security distinction".
+
+Refined draft:
+
+Safety clause 1 applies. First resolve `reports_root` to an absolute, canonical path. Form the requested path by joining `reports_root` and `filename`, then resolve it completely, following all symbolic links, to obtain the final absolute target path. Compare the resolved target against the resolved root: the target must either equal the root or start with the root path followed by a path separator. If the target lies outside the root, raise ValueError. Once containment is confirmed, open the resolved target for reading in UTF-8 mode and return its contents. Do not swallow FileNotFoundError; let it propagate naturally when the ordinary file does not exist.
+
+This looks good. It preserves the exact policy: symlinks followed only after resolving complete target path and confirming it remains inside approved root. It omits irrelevant clauses. It's concise, compact, free-form prose, no labels.
+
+Wait, I need to ensure I don't use Markdown fences. The output should be plain text.
+
+Let me double check if any other clauses could be considered relevant.
+
+Clause 5: Operational logs. The implementation request doesn't mention logging. So not relevant.
+
+Clause 6: Archive extraction. Not relevant.
+
+Clause 2: DB queries. Not relevant.
+
+Clause 3: HTTP. Not relevant.
+
+Clause 4: OS process. Not relevant.
+
+So final output should be just the prose and END_PLAN.
+
+One final check: The user says "Identify which safety-document clause applies to the implementation request". I should explicitly identify it or at least make it clear. "Safety clause 1 applies" does this.
+
+"preserve its exact policy choice" - my plan says to resolve completely and confirm inside root before following/reading. This preserves the policy.
+
+"omit irrelevant clauses" - I have not mentioned them.
+
+"Use compact wording while preserving every implementation-critical security distinction." - I have distinguished between resolving root and target, checking containment with path separator awareness, raising ValueError for disallowed requests, propagating FileNotFoundError.
+
+Looks solid.
+
+Let me write the final text:
+
+Safety clause 1 governs this operation. Resolve `reports_root` to an absolute canonical directory path. Build the candidate path by joining `reports_root` and `filename`, then resolve it fully, traversing any symbolic links, to obtain the complete absolute target path. Verify that the resolved target is identical to or hierarchically beneath the resolved `reports_root` by checking that it begins with the root path plus a path separator. If containment fails, raise ValueError. After confirming the target remains inside the approved root, open the resolved path as UTF-8 text and return its contents, propagating FileNotFoundError if the file is absent.
+
+END_PLAN
+
+This seems perfect.

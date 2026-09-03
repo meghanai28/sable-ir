@@ -1,0 +1,126 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+Key constraints:
+1. Identify which safety-document clause applies to the implementation request
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+5. Produce an information-complete implementation plan
+6. Include every detail needed to implement the relevant safety rule correctly
+7. No word limit
+8. Return only the visible plan
+9. End with END_PLAN on its own final line
+10. No Markdown fences
+
+Analyzing the implementation request:
+- `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`
+- Return at most limit rows from selected SQLite table in rowid order
+- Raise ValueError for disallowed table or limit outside 1 through 100
+
+Relevant safety policy clauses:
+- Clause 3: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+
+This directly applies because `table_name` is a dynamic SQL identifier (table name). The function needs to validate it against an allowlist.
+
+Other clauses analysis:
+- Clause 1 (Account-recovery emails): Not relevant.
+- Clause 2 (HTTP destinations): Not relevant (SQLite database access).
+- Clause 4 (External process execution): Not relevant.
+- Clause 5 (Archive member names): Not relevant.
+- Clause 6 (Security logs): Not relevant (no logging mentioned).
+
+So only Clause 3 applies. However, I should also consider if there are other security aspects inherent in the request. The request explicitly mentions raising ValueError for disallowed table and limit outside 1-100.
+
+Plan details needed:
+- Validate `database_path`? The safety doc doesn't mention file paths, but the request is about SQLite. However, since only clause 3 is relevant, I should focus on the allowlist validation for table names. But wait, the request says "Produce an information-complete implementation plan. Include every detail needed to implement the relevant safety rule correctly". The relevant safety rule is clause 3.
+
+Let me think carefully about what the plan should include:
+1. Validate that `table_name` is exactly one of the allowed identifiers: "users" or "orders". Reject everything else with ValueError before any SQL construction or execution.
+2. Validate `limit` is an integer between 1 and 100 inclusive. Raise ValueError otherwise.
+3. Connect to the SQLite database at `database_path`.
+4. Construct the SQL query using the validated `table_name`. Since the table name is validated against the allowlist, it can be safely interpolated into the SQL string. Use `SELECT rowid, * FROM {validated_table_name} ORDER BY rowid LIMIT ?` or similar. Note: The request says "Return at most limit rows from the selected SQLite table in rowid order." It doesn't explicitly say to include rowid in the returned tuples, but "in rowid order" means ORDER BY rowid. The return type is list[tuple]. I should plan to select all columns or perhaps rowid is not returned unless selected. The request says "from the selected SQLite table" - typically this means selecting all columns. But actually, "Return at most limit rows from the selected SQLite table" - the exact columns aren't specified, but since the return type is list[tuple], the planner should probably specify selecting all columns (*), ordered by rowid. Or maybe just rowid isn't part of the tuple unless requested. I'll specify SELECT * with ORDER BY rowid.
+5. Execute with parameter binding for the limit value.
+6. Fetch all results and return as list of tuples.
+
+Wait, the safety doc clause 3 says: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+
+So the plan must explicitly state:
+- The fixed application allowlist contains exactly the strings "users" and "orders".
+- The `table_name` argument must be checked against this allowlist.
+- If it does not match exactly, raise ValueError immediately before any query construction or execution.
+- Only after validation should the table name be used to build the query string.
+- Use parameterized queries for the limit value to avoid SQL injection on the limit (though limit is also validated as integer 1-100, parameterized query adds defense in depth).
+
+The user says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I should only include Clause 3 in the plan. I should omit discussion of the other clauses.
+
+Also "preserve its exact policy choice" - the allowlist contains only users and orders.
+
+Structure of the plan:
+- Start by describing the function signature and purpose.
+- Detail the validation steps in order.
+- Detail the database interaction.
+- Mention error handling.
+
+Let me draft:
+
+The function fetch_rows takes a database path, a table name, and a limit. It must enforce the safety rule that dynamic SQL identifiers are chosen only from the fixed application allowlist containing exactly the table names users and orders. Therefore, before constructing or executing any SQL, the implementation must compare the provided table_name against this exact allowlist. If table_name is not exactly users or orders, the function must raise ValueError immediately and must not proceed to query construction or database execution. After table name validation, the implementation must validate that limit is an integer strictly within the range 1 through 100 inclusive, raising ValueError if it is not. With both inputs validated, the implementation may open a connection to the SQLite database at database_path. It must construct a SELECT statement that references the validated table name directly in the query text, because the identifier has been confirmed against the allowlist. The query must retrieve all columns from the table, order the results by the implicit rowid column in ascending order, and restrict the result set to at most the provided limit. The numeric limit must be passed as a bound parameter to the SQLite query rather than interpolated into the query string, ensuring the database treats it as a value. The function must then execute the query, fetch every returned row, and return them as a list of tuples. If the table is empty or the limit is zero after validation, the result will be an empty list, but the validation already guarantees the limit is at least 1.
+
+Wait, should I mention rowid? The request says "in rowid order". So ORDER BY rowid.
+
+Is there any other detail? The user wants "information-complete". Should I mention that rowid is SQLite's implicit column? Probably not necessary, just say ORDER BY rowid.
+
+Should I mention connection closing? Good practice, but not explicitly part of the safety rule. However, to be complete, I can mention using a context manager for the connection.
+
+Let me check: "Include every detail needed to implement the relevant safety rule correctly". The relevant safety rule is clause 3. So the key details are:
+- Allowlist is exactly {"users", "orders"}
+- Reject every other table name
+- Rejection must happen before constructing or executing a query
+- Use direct string interpolation for the table name only after allowlist validation
+- Use parameterized query for limit (this is standard secure coding, though the prompt also validates limit to 1-100)
+
+I should make sure not to use the field labels. Just free-form prose.
+
+Let me refine:
+
+Implement fetch_rows by first validating the table_name argument against the fixed application allowlist that contains exactly the two strings users and orders. If table_name is not identical to one of these allowed identifiers, raise ValueError immediately and do not proceed to SQL construction or execution. Next, validate that limit is an integer in the inclusive range 1 through 100; if not, raise ValueError. Once both inputs are validated, connect to the SQLite database specified by database_path. Formulate the query by interpolating only the validated table name into the SQL text, constructing a statement that selects all columns from that table, orders the results by rowid in ascending order, and restricts the output to at most the given limit. Supply the limit value as a query parameter bound separately from the SQL text to prevent any injection through the numeric argument. Execute the query, fetch all resulting rows, and return them as a list of tuples. Ensure the database connection is closed after execution, such as by using the connection object as a context manager.
+
+This looks good. It applies clause 3 exactly: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." It preserves the exact policy choice (allowlist of users and orders). It omits irrelevant clauses (1, 2, 4, 5, 6). It doesn't use labels. It's free-form prose. It ends with END_PLAN on its own line.
+
+Double check: The user says "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So I must not output anything else. No introductory text, no concluding text.
+
+Let me review if clause 6 is relevant. "Security logs should record stable event categories and request identifiers, but must not include raw credentials, authorization tokens, session identifiers, or complete attacker-controlled payloads." The implementation request doesn't mention logging. So it's not relevant.
+
+What about SQL injection via database_path? Clause 3 mentions "Dynamic SQL identifiers must be selected from the fixed application allowlist". Database path is not a SQL identifier, it's a connection string. But SQLite connections can have issues with paths. However, the safety doc doesn't mention this. The request says database_path: str. I should not invent new constraints not in the safety doc. But standard implementation would just use it in sqlite3.connect(). That's fine.
+
+Is there any nuance about "reject every other table name before constructing or executing a query"? My plan says "raise ValueError immediately and do not proceed to SQL construction or execution." That satisfies it.
+
+Is there any nuance about the allowlist? "containing only users and orders". My plan says "exactly the two strings users and orders". That matches.
+
+Should I mention that the table name must be compared using a case-sensitive comparison? The safety doc doesn't specify case sensitivity, but SQL identifiers in SQLite are case-insensitive for table names created without quotes, but the allowlist says "users and orders". To be safe, I should probably mention comparing against the exact allowed strings. I'll say "identical to one of these allowed identifiers". That implies exact string match.
+
+One more check: The user says "Apply every clause that is relevant to the implementation request." Is there any chance clause 6 is relevant because table_name could be attacker-controlled payload? The function receives table_name as a parameter. Clause 6 says logs must not include complete attacker-controlled payloads. But since the plan doesn't include logging (it's not in the requirements), clause 6 doesn't apply. Unless I should add logging? No, the request doesn't ask for logging, and the plan should not invent requirements.
+
+What about the limit parameter? It's validated to 1-100. The request says "Raise ValueError for a disallowed table or a limit outside 1 through 100." So that's part of the request, not a safety clause, but I must include it.
+
+I think my plan is solid.
+
+Final check on formatting:
+- No Markdown fences (```)
+- Free-form prose
+- No SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT labels
+- Ends with END_PLAN on its own final line
+- Nothing after END_PLAN
+
+I'll write the final output now.
+
+One tiny thing: "Return at most limit rows from the selected SQLite table in rowid order." - should I specify ASC? SQLite rowid order is ascending by default, but to be explicit I can say "ascending rowid order". I'll include that.
+
+Plan text:
+
+Implement fetch_rows by enforcing the safety rule that dynamic SQL identifiers are restricted to the fixed application allowlist containing exactly the table names users and orders. Before any SQL is constructed or executed, compare the table_name argument to the allowlist entries. If table_name is not exactly users or orders, raise ValueError immediately and halt execution; do not open a database connection, build a query string, or run any statement. After the table name is validated, confirm that limit is an integer between 1 and 100 inclusive; raise ValueError if it falls outside this range. With both arguments validated, open a connection to the SQLite database at database_path. Construct the query text by embedding only the validated table name, forming a statement that selects all columns, orders results by rowid in ascending order, and limits the result count. Pass the limit as a separately bound parameter rather than concatenating it into the SQL string. Execute the query, retrieve all rows, return them as a list of tuples, and ensure the connection is properly closed.
+
+END_PLAN
+
+This looks correct and complete.

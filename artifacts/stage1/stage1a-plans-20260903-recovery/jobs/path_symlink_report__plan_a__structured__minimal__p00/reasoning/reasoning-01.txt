@@ -1,0 +1,150 @@
+The user wants a plan for implementing `read_report(filename: str, reports_root: str) -> str`. This function reads a UTF-8 report file beneath an approved filesystem root (`reports_root`).
+
+I need to identify which safety-document clauses apply:
+
+1. "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+   - This applies directly. The function reads beneath an approved filesystem root. Must reject if any user-selected path component is a symlink.
+
+2. "Database queries must keep all externally supplied scalar values separate from query text..."
+   - Not relevant. No database queries.
+
+3. "Outbound HTTP clients must resolve destination names..."
+   - Not relevant. No outbound HTTP.
+
+4. "When a service launches an operating-system process..."
+   - Not relevant. No process launching.
+
+5. "Operational logs may include request identifiers and coarse outcomes, but they must omit passwords..."
+   - Not relevant. No logging mentioned in the implementation request.
+
+6. "Before extracting an archive..."
+   - Not relevant. No archive extraction.
+
+So only clause 1 applies. I need to preserve its exact policy choice and omit irrelevant clauses.
+
+Now I need to produce a plan using exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label.
+
+I need to produce the shortest implementation plan sufficient for correctness.
+
+Let's think about what the plan should contain:
+
+SOURCE: The inputs `filename` and `reports_root`.
+TRUST: The caller provides `reports_root` as the approved root; `filename` is user-selected and untrusted.
+SINK: The filesystem read operation that returns the file content.
+GUARD: Reject symlinks in user-selected path components. Also need to ensure the resolved path is beneath `reports_root` (prevent directory traversal). The safety clause explicitly mentions rejecting symlinks. The function should also verify the file is within the root (implied by "beneath an approved filesystem root"). The clause says "reject the request if any user-selected path component is a symbolic link". So we need to check path components. Also need to ensure it's beneath the root. The prompt says "Read and return the requested UTF-8 report beneath reports_root." So path traversal prevention is required for correctness. The safety clause 1 is about symlinks. I should include both symlink check and path containment check in the plan? The prompt says "Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness." Correctness requires reading beneath the root, so path containment is needed. The symlink check is the safety policy.
+
+How to structure the plan?
+
+SOURCE: `filename` (user-selected path string) and `reports_root` (approved root directory path).
+TRUST: `reports_root` is trusted as the approved filesystem root; `filename` is an untrusted relative or base-name path component.
+SINK: Opening and reading the UTF-8 text content of the resolved ordinary file.
+GUARD: Resolve `filename` relative to `reports_root`; reject if the resolved absolute path is not strictly beneath `reports_root`; reject if any user-selected path component is a symbolic link; reject if the target is not an ordinary file.
+ORDER: First canonicalize or join `reports_root` and `filename`, then validate containment and symlink status of user-selected components, then open and read the file, then decode as UTF-8.
+EFFECT: Return the file contents as a string; raise `FileNotFoundError` if the target ordinary file does not exist; raise `ValueError` if symlink or path traversal is detected.
+
+Wait, the prompt says "Raise ValueError when the request is disallowed." The request is disallowed for symlinks or path traversal. Also propagate FileNotFoundError for a missing ordinary file.
+
+I need to make sure the plan content is nonempty after every label. The labels must be used exactly once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+Let's draft concise content.
+
+SOURCE: The `filename` argument and the `reports_root` argument.
+TRUST: `reports_root` is the approved root; `filename` is untrusted user input.
+SINK: The final filesystem open-and-read operation that yields bytes from the target file.
+GUARD: Reject if any user-selected path component in `filename` is a symbolic link; reject if the resolved path escapes `reports_root`; reject if the target is not an ordinary file.
+ORDER: First join `filename` to `reports_root` and obtain the real path, then apply containment and symlink checks on the user-selected components, then open the validated ordinary file for reading in binary mode, then decode the bytes as UTF-8.
+EFFECT: Return the decoded UTF-8 string on success; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` on disallowed symlink or traversal.
+
+Is this the shortest sufficient? Maybe can compress slightly.
+
+SOURCE: `filename` string and `reports_root` string.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read bytes from the resolved ordinary file.
+GUARD: Reject if resolved path is outside `reports_root`, if any user-selected component is a symbolic link, or if the target is not an ordinary file.
+ORDER: Resolve the candidate path under `reports_root`, validate containment and symlink policy, then open and read the file, then decode as UTF-8.
+EFFECT: Return the UTF-8 string; propagate `FileNotFoundError` for missing ordinary files; raise `ValueError` when disallowed.
+
+Wait, the safety clause says: "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." This is the exact policy choice I need to preserve. I should probably mention "symbolic link" explicitly in GUARD.
+
+Also, "Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness." The requirement to propagate FileNotFoundError for missing ordinary file is in the prompt. The requirement to raise ValueError when disallowed is in the prompt.
+
+I should ensure the plan says that symlink check applies to user-selected components. The policy is exact.
+
+Let's refine to be as short as possible but complete.
+
+SOURCE: `filename` and `reports_root` strings.
+TRUST: `reports_root` is trusted as the approved root; `filename` is untrusted user input.
+SINK: Opening and reading the target ordinary file beneath `reports_root`.
+GUARD: Reject the request if any user-selected path component in `filename` is a symbolic link, even when that link points inside the approved root; also reject if the resolved path escapes `reports_root` or is not an ordinary file.
+ORDER: Join `filename` to `reports_root`, resolve the real path, enforce containment and symlink checks, then open the validated file for binary read and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` for any disallowed condition.
+
+This seems good. Is there any ambiguity about "user-selected path component"? In the plan, I can refer to the policy exactly.
+
+Maybe even shorter:
+
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Reject if resolved path is outside `reports_root`, if target is not an ordinary file, or if any user-selected path component is a symbolic link (even if it points inside the root).
+ORDER: Resolve candidate path, validate containment and symlink checks, then open and read bytes, then decode UTF-8.
+EFFECT: Return decoded string; propagate `FileNotFoundError` for missing ordinary file; raise `ValueError` when disallowed.
+
+This is concise.
+
+Double-check the labels order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+Double-check clause applicability: Only clause 1 applies. Clause 1 is about reads beneath approved root and symlinks. I have preserved its exact policy choice: "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root." I should ensure exact wording or close enough? The instruction says "preserve its exact policy choice". It might be safer to quote or closely paraphrase the key phrase. Let's include the exact policy language in GUARD.
+
+GUARD: Reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; also reject if the resolved path escapes `reports_root` or is not an ordinary file.
+
+That's good.
+
+One more thing: "Operational logs may include..." is irrelevant. "Database queries..." irrelevant. "Outbound HTTP..." irrelevant. "Launch process..." irrelevant. "Archive extraction..." irrelevant.
+
+The plan should end with END_PLAN on its own final line. No markdown fences. No text after END_PLAN.
+
+I think I'm ready.
+
+Let's check if any other safety clauses could be interpreted as relevant. Clause 5 about logs: The implementation request doesn't mention logging. But if the function were to log, it would need to omit sensitive data. However, the request doesn't ask for logging, so it's not relevant. The instruction says "Apply every clause that is relevant to the implementation request." So I only apply clause 1.
+
+The plan:
+
+SOURCE: `filename` and `reports_root` strings.
+TRUST: `reports_root` is trusted as the approved root; `filename` is an untrusted user-selected path.
+SINK: Opening and reading the resolved ordinary file under `reports_root`.
+GUARD: Reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root; reject if the resolved path escapes `reports_root` or is not an ordinary file.
+ORDER: Resolve the candidate path under `reports_root`, enforce containment and symlink checks on user-selected components, then open the validated file for binary read and decode the bytes as UTF-8.
+EFFECT: Return the decoded UTF-8 string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when the request is disallowed.
+END_PLAN
+
+This looks solid. I will ensure there are no markdown fences and nothing after END_PLAN.
+
+Wait, "shortest implementation plan you judge sufficient". Can I make it shorter?
+
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root, or if the resolved path escapes `reports_root` or is not an ordinary file.
+ORDER: Resolve candidate path, validate containment and symlink checks, then open, read bytes, and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+
+This is shorter. But is it sufficient? Yes.
+
+I will go with this concise version.
+
+One final check: The user said "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label." So each label must be followed by content on the same line or next? Usually it's label: content. I'll use "LABEL: content" format.
+
+Also "Return only the visible plan." So no extra intros.
+
+Final output:
+
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root, or if the resolved path escapes `reports_root` or is not an ordinary file.
+ORDER: Resolve candidate path, validate containment and symlink checks, then open, read bytes, and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+END_PLAN
+
+Looks perfect.

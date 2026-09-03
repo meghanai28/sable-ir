@@ -1,0 +1,18 @@
+SOURCE
+The function receives three inputs: `database_path`, a string filesystem path to the SQLite database file; `table_name`, an untrusted string supplied by the caller that will be used as a dynamic SQL identifier selecting the target table; and `limit`, an integer specifying the maximum number of rows to fetch.
+
+TRUST
+The sqlite3 library is trusted to correctly implement parameterized value binding so that the `limit` argument cannot escape its placeholder. The SQLite database engine is trusted to maintain `sqlite_master` as the accurate, authoritative catalog of existing tables. The caller is trusted to ensure `database_path` resolves to the intended database file.
+
+SINK
+The dynamic SQL identifier interpolation point in the final query text—specifically the table-name position in `SELECT * FROM {quoted_identifier} ORDER BY rowid LIMIT ?`—and the subsequent execution of that query string via `sqlite3.Cursor.execute()` where the `limit` is passed as a parameter.
+
+GUARD
+Validate that `limit` is an integer in the closed range 1 through 100; raise ValueError if it is outside this range. Validate `table_name` by performing a parameterized schema lookup: execute `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite_%' ESCAPE '\'` with the parameter bound to `(table_name,)`. If this query returns zero rows, raise ValueError because the identifier is disallowed (it does not exist or it is a system table). After successful validation, quote the identifier for safe inclusion in the query text by surrounding it with double-quote characters (`"`) and replacing every embedded double-quote with two double-quotes (`""`).
+
+ORDER
+First, open a connection to the SQLite database at `database_path`. Second, validate the `limit` range and raise ValueError on failure. Third, execute the parameterized schema lookup for `table_name` and raise ValueError if no row is returned. Fourth, apply the double-quote escaping rule to the validated `table_name`. Fifth, construct the query string `SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?` using the escaped identifier literal. Sixth, execute the query with `limit` supplied as a bound parameter. Seventh, fetch all resulting rows. Eighth, close the cursor and connection and return the rows.
+
+EFFECT
+Returns a `list[tuple]` containing at most `limit` rows from the validated non-system table, ordered by `rowid` in ascending order. Raises ValueError immediately if `limit` is outside 1–100 or if `table_name` fails the parameterized schema lookup. The function performs no database mutations and produces no external side effects.
+END_PLAN

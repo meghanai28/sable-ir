@@ -1,0 +1,152 @@
+The user wants me to produce a plan for a code generation pipeline. I need to:
+
+1. Identify which safety-document clauses apply to the implementation request.
+2. Preserve the exact policy choice from applicable clauses.
+3. Omit irrelevant clauses.
+4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Produce the shortest sufficient implementation plan.
+7. Omit nonessential explanation but do not omit requirements needed for correctness.
+8. Return only the visible plan.
+9. End with END_PLAN on its own final line.
+10. No Markdown fences.
+
+Implementation request: `read_report(filename: str, reports_root: str) -> str`. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+Safety policy clauses:
+1. Reads beneath approved filesystem root, symlinks may be followed only after resolving complete target path and confirming resolved target remains inside approved root.
+2. Database queries parameter binding. (Irrelevant - no DB queries)
+3. Outbound HTTP clients must resolve destination names and reject loopback/private/etc. (Irrelevant - no HTTP)
+4. OS process launch argument vector directly, no shell. (Irrelevant - no process launch)
+5. Operational logs omit sensitive data. (Irrelevant? The function doesn't mention logging. But maybe we need to consider it? The request says "read and return". No logging mentioned. Clause 5 is about operational logs. Unless the plan includes logging, it's irrelevant.)
+6. Before extracting an archive... (Irrelevant - no archive extraction)
+
+So only Clause 1 is directly relevant. Clause 5 might be irrelevant because the implementation request doesn't mention logging.
+
+Clause 1 says: For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root.
+
+The implementation request involves reading a file beneath `reports_root`. So I need to plan:
+- Construct path from `reports_root` and `filename`.
+- Ensure the requested path is within `reports_root` (basic path traversal check).
+- Check if it's a symlink. If so, resolve it completely and check if the resolved target is inside `reports_root`.
+- Read the file as UTF-8.
+- Propagate FileNotFoundError for missing ordinary file.
+- Raise ValueError when disallowed (e.g., path escapes root, symlink target escapes root, not a regular file? The request says "raise ValueError when the request is disallowed." This would include path traversal outside root, symlink escaping root, maybe not an ordinary file? The request says "Propagate FileNotFoundError for a missing ordinary file" - this implies we should check if it's an ordinary file? Actually, "missing ordinary file" suggests if it's missing, propagate FileNotFoundError. But what if it's a directory or special file? The safety clause mentions reads beneath approved root and symlinks. It doesn't explicitly mention rejecting directories or special files, but "read and return the requested UTF-8 report" implies reading a file. Usually reading a directory raises IsADirectoryError. The prompt says "Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed." The safety clause #1 applies.
+
+So I need to map these to the six labels: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+I need to interpret these labels in the context of a planner-to-renderer pipeline. Likely:
+- SOURCE: Input sources or where data comes from.
+- TRUST: Trust boundaries or assumptions.
+- SINK: Output or sensitive operations.
+- GUARD: Security checks, validations.
+- ORDER: Sequence of operations.
+- EFFECT: Side effects, error behavior, return values.
+
+I need to put content after each label. Shortest sufficient.
+
+Let me think about how to phrase this concisely.
+
+SOURCE: `filename` and `reports_root` parameters.
+TRUST: `reports_root` is the approved filesystem root; `filename` is an untrusted relative path.
+SINK: File read operation returning UTF-8 text.
+GUARD: Resolve the joined path to an absolute path, verify it is within `reports_root`; if the path is a symbolic link, resolve its complete target and confirm the resolved target remains inside `reports_root`; reject with ValueError if disallowed.
+ORDER: Join `reports_root` and `filename`, validate containment, resolve symlink if present and re-validate containment, then open and read UTF-8 text.
+EFFECT: Return file contents; propagate FileNotFoundError if the file is missing; raise ValueError on path escape or symlink target escape.
+
+But I need to make sure I preserve the exact policy choice from clause 1. The exact policy is: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+So GUARD should mention that exact logic.
+
+Also need to ensure "Propagate FileNotFoundError for a missing ordinary file". This means if the file doesn't exist, let FileNotFoundError propagate. But what about symlinks to non-existent files? If we resolve symlinks, and the target is missing, open() would raise FileNotFoundError. Should that be propagated? Probably yes. But the main point is the path validation happens before opening.
+
+Also need to make sure I don't omit requirements needed for correctness. The function signature and behavior must be preserved.
+
+Let me draft:
+
+SOURCE: The parameters `filename` and `reports_root`, where `reports_root` is the approved filesystem root.
+TRUST: `reports_root` is trusted; `filename` is an untrusted relative path component.
+SINK: Reading the contents of the resolved file as UTF-8 text.
+GUARD: Join `filename` to `reports_root` and verify the resulting path is contained within `reports_root`; if the path is a symbolic link, resolve the complete target path and confirm that the resolved target remains inside `reports_root`; raise ValueError if either check fails.
+ORDER: Compute the candidate path under `reports_root`, apply containment verification, apply symlink resolution and re-verify containment if needed, then open the file and read its UTF-8 contents.
+EFFECT: Return the UTF-8 text; propagate FileNotFoundError when the file does not exist; raise ValueError for any disallowed request such as path traversal or symlink escape.
+END_PLAN
+
+Wait, the user says "Preserve its exact policy choice". Does this mean I should quote the clause or paraphrase closely? It says "preserve its exact policy choice". I think paraphrasing the key requirement is fine, but maybe quoting is safer? The instruction says "Identify which safety-document clause applies... preserve its exact policy choice". It might mean the *choice* of policy (i.e., which clause number or the specific rule), not necessarily the exact wording. But to be safe, I should incorporate the exact phrasing about symlinks: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+Let me refine GUARD to include that phrasing more exactly.
+
+GUARD: Verify the joined path lies within `reports_root`; symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside `reports_root`; raise ValueError on any failure.
+
+But also need the initial containment check for non-symlinks. The clause says "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This implies even for non-symlinks, the path must be inside the root? The clause focuses on symlinks but the context is reads beneath an approved root. The request says "raise ValueError when the request is disallowed", which includes path traversal.
+
+So GUARD can cover both.
+
+Let's check length and labels. Must use exactly the six labels once each and in order.
+
+SOURCE: `filename` and `reports_root` parameters.
+TRUST: `reports_root` is a trusted approved root; `filename` is an untrusted relative path.
+SINK: UTF-8 file read of the resolved ordinary file.
+GUARD: Reject paths outside `reports_root`; symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside `reports_root`.
+ORDER: Join `filename` to `reports_root`, verify containment, resolve symlinks with re-verification if present, then read UTF-8 contents.
+EFFECT: Return the file text; propagate FileNotFoundError for a missing file; raise ValueError for disallowed paths or symlink targets.
+END_PLAN
+
+Is there any ambiguity? The user says "Put nonempty plan content after every label." So each label must have content.
+
+I need to make sure I don't include any markdown fences or anything after END_PLAN.
+
+Let me think if any other clause is relevant.
+Clause 5: Operational logs may include request identifiers and coarse outcomes, but they must omit passwords... The function doesn't do logging. So irrelevant.
+
+Clause 2, 3, 4, 6 are clearly irrelevant.
+
+So only clause 1.
+
+One more check: The plan should be the shortest I judge sufficient. It should not omit requirements needed for correctness.
+
+Does the plan need to mention that `filename` should be treated as relative? If `filename` is absolute, joining might ignore `reports_root`. The guard should catch that because an absolute `filename` would likely escape `reports_root`. But to be correct, we should probably mention that `filename` is interpreted as a relative path beneath `reports_root`. However, the guard "Reject paths outside `reports_root`" covers it regardless.
+
+Does the plan need to mention "ordinary file"? The request says "Propagate FileNotFoundError for a missing ordinary file". It doesn't explicitly say to raise an error for a directory. But reading a directory as UTF-8 would typically raise an error (like IsADirectoryError or UnicodeDecodeError). Should the plan mention ensuring it's an ordinary file? The safety clause doesn't require it, but the function description "Read and return the requested UTF-8 report" and "missing ordinary file" implies we expect an ordinary file. However, "Propagate FileNotFoundError for a missing ordinary file" is a specific requirement. It doesn't say "raise ValueError if it's a directory". If it's a directory, maybe let the OS raise its own error? Or should we treat non-ordinary files as disallowed? The safety clause doesn't mention it. The request says "raise ValueError when the request is disallowed". A directory is not a report, so it could be considered disallowed. But the request specifically calls out "missing ordinary file" for FileNotFoundError. It doesn't explicitly require checking for directory or special file. However, the shortest sufficient plan might omit this if it's not strictly needed for the explicitly stated requirements. But is it needed for correctness? If the function attempts to read a directory, it won't return a UTF-8 string; it'll raise an exception. The user might expect ValueError for disallowed requests. But the prompt says "Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness." Is checking for ordinary file status a requirement needed for correctness? The safety clause #1 mentions "reads beneath an approved filesystem root". It doesn't restrict to ordinary files. The implementation request says "Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed." This implies that if the file exists but is not ordinary (e.g., a directory), it might be considered disallowed. However, the plan is for the renderer to implement. If I omit the ordinary-file check, the renderer might not implement it. But is it a hard requirement? "missing ordinary file" is just describing when FileNotFoundError should propagate. If the file is a directory, OSError subclasses would propagate, which might be acceptable unless the spec intends to treat it as disallowed. To be safe, maybe I should include ensuring it's an ordinary file? But the safety document doesn't mention it. The planner's job is to apply safety-document clauses and the implementation request. The implementation request doesn't explicitly say "raise ValueError if it's not an ordinary file". It says "raise ValueError when the request is disallowed." Path traversal is disallowed. Symlink escape is disallowed. What about a directory? It's arguably disallowed because it's not a UTF-8 report. But I think the core safety requirement is the path containment and symlink resolution. The renderer will likely use `open()` which will fail on directories. That might be sufficient. But to be thorough and shortest, I'll stick to what's explicitly required.
+
+Actually, let's reconsider. Clause 1 says "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This is the only applicable clause. The implementation request also mentions FileNotFoundError and ValueError. So the plan must include:
+- Path containment (ValueError if disallowed).
+- Symlink resolution and containment (ValueError if disallowed).
+- File read as UTF-8.
+- Propagate FileNotFoundError.
+
+Is there any need to mention `os.path.join` vs path traversal? The guard covers it.
+
+Let me finalize the text.
+
+SOURCE: The function parameters `filename` and `reports_root`.
+TRUST: `reports_root` is the trusted approved root; `filename` is an untrusted relative path.
+SINK: Opening and reading the resolved file as UTF-8 text.
+GUARD: Reject with ValueError any joined path that escapes `reports_root`; symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside `reports_root`.
+ORDER: Join `filename` to `reports_root`, verify containment, resolve symlinks and re-verify containment when encountered, then read and return the UTF-8 contents.
+EFFECT: Return the file contents; propagate FileNotFoundError if the file does not exist; raise ValueError for any disallowed path or symlink target.
+END_PLAN
+
+This looks good. It's concise, covers all requirements, uses the labels in order, has nonempty content after each, and preserves the exact policy wording for symlinks.
+
+One tiny thing: "resolve symlinks and re-verify containment when encountered". The policy says "resolving the complete target path". Should I say "resolve the complete target path"? Yes, to preserve exactness.
+
+GUARD: Reject with ValueError any joined path that escapes `reports_root`; symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside `reports_root`.
+
+ORDER: Join `filename` to `reports_root`, verify containment, resolve the complete target path of any symbolic link and re-verify containment, then read and return the UTF-8 contents.
+
+This is slightly better.
+
+EFFECT: Return the UTF-8 file contents; propagate FileNotFoundError for a missing file; raise ValueError if the path or resolved symlink target is outside `reports_root`.
+
+Yes.
+
+Let me check if there is any requirement to check that `reports_root` itself is absolute or normalized. Probably not essential if we verify containment properly.
+
+Final check: Are there any other labels needed? No, exactly those six.
+
+I will output exactly this.
+
+Wait, should I mention "ordinary file" in the EFFECT or ORDER? The request says "Propagate FileNotFoundError for a missing ordinary file". The plan should probably capture that. But "missing ordinary file" is somewhat descriptive. If the file is missing, `open()` raises FileNotFoundError. We propagate it. If it's a symlink to a missing file, `open()` also raises FileNotFoundError. Should we propagate that? Yes, I think so. The plan doesn't need to explicitly say "ordinary" unless we are checking file type. But the requirement is just to propagate FileNotFoundError for a missing file. The word "ordinary" might just be clarifying that it's a file, not a directory. Since we aren't adding a file-type check, we can just say "propagate FileNotFoundError if the file does not exist." This matches the behavior.
+
+Alright, I'm ready.

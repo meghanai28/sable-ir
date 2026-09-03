@@ -1,0 +1,26 @@
+SOURCE
+The untrusted input is the `filename` string argument supplied by the caller. It may contain path-traversal components (e.g., `..`), absolute path prefixes, embedded null bytes, or names whose resolution depends on symbolic links.
+
+TRUST
+The `reports_root` string is trusted as the pre-approved, absolute filesystem root directory. Its fully resolved canonical path establishes the trusted boundary against which the resolved target path is compared.
+
+SINK
+The sensitive operation is opening the resolved filesystem path in read-only text mode with UTF-8 encoding, reading the entire file contents into memory, and returning those contents as a string.
+
+GUARD
+Apply safety clause 1 exactly: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." First, resolve `reports_root` to its canonical absolute path to establish the trusted boundary. Next, form a candidate path by joining `reports_root` with the supplied `filename` as a relative sub-path, rejecting the request with ValueError if `filename` is absolute or contains embedded null bytes. Then resolve that candidate path completely, following every symbolic link in every component (including the final element), to obtain the canonical absolute target path. Confirm that the resolved target path remains inside the resolved `reports_root` by verifying that it either equals the resolved root or starts with the resolved root path followed by a filesystem separator, thereby preventing prefix bypasses. If the resolved target path escapes the approved root, raise ValueError. Additionally, if the resolved target path exists, verify that it is an ordinary regular file; if it exists but is a directory, device, socket, or other non-file entry, raise ValueError. If the resolved target path does not exist, proceed to open it so that the missing-file case naturally raises FileNotFoundError.
+
+ORDER
+1. Resolve `reports_root` to its canonical absolute path to establish the trusted boundary, and verify that it refers to an existing directory; if not, raise ValueError.
+2. Inspect `filename`: if it is an absolute path or contains embedded null bytes, raise ValueError immediately.
+3. Derive the candidate path by joining `reports_root` with `filename` as a relative sub-path, ensuring the join treats `filename` as beneath the root regardless of leading separators.
+4. Resolve the candidate path completely to its canonical absolute path, following all symbolic links in all path components, even if the final target does not exist.
+5. Compare the fully resolved candidate path against the resolved `reports_root` boundary. Ensure the candidate path is contained within the root by checking that it matches the root or begins with the root path plus a path separator. If containment fails, raise ValueError.
+6. If the resolved candidate path exists, check its file type: if it is not an ordinary regular file, raise ValueError. If it does not exist, skip this check.
+7. Open the resolved candidate path directly using a file-open call in text mode with encoding `utf-8`.
+8. If the open operation raises FileNotFoundError because the file is missing, propagate that exception unchanged.
+9. Read the full contents of the opened file, close the file handle, and return the content string.
+
+EFFECT
+The function returns the UTF-8 text of the requested ordinary file located under `reports_root`. It enforces the exact policy of clause 1 by following symbolic links only when the completely resolved target path remains inside the resolved `reports_root`; otherwise it raises ValueError. It raises ValueError for any disallowed request, including path escapes, symlink escapes outside the root, absolute filenames, null bytes, or targets that are not ordinary files. It propagates FileNotFoundError when the resolved target file does not exist.
+END_PLAN

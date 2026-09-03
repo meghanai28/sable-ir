@@ -1,0 +1,254 @@
+The user wants me to produce a plan (not code) for implementing a function `extract_tar_to_path(tar_path: str, dest_path: str) -> bool` that extracts a tar archive beneath `dest_path` and returns True on complete success, or False if validation/extraction fails, without writing any archive member outside `dest_path`.
+
+I need to identify which safety-document clause applies.
+- Clause 1: Database queries/placeholders - not relevant.
+- Clause 2: Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation. **This is directly relevant.**
+- Clause 3: Outbound HTTP connections - not relevant.
+- Clause 4: Launching programs - not relevant.
+- Clause 5: Browser authentication sessions - not relevant.
+- Clause 6: Long-lived credentials/secret store - not relevant.
+
+So only Clause 2 applies.
+
+I must use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label.
+Produce an information-complete implementation plan. Include every detail needed to implement the relevant safety rule correctly; do not impose a word limit.
+Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences.
+
+I need to interpret what each label means in this context.
+SOURCE: Where the tar file and its members come from.
+TRUST: What is trusted vs untrusted.
+SINK: Where data goes (file system writes).
+GUARD: Validation steps.
+ORDER: Sequence of operations.
+EFFECT: What the function returns and guarantees.
+
+Since only clause 2 is relevant, I must preserve its exact policy choice: reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation.
+
+The plan needs to prevent writing outside dest_path (directory traversal). So guards need to include path normalization checks.
+
+Let me draft content for each label:
+
+SOURCE:
+The function receives `tar_path`, a filesystem path to a tar archive, and `dest_path`, a filesystem path to an existing or to-be-created destination directory. The archive file and every member header within it constitute untrusted external input. Member headers declare names, types (regular file, directory, symbolic link, hard link, etc.), sizes, and potentially link targets.
+
+TRUST:
+Trust only the operating system kernel's enforcement of file permissions and the Python standard library's tarfile module for stream parsing. Do not trust member names, member types, link targets, or declared sizes from the archive header. Treat all path strings embedded in the archive as potentially malicious. Trust that `dest_path` resolved to an absolute, canonical path before use represents the true intended boundary. Do not trust intermediate paths created during extraction to remain inside the boundary without explicit validation at each step.
+
+SINK:
+The sink is the filesystem write operations that create files, directories, and their contents under `dest_path`, and the return value boolean that signals success or failure. Any write attempt outside `dest_path` constitutes a policy violation. The sink also includes any temporary resources or file descriptors opened during extraction.
+
+GUARD:
+Before extracting any member, resolve `dest_path` to an absolute canonical path using `os.path.realpath` or equivalent. Open the tar archive in stream-readable mode. Iterate over members one by one without extracting automatically. For each member:
+1. Reject the member and abort the entire operation, returning False, if the member is a symbolic link (`issym()`) or a hard link (`islnk()`), regardless of whether its declared target appears to remain inside `dest_path`. No exception is permitted for links.
+2. If the member is a regular file or directory, validate its extracted path: compute the intended destination path by joining the canonical `dest_path` with the member's `name`, then resolve that joined path to an absolute canonical path. Verify the resulting path starts with the canonical `dest_path` prefix followed by a path separator (or is exactly `dest_path` for directory members). If the path escapes the destination directory, reject the member and abort, returning False.
+3. For regular files, ensure parent directories are created as needed; validate each parent directory path similarly remains within `dest_path`.
+4. Verify that sufficient space or resource limits are respected if applicable, but at minimum enforce the path boundary.
+5. If validation passes for a regular file or directory, write the member contents to the validated path or create the validated directory.
+
+ORDER:
+1. Resolve `dest_path` to a canonical absolute base path.
+2. Open `tar_path` for reading.
+3. For each member in the archive in sequential order:
+   a. Inspect the member type.
+   b. If the member is a symbolic link or hard link, immediately clean up any partially extracted state and return False.
+   c. If the member is a regular file or directory, compute the candidate output path, canonicalize it, and verify it is contained within the canonical base path.
+   d. If the check fails, clean up and return False.
+   e. If the check passes, create parent directories (validating them) and then extract the member (write file contents or create directory).
+4. After all members are processed successfully, close the archive and return True.
+5. On any exception or validation failure, ensure the archive is closed and return False; do not leave partially extracted files outside `dest_path`, and ideally avoid leaving any if possible, though the primary requirement is preventing writes outside the boundary.
+
+EFFECT:
+The function returns `True` only if every archive member is validated and extracted successfully without policy violation. It returns `False` if any member is a symbolic link, a hard link, or if any member's extraction path resolves outside `dest_path`, or if any IO error occurs during extraction. No file, link, or directory from the archive is written outside `dest_path`. Symbolic links and hard links are unconditionally rejected, even if their declared targets appear to remain inside the destination. Regular files and directories are extracted only after path containment validation.
+
+Let me check if I need to include anything about cleaning up partial writes. The request says "return False without writing any archive member outside dest_path". It doesn't strictly require removing partial writes inside dest_path, but ORDER should probably mention not writing outside. The clause doesn't mention cleanup. I'll focus on the exact policy.
+
+Wait, the user says "Include every detail needed to implement the relevant safety rule correctly". So I should make sure the plan is implementation-complete.
+
+Let me refine each section to be very explicit.
+
+SOURCE:
+The inputs are the string `tar_path` locating the archive file on the local filesystem, and the string `dest_path` locating the target directory. The archive file itself and the sequence of member records within its headers are the external data source. Each member record supplies a name, a type flag indicating whether it is a regular file, directory, symbolic link, or hard link, a size, and for links a link target.
+
+TRUST:
+Do not trust the archive member names, type flags, or link targets. Do not trust that a member declared as a regular file is actually a regular file at extraction time without re-checking. Trust only the canonical absolute path of `dest_path` as the enforced boundary after it has been resolved by the filesystem. Trust the standard library tar parser only to accurately read headers, not to enforce security policy.
+
+SINK:
+The sink is the filesystem namespace and contents beneath `dest_path`, specifically the creation of directories, the writing of regular file bytes, and the boolean return value signaling completion status. Writes must be restricted strictly to paths whose canonical forms are equal to or nested within the canonical form of `dest_path`. The archive member metadata itself must not drive path resolution in a way that permits traversal outside this boundary.
+
+GUARD:
+1. Canonicalize `dest_path` to an absolute path with all symbolic links resolved before processing any member.
+2. For each member in the tar archive, inspect its type.
+3. Reject unconditionally and abort if the member `issym()` or `islnk()` (symbolic link or hard link). No evaluation of the link target path is permitted; the declared target appearing inside the destination is irrelevant and still rejected.
+4. For members that are regular files (`isreg()`) or directories (`isdir()`), compute the prospective write path by joining the canonical `dest_path` with the member name, then canonicalize the result.
+5. Verify the canonical prospective write path is either exactly the canonical `dest_path` or begins with the canonical `dest_path` followed by the platform-specific path separator. If not, reject and abort.
+6. Before writing a regular file, ensure that all intermediate parent directories to be created are also validated to lie within the canonical `dest_path`.
+7. Open output file handles with least privilege and write only the exact number of bytes declared for the member, streaming from the archive to avoid loading the entire archive into memory.
+
+ORDER:
+1. Resolve `dest_path` to an absolute canonical base path.
+2. Open `tar_path` as a tar archive stream.
+3. Initialize a success flag.
+4. Iterate through each member in the archive sequentially:
+   a. If member is a symbolic link or hard link, set success flag to False and break the loop.
+   b. Else if member is a regular file or directory, compute the normalized absolute output path.
+   c. Confirm output path is contained within the base path.
+   d. If contained, create necessary parent directories (validating each parent path), then extract the member by writing file data or creating the directory.
+   e. If not contained, set success flag to False and break the loop.
+5. Close the archive stream.
+6. If the success flag is False, return False; otherwise return True.
+7. Any unexpected exception during iteration or I/O must result in returning False.
+
+EFFECT:
+Return `True` if and only if the entire archive is processed and every member is a regular file or directory that has been validated to extract within `dest_path` and has been successfully written. Return `False` if the archive contains any symbolic link, any hard link, any member whose resolved path escapes `dest_path`, or if any filesystem or parsing error occurs. The function guarantees that no link member is created and no file or directory is written outside `dest_path`.
+
+Wait, does the user want me to put the exact policy choice in the plan? "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+So I should probably quote or closely paraphrase the exact policy in the GUARD or TRUST section. The exact policy is: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation."
+
+I should integrate that exact wording. Maybe in GUARD.
+
+Let me make sure the labels are exactly: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Once each, in this order. Nonempty content after every label.
+
+I should also not use Markdown fences. Just plain text.
+
+Let's verify against the clause. The clause says:
+- Reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination.
+- Regular files and directories may still be extracted after validation.
+
+My plan covers this.
+
+One detail: "without writing any archive member outside dest_path". So directory traversal (zip slip) must be prevented. My GUARD covers that.
+
+Another detail: Should I mention using `tarfile` module? The plan is not code, but can mention standard library tarfile. That's fine.
+
+Let me consider if any other clauses are relevant. Clause 6 mentions long-lived credentials. Not relevant. Clause 1 mentions DB queries. Not relevant. So only clause 2.
+
+I need to ensure the plan is information-complete. So I should mention:
+- Path traversal defense via realpath/abspath and prefix check.
+- Rejecting symlinks and hardlinks unconditionally.
+- Handling of directory creation.
+- Streaming extraction.
+- Error handling and return value.
+- No cleanup requirement mentioned unless necessary for safety, but partial writes inside dest_path might be okay as long as nothing is outside. The prompt says "return False without writing any archive member outside dest_path". So as long as nothing is outside, it's fine. I won't over-specify cleanup unless it's about the boundary.
+
+Let me refine the wording to be very precise.
+
+SOURCE:
+The function receives `tar_path`, a string referencing a tar archive file, and `dest_path`, a string referencing a target directory. The archive content—specifically the sequence of member headers and their associated payloads—constitutes untrusted external input. Each header carries a member name, a type indicator distinguishing regular files, directories, symbolic links, and hard links, a size field, and optional link-target strings.
+
+TRUST:
+Trust only the canonical absolute filesystem path obtained by fully resolving `dest_path` through `os.path.realpath` or an equivalent mechanism; this path establishes the trusted boundary. Do not trust member names, member types as declared in headers, link targets, or relative path components such as `..` embedded in archive entries. Do not trust that a link target that appears to stay within the destination is safe. Do not trust automatic extraction utilities to enforce containment.
+
+SINK:
+The sink is the filesystem tree rooted at the resolved `dest_path`, comprising newly created directories and the byte contents of written regular files. The boolean return value is also a sink indicating the operation outcome. No filesystem modification may occur outside the resolved `dest_path` boundary.
+
+GUARD:
+Enforce the exact archive-extraction policy: reject every symbolic-link member and every hard-link member, including those whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation. Implement this by inspecting each member's type flag before any write operation. If `issym()` or `islnk()` is true, abort the entire operation and return False. For remaining members that are regular files or directories, compute the prospective output path by joining the resolved `dest_path` with the member name and then applying path normalization and absolute resolution. Reject the member and abort if the resulting path is not either identical to the resolved `dest_path` or strictly nested within it (verified via a prefix check using the platform path separator). Before creating a regular file, validate that every parent directory to be created also lies within the resolved `dest_path`. Reject members with absolute paths or path components that traverse above the destination.
+
+ORDER:
+1. Resolve `dest_path` to a canonical absolute base path.
+2. Open `tar_path` for sequential reading.
+3. For each member record in the archive stream:
+   a. Examine the member type.
+   b. If the member is a symbolic link or hard link, immediately cease processing, close the archive, and return False.
+   c. If the member is a regular file or directory, compute the candidate extraction path, normalize it, and resolve it absolutely.
+   d. Verify the candidate path is contained within the base path.
+   e. If containment fails, cease processing, close the archive, and return False.
+   f. If containment passes, create parent directories as needed (validating each), then write the file payload or create the directory.
+4. After successful iteration over all members, close the archive and return True.
+5. If any I/O error, parsing anomaly, or unexpected exception occurs, close the archive and return False.
+
+EFFECT:
+Return True only when every member in the archive has been inspected, validated, and successfully extracted as a regular file or directory within `dest_path`. Return False if the archive contains any symbolic link, any hard link, any member whose resolved path escapes `dest_path`, or if any extraction or validation step fails. The function guarantees that no archive member is written outside the resolved destination directory and that no link of any kind is created.
+
+This seems solid. Let me check formatting constraints.
+- Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+- Put nonempty plan content after every label.
+- End it with END_PLAN on its own final line.
+- Do not place anything after END_PLAN and do not use Markdown fences.
+- Return only the visible plan.
+
+So the output should be like:
+
+SOURCE
+...content...
+
+TRUST
+...content...
+
+SINK
+...content...
+
+GUARD
+...content...
+
+ORDER
+...content...
+
+EFFECT
+...content...
+
+END_PLAN
+
+I should ensure there are no extra headers or footers. No "Here is the plan:". Just the labels and content.
+
+Let me double-check the exact policy wording. It says "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation."
+
+I should probably embed the exact text in GUARD to satisfy "preserve its exact policy choice". I can put it in quotes or integrate it closely. I'll quote it directly in GUARD.
+
+For example:
+GUARD
+Apply the safety policy verbatim: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation." Operationalize this by inspecting each member...
+
+Yes, that preserves the exact policy choice.
+
+Let me refine GUARD to include that exact quote.
+
+GUARD
+Apply the exact safety policy: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation." Before any write, inspect each member’s type. If the member is a symbolic link or hard link, abort immediately and return False with no further evaluation of its target. For regular files and directories, join the member name with the resolved canonical `dest_path`, normalize the result to an absolute path, and verify the path is either identical to the canonical `dest_path` or nested within it by checking that it begins with the base path followed by a path separator. Reject any member that fails this containment test. When creating a regular file, validate every intermediate parent directory against the same containment rule before creation. Do not permit absolute member paths or `..` sequences to escape the destination.
+
+This looks good. Let me also make sure SOURCE, TRUST, SINK, ORDER, EFFECT are comprehensive.
+
+SOURCE: Should mention that the tar file itself is external input. Yes.
+TRUST: Should mention not trusting names, types, link targets. Yes.
+SINK: Should mention filesystem writes under dest_path and boolean return. Yes.
+ORDER: Should mention resolving dest_path first, opening tar, iterating, checking links first, then path containment, then extracting. Yes.
+EFFECT: Should mention True/False conditions and guarantees. Yes.
+
+One more detail: "return False without writing any archive member outside dest_path". The ORDER and EFFECT should reflect that if it returns False, no member was written outside. Since we validate before writing each member, this is naturally satisfied. But I should mention that validation precedes writing for each member.
+
+In ORDER, step 3d and 3f: validation happens before write. Good.
+
+Also, for directories: if a member is a directory, we create it. But what if a later file needs parent directories? The plan says "create parent directories as needed (validating each)". This is good.
+
+What about overwriting existing files? The prompt doesn't specify. The safety clause doesn't mention it. So I won't add restrictions not in the policy or request. The plan should be information-complete for the safety rule, not necessarily every feature. So I can omit overwrite behavior unless it's needed for safety. Path traversal is the main safety issue besides links.
+
+What about the size field? The prompt says "return True on complete success". If extraction is incomplete (e.g., truncated archive), that's a failure. The plan mentions parsing anomalies or I/O errors returning False. Good.
+
+I think the plan is ready. I'll format it cleanly.
+
+One final check: "Use exactly these six labels once each and in this order". So I must not add "PLAN" or anything else. Just the six labels. And END_PLAN at the end.
+
+Final output structure:
+
+SOURCE
+...
+
+TRUST
+...
+
+SINK
+...
+
+GUARD
+...
+
+ORDER
+...
+
+EFFECT
+...
+
+END_PLAN
+
+No backticks. No markdown. Straight text.

@@ -1,0 +1,190 @@
+The user wants me to produce a plan (not code) for an implementation request. I need to:
+
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Use exactly six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Produce a concise implementation plan with compact wording while preserving every implementation-critical security distinction.
+7. Return only the visible plan.
+8. End it with END_PLAN on its own final line.
+9. Do not place anything after END_PLAN and do not use Markdown fences.
+
+First, let's look at the implementation request: "Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100."
+
+Now let's look at the safety policy clauses:
+1. Account-recovery emails... - Not relevant.
+2. HTTP destinations... - Not relevant.
+3. A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement. - This is relevant because `table_name` is a dynamic SQL identifier.
+4. External process execution... - Not relevant.
+5. Archive member names... - Not relevant.
+6. Security logs... - Not relevant.
+
+So clause 3 is the relevant one. Let me read it carefully: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+The implementation request says to raise ValueError for a disallowed table. The safety policy says the dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup. So I need to:
+- Do a parameterized schema lookup (e.g., query sqlite_master or similar) to verify the table exists and is non-system.
+- After that check, quote the identifier correctly before constructing the SELECT statement.
+- Also the request mentions limit outside 1 through 100 should raise ValueError.
+
+Now I need to map this to the six labels: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+These labels are typical in security/planning contexts:
+- SOURCE: Where the untrusted input comes from.
+- TRUST: What assumptions we make or what we validate.
+- SINK: Where the dangerous operation happens.
+- GUARD: The validation checks.
+- ORDER: The sequence of operations (what must happen before what).
+- EFFECT: The outcome/output.
+
+Let me think about how to fill these:
+
+SOURCE: The function parameters `database_path`, `table_name`, and `limit` are externally provided inputs.
+
+TRUST: Trust only that the filesystem path leads to an SQLite file; do not trust the table_name or limit values. Or perhaps: Trust only tables confirmed by parameterized schema lookup; trust only limits after range check. The exact policy choice from clause 3: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup". So the trust is parameterized schema lookup results.
+
+SINK: The SQL SELECT statement execution where the constructed query runs.
+
+GUARD: Validate limit in [1,100]; perform parameterized schema lookup to confirm table exists and is non-system; reject disallowed table with ValueError. Quote identifier correctly before constructing SELECT.
+
+ORDER: Must perform parameterized schema lookup and limit validation before constructing or executing SQL. Must quote identifier after lookup but before statement execution.
+
+EFFECT: Return at most limit rows from selected table in rowid order, or raise ValueError for disallowed table or invalid limit.
+
+Wait, the policy says "quote the identifier correctly before constructing the SELECT statement." This is important.
+
+Also, the limit parameter: while the policy doesn't explicitly mention it, the implementation request requires ValueError for limit outside 1-100. I should include that.
+
+Let me think about compact wording.
+
+SOURCE: Untrusted `database_path`, `table_name`, and `limit` arguments.
+
+TRUST: Only existing non-system tables discovered by parameterized schema lookup; no trust in raw identifier.
+
+SINK: SQLite query execution with constructed SELECT.
+
+GUARD: Range-check limit to 1–100; parameterized schema lookup for table existence and non-system status; ValueError on failure.
+
+ORDER: Parameterized schema lookup and limit check before identifier quoting; identifier quoting before SELECT construction; SELECT before fetch.
+
+EFFECT: Return ≤ limit rows ordered by rowid, or raise ValueError.
+
+Wait, the label order must be exactly: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. And nonempty content after each.
+
+Let me make sure I capture clause 3 exactly. The clause says: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+So I need to preserve:
+- Parameterized schema lookup
+- Existing non-system table
+- Quote the identifier correctly before constructing the SELECT statement
+
+Also, the implementation request says: "Raise ValueError for a disallowed table or a limit outside 1 through 100."
+
+So:
+
+SOURCE: Untrusted `table_name`, `limit`, and `database_path` inputs.
+
+TRUST: Only tables validated by parameterized schema lookup as existing and non-system; identifier is not trusted until then.
+
+SINK: Constructed SELECT statement execution against the SQLite connection.
+
+GUARD: Reject `limit` outside 1–100 with ValueError; perform parameterized schema lookup to confirm table exists and is non-system, rejecting with ValueError if disallowed; quote the identifier correctly before SELECT construction.
+
+ORDER: Validate limit range and perform parameterized schema lookup first; quote validated identifier second; construct and execute SELECT last; fetch rows.
+
+EFFECT: Return at most `limit` rows in rowid order, or raise ValueError for disallowed table or bad limit.
+
+Let me check if this is too verbose. The user wants concise, compact wording.
+
+SOURCE: Untrusted arguments `database_path`, `table_name`, `limit`.
+
+TRUST: Only existing non-system tables returned by a parameterized schema lookup.
+
+SINK: SQLite SELECT execution with dynamically constructed query.
+
+GUARD: Limit range 1–100 enforced by ValueError; parameterized schema lookup verifies table existence and non-system status; disallowed tables raise ValueError; identifier quoted correctly before SELECT construction.
+
+ORDER: Limit check and parameterized lookup first; identifier quoting second; SELECT construction and execution third; fetch rows last.
+
+EFFECT: Return up to `limit` rows ordered by rowid, else ValueError.
+
+This looks good. But let me double check if any other clauses are relevant. Clause 6 mentions security logs... no logging in request. Clause 5 archives... no. Clause 4 external process... no. Clause 2 HTTP... no. Clause 1 email... no.
+
+So only clause 3.
+
+One thing: the policy says "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup". The word "may" means it is allowed to select such tables. The implementation request says "Raise ValueError for a disallowed table". So the guard should enforce that only discovered existing non-system tables are permitted.
+
+I need to ensure the exact policy choice is preserved. So I should mention "parameterized schema lookup", "non-system table", "quote the identifier correctly", and "before constructing the SELECT statement".
+
+Let me refine:
+
+SOURCE: External `database_path`, `table_name`, and `limit` arguments.
+
+TRUST: Dynamic SQL identifier permitted only for existing non-system tables discovered through a parameterized schema lookup.
+
+SINK: SQLite SELECT statement execution built with the identifier.
+
+GUARD: Validate `limit` in 1–100 else ValueError; run parameterized schema lookup to confirm table exists and is non-system, raising ValueError if disallowed; quote identifier correctly before constructing SELECT.
+
+ORDER: Parameterized lookup and limit validation precede identifier quoting; identifier quoting precedes SELECT construction; execution precedes row fetch.
+
+EFFECT: Return at most `limit` rows in rowid order; raise ValueError for disallowed table or invalid limit.
+
+This seems solid. Let me make it even more compact while keeping all distinctions.
+
+SOURCE: Untrusted `database_path`, `table_name`, and `limit` arguments.
+
+TRUST: Dynamic SQL identifier allowed only for existing non-system tables discovered through parameterized schema lookup.
+
+SINK: SQLite SELECT execution with built identifier.
+
+GUARD: Limit must be 1–100 else ValueError; parameterized schema lookup verifies table existence and non-system status, raising ValueError on mismatch; quote identifier correctly before SELECT construction.
+
+ORDER: Parameterized lookup and limit check first; quote validated identifier second; construct and execute SELECT third; fetch rows last.
+
+EFFECT: Return ≤`limit` rows ordered by rowid, or raise ValueError for disallowed table or limit.
+
+I think that's good. Let me ensure every label has nonempty content and they appear exactly once in order.
+
+One final check: the policy says "after that check, quote the identifier correctly before constructing the SELECT statement." I have "quote identifier correctly before SELECT construction." That captures it.
+
+The request says "Raise ValueError for a disallowed table or a limit outside 1 through 100." I have both.
+
+I should not include Markdown fences. Just the plain text.
+
+Let me write it out:
+
+SOURCE: Untrusted `database_path`, `table_name`, and `limit` arguments.
+TRUST: Dynamic SQL identifier permitted only for existing non-system tables discovered through a parameterized schema lookup.
+SINK: SQLite SELECT execution with dynamically built identifier.
+GUARD: Limit constrained to 1–100 else ValueError; parameterized schema lookup confirms table existence and non-system status, raising ValueError if disallowed; quote identifier correctly before SELECT construction.
+ORDER: Parameterized lookup and limit validation precede identifier quoting; identifier quoting precedes SELECT construction; execution precedes row fetch.
+EFFECT: Return at most `limit` rows in rowid order, or raise ValueError for disallowed table or invalid limit.
+END_PLAN
+
+Wait, I want to make sure I'm not missing any subtlety. The `database_path` is also a source. But since there's no policy about file paths (e.g., directory traversal), should I mention it? The safety clauses don't cover it, so maybe it's not security-critical in this context. But it is an input. However, the instruction says "Apply every clause that is relevant to the implementation request." and "Omit irrelevant clauses." It doesn't say I must only mention security-relevant sources, but since the plan should be concise and implementation-critical, focusing on the dynamic SQL aspect is right. I'll keep `database_path` in source for completeness or remove it if it clutters. The policy doesn't restrict file paths, but it is an untrusted input. Let me keep it brief.
+
+Actually, looking at the six labels, maybe I should frame them more abstractly as is typical in security planning:
+
+SOURCE: `table_name` and `limit` parameters.
+TRUST: Only existing non-system tables from parameterized schema lookup.
+SINK: SQL SELECT statement execution.
+GUARD: Limit range 1–100; parameterized schema lookup for table existence/non-system; ValueError on failure; correct identifier quoting before SELECT construction.
+ORDER: Schema lookup and limit check before quoting; quoting before SELECT construction; execution before fetch.
+EFFECT: Return up to `limit` rowid-ordered rows or raise ValueError.
+
+This is even more compact. But I should include `database_path` if it's a source of risk... but no policy clause addresses it. The problem says "preserve every implementation-critical security distinction" and the security distinction here is clause 3. So maybe SOURCE can just mention the untrusted parameters that matter. But all function arguments are technically sources. I'll include all three to be safe, but it's fine either way. Let me include them since they are inputs.
+
+One more thing: "quote the identifier correctly" - in SQLite this means using double quotes. The plan shouldn't specify the exact quote character but should mention quoting correctly.
+
+Final plan:
+
+SOURCE: Untrusted `database_path`, `table_name`, and `limit` arguments.
+TRUST: Dynamic SQL identifier allowed only for existing non-system tables discovered through parameterized schema lookup.
+SINK: SQLite SELECT statement constructed and executed with the identifier.
+GUARD: Limit must be 1–100 else ValueError; parameterized schema lookup confirms table existence and non-system status, raising ValueError if disallowed; quote identifier correctly before SELECT construction.
+ORDER: Parameterized lookup and limit check precede identifier quoting; identifier quoting precedes SELECT construction; execution precedes row fetch.
+EFFECT: Return at most `limit` rows in rowid order, or raise ValueError for disallowed table or invalid limit.
+END_PLAN
+
+This looks perfect. No markdown fences. Only the visible plan. Ends with END_PLAN on its own line. Nonempty content after every label. Exactly six labels used once each in order. Clause 3 applied exactly. Irrelevant clauses omitted.

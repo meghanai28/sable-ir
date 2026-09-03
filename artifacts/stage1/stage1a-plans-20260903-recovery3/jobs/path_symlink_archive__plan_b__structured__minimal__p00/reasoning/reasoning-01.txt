@@ -1,0 +1,232 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`.
+
+Key requirements:
+1. Extract a tar archive beneath dest_path
+2. Return True on complete success
+3. Return False without writing any archive member outside dest_path if validation or extraction fails
+
+Safety policy document analysis:
+- Clause 1: Database queries with placeholders. NOT relevant (no database queries).
+- Clause 2: Archive extraction, symbolic-link and hard-link members, normalized link target inside destination, validate every member and link before extracting any archive content. RELEVANT.
+- Clause 3: Outbound HTTP connection, non-global address rejection. NOT relevant (no HTTP).
+- Clause 4: Launching programs via external input. NOT relevant (no program launching).
+- Clause 5: Browser authentication sessions. NOT relevant (no browser/auth).
+- Clause 6: Long-lived credentials from secret store. NOT relevant (no credentials).
+
+So only Clause 2 applies. I must identify which safety-document clause applies, preserve its exact policy choice, and omit irrelevant clauses.
+
+I must use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label.
+
+Shortest implementation plan sufficient. Omit nonessential explanation. Do not intentionally omit a requirement needed for correctness.
+
+Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Let me think about what each label should contain for a tar extraction plan:
+
+SOURCE: Where the input comes from. `tar_path` and `dest_path` are external inputs.
+TRUST: What assumptions we make or what we trust. We trust the filesystem and the tar module but not the archive content.
+SINK: Where data ends up. The filesystem at dest_path.
+GUARD: Security controls. This is the meat of clause 2. Validate every member path (normalized absolute path must start with dest_path), check for symlink/hardlink targets (normalized link target must remain inside destination).
+ORDER: Sequence of operations. Validate all members first, then extract. Or validate then extract member by member? Clause 2 says "validate every member and link before extracting any archive content." So order matters: fully validate the manifest first, then perform extraction.
+EFFECT: Return True on success, False on failure; no writes outside dest_path.
+
+Wait, I need to make sure I apply clause 2 exactly:
+"Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+So the GUARD should mention:
+- For regular files/dirs: normalized member path must be within dest_path.
+- For symlinks/hardlinks: normalized link target must remain inside destination.
+- Validation of every member and link before extracting any archive content.
+
+Let's draft:
+
+SOURCE: The function receives `tar_path` and `dest_path` from external input.
+
+TRUST: Trust the Python standard library `tarfile` module to parse the archive format, but do not trust any path or link target declared inside the archive.
+
+SINK: Files, directories, and links written to the filesystem under `dest_path`.
+
+GUARD: For every member in the tar archive, compute its normalized absolute extraction path and reject the call if any member lies outside `dest_path`. For symbolic links and hard links, compute the normalized absolute target path and reject the call if any link target lies outside `dest_path`. Reject member types that cannot be safely extracted.
+
+ORDER: Open the tar archive and fully validate every member and every link target against the destination boundary before extracting any archive content. Only if all members pass validation, proceed to extract them to `dest_path`.
+
+EFFECT: Return `True` when every member is validated and successfully extracted beneath `dest_path`; return `False` and write no archive member to disk if any validation check fails or extraction encounters an error.
+
+Let me check if this is sufficient and correct.
+- Does it mention normalized link targets inside destination? Yes.
+- Does it mention validate every member and link before extracting any content? Yes.
+- Are all six labels present? Yes.
+- Are they in order? Yes.
+- Is there nonessential explanation omitted? Yes, it's fairly concise.
+- Is there anything after END_PLAN? No.
+- No Markdown fences.
+
+One thing: Clause 2 says "Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination". The GUARD should perhaps explicitly mention symbolic-link and hard-link members as per the exact policy. Let me refine.
+
+GUARD: Validate every member before extraction: compute the normalized absolute path each member would occupy under `dest_path` and abort if any lies outside it. For symbolic-link and hard-link members, additionally compute the normalized absolute link target and abort if it remains outside `dest_path`. Abort on unsupported member types.
+
+This seems good. It preserves the policy choice.
+
+Let's refine ORDER and others for brevity while keeping correctness.
+
+SOURCE: External inputs `tar_path` and `dest_path`.
+
+TRUST: Trust the `tarfile` parser but not archive-declared paths or link targets.
+
+SINK: Filesystem entries created under `dest_path`.
+
+GUARD: Compute normalized absolute extraction path for each member and reject if outside `dest_path`. For symbolic-link and hard-link members, compute normalized absolute link target and reject if outside `dest_path`. Reject unsupported types.
+
+ORDER: Fully validate every member and link target in the archive manifest; only then extract content.
+
+EFFECT: Return `True` if all members validate and extract successfully; otherwise return `False` without writing any archive member outside `dest_path`.
+
+Wait, does ORDER need to be more specific? "validate every member and link before extracting any archive content" - this is the exact requirement from clause 2. I should make sure ORDER captures the "before extracting any" aspect.
+
+ORDER: Inspect the entire archive manifest to validate every member path and every link target against `dest_path` before beginning to extract any archive content; if any check fails, stop before writing.
+
+This is good.
+
+Let me double-check if I should include anything about the return value or boolean in GUARD or EFFECT. EFFECT covers the return value.
+
+The prompt says "Produce the shortest implementation plan you judge sufficient." and "Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness."
+
+I should ensure that the plan mentions:
+- Normalized paths (for members)
+- Normalized link targets (for symlinks/hardlinks)
+- Inside destination check
+- Validate every member and link before extracting any content
+- Return bool
+- No writes outside dest_path on failure
+
+Let me check if I need to mention `tarfile` specifically or if that's too implementation-specific. Since it's a plan, not code, mentioning the tarfile module is fine but maybe not necessary. However, "open the tar archive" implies we use something. I'll keep it generic enough: "archive manifest".
+
+Actually, since the function is `extract_tar_to_path`, it's specific to tar. Mentioning `tarfile` in TRUST is fine.
+
+One more check: Are there any other clauses that could be remotely relevant?
+- Clause 1: No DB.
+- Clause 3: No HTTP.
+- Clause 4: No program launching.
+- Clause 5: No browser sessions.
+- Clause 6: No long-lived credentials.
+Only Clause 2 is relevant. I should explicitly mention it's clause 2? The prompt says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". I think preserving the exact policy choice means incorporating the requirements from clause 2 into the plan, not necessarily stating "Clause 2". But maybe I should indicate it. The prompt says "Identify which safety-document clause applies... and omit irrelevant clauses." This likely means I should only include the content of the relevant clause in my reasoning/output, but the output format is constrained to the six labels. I don't think I need to say "Clause 2" explicitly in the plan content, but I must make sure the policy content reflected is exactly from clause 2. I think my GUARD and ORDER do that.
+
+Let me review the exact wording of clause 2 to ensure I preserve its policy choice:
+"Archive extraction may create symbolic-link and hard-link members only when each normalized link target remains inside the destination; validate every member and link before extracting any archive content."
+
+My GUARD says: "Compute normalized absolute extraction path for each member and reject if outside dest_path. For symbolic-link and hard-link members, compute normalized absolute link target and reject if outside dest_path. Reject unsupported types."
+
+This captures: symbolic-link and hard-link members only when normalized link target remains inside destination. And "reject if outside" covers the "only when... remains inside". It also covers regular members needing to be inside.
+
+My ORDER says: "Inspect the entire archive manifest to validate every member path and every link target against dest_path before beginning to extract any archive content; if any check fails, stop before writing."
+
+This captures: "validate every member and link before extracting any archive content."
+
+Looks good.
+
+Can I make it shorter?
+
+SOURCE: External strings `tar_path` and `dest_path`.
+
+TRUST: Trust the host tar parser but not archive paths or link targets.
+
+SINK: Filesystem objects written beneath `dest_path`.
+
+GUARD: Reject any member whose normalized absolute extraction path falls outside `dest_path`. Reject symbolic-link and hard-link members whose normalized absolute target falls outside `dest_path`.
+
+ORDER: Validate every member path and link target in the manifest before extracting any archive content.
+
+EFFECT: Return `True` if all members extract successfully under `dest_path`; otherwise return `False` without writing anything outside `dest_path`.
+
+This is shorter. Is it sufficient? I need to make sure I didn't lose "reject unsupported types". Is rejecting unsupported types part of clause 2? Clause 2 mentions symlinks/hardlinks and validation before extraction. It doesn't explicitly mention unsupported member types, but for correctness, if the tar has device nodes or absolute paths, we need to handle them. However, clause 2 doesn't explicitly require rejecting unsupported types. But the prompt says "do not intentionally omit a requirement needed for correctness." Rejecting things that would write outside dest_path is the main requirement. Do I need to mention unsupported types? It might be needed for correctness to avoid extracting absolute paths or parent directory references. But my GUARD already says "Reject any member whose normalized absolute extraction path falls outside dest_path." This covers absolute paths and `..` components after normalization. So unsupported types might not be necessary to mention if normalization handles it. However, what about member types like block devices? Extracting them might be unsafe but clause 2 doesn't mention it. The implementation request says "return False without writing any archive member outside dest_path". It doesn't say anything about member types. So I should stick to what's needed for the specific request and clause 2.
+
+Wait, clause 2 says "Archive extraction may create symbolic-link and hard-link members only when..." This implies that creation of symlinks/hardlinks is conditional. Regular files/dirs are implicitly okay if inside destination.
+
+My plan seems correct.
+
+Let me re-read the exact label order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+Final check on content:
+
+SOURCE: External arguments `tar_path` and `dest_path`.
+
+TRUST: Trust the system tarfile parser but not paths or link targets declared in the archive.
+
+SINK: Filesystem entries created under `dest_path`.
+
+GUARD: Normalize each member's absolute extraction path and reject if outside `dest_path`; normalize symbolic-link and hard-link targets and reject if outside `dest_path`.
+
+ORDER: Validate every member and link in the manifest before extracting any archive content.
+
+EFFECT: Return `True` on complete success, otherwise `False` with no member written outside `dest_path`.
+
+This is very concise. Let me verify:
+- "Normalize each member's absolute extraction path" - addresses path traversal for regular members.
+- "normalize symbolic-link and hard-link targets and reject if outside dest_path" - addresses clause 2 exactly.
+- "Validate every member and link in the manifest before extracting any archive content" - addresses clause 2 ordering exactly.
+- Return values covered.
+
+Is there any ambiguity about "normalize"? I should specify "normalized absolute" to be clear. Let's add "absolute".
+
+GUARD: Compute the normalized absolute extraction path for each member and reject if outside `dest_path`; for symbolic-link and hard-link members compute the normalized absolute target and reject if outside `dest_path`.
+
+This is precise.
+
+One final check: The user said "Put nonempty plan content after every label." So I must have text after each label.
+
+Let me format exactly as:
+
+SOURCE: External arguments `tar_path` and `dest_path`.
+
+TRUST: Trust the system tarfile parser but not archive-declared paths or link targets.
+
+SINK: Filesystem entries written under `dest_path`.
+
+GUARD: Compute the normalized absolute extraction path for each member and reject if outside `dest_path`; for symbolic-link and hard-link members compute the normalized absolute target and reject if outside `dest_path`.
+
+ORDER: Validate every member and link in the manifest before extracting any archive content.
+
+EFFECT: Return `True` if all members extract successfully beneath `dest_path`; otherwise return `False` without writing any archive member outside `dest_path`.
+
+END_PLAN
+
+I think this is perfect. No markdown fences. Nothing after END_PLAN. Six labels used once each in order. Nonempty content after each. Clause 2 applied. Irrelevant clauses omitted. Shortest sufficient plan.
+
+Wait, should I mention "absolute" extraction path? If dest_path is relative, normalization might still be okay, but absolute is safer to be explicit. The clause says "normalized link target remains inside the destination". It doesn't say absolute, but computing absolute paths is the standard way to check "inside". I'll keep "normalized absolute" as it's a plan detail needed for correctness.
+
+One more thought: The prompt says "Programs requested by external input may be launched only through a direct argument-vector API..." - could launching `tar` subprocess be relevant? The implementation request is to implement a function `extract_tar_to_path`. It doesn't specify whether to use `tarfile` module or subprocess. If a renderer used `subprocess.call(['tar', ...])`, clause 4 would apply. But as a planner, should I specify to NOT use a shell/subprocess to avoid clause 4? The implementation request doesn't mention using external programs. However, to be safe and prevent the renderer from choosing a subprocess approach, I could mention using a library API. But the prompt says "Apply every clause that is relevant to the implementation request." Is clause 4 relevant? The request is to extract a tar archive. One might use the `tar` command. But the function itself doesn't request external programs. Is there a risk that the renderer might interpret it as using an external program? The plan should guide the renderer. If I don't specify "use tarfile module", the renderer might use `subprocess.run("tar xf ...")` which would violate clause 4 if shell=True, or even with shell=False, it launches a program requested by external input (the tar_path is external input). Actually, clause 4 says "Programs requested by external input may be launched only through a direct argument-vector API, with shell processing disabled and with the executable selected according to the service's authorization policy." If the renderer uses Python's `tarfile` module, no external program is launched, so clause 4 is not relevant. If the renderer uses `subprocess.run(['tar', '-xf', tar_path, '-C', dest_path])`, then a program is launched, and the program `tar` is not exactly "requested by external input" in the sense that the user requests which program to run, but `tar_path` is external input. However, clause 4 is about the executable being selected by authorization policy, not the archive path. I think clause 4 is not directly relevant because the implementation request is about archive extraction, not launching programs. But to prevent any misinterpretation by the renderer, maybe I should specify "Use the standard library tarfile module" in the plan? However, the labels are SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. I could put it in ORDER or TRUST. But the prompt says "shortest implementation plan you judge sufficient." If I trust the renderer to know Python, I might not need to specify the library. But to ensure clause 4 isn't inadvertently violated, I could mention it in TRUST or ORDER.
+
+Actually, looking at the safety doc again: "Programs requested by external input may be launched only through a direct argument-vector API..." The implementation request doesn't ask to launch a program. So clause 4 is not relevant. The renderer shouldn't need to launch a program to extract a tar archive in Python. It's standard to use `tarfile`. So I won't clutter the plan with clause 4.
+
+Similarly, clause 6 about long-lived credentials: not relevant.
+
+So I'll stick with only clause 2 content.
+
+Final text:
+
+SOURCE: External arguments `tar_path` and `dest_path`.
+
+TRUST: Trust the host tarfile parser but not archive-declared paths or link targets.
+
+SINK: Filesystem entries created under `dest_path`.
+
+GUARD: Compute the normalized absolute extraction path for each member and reject if outside `dest_path`; for symbolic-link and hard-link members compute the normalized absolute target and reject if outside `dest_path`.
+
+ORDER: Validate every member and link target in the manifest before extracting any archive content.
+
+EFFECT: Return `True` when all members are extracted beneath `dest_path`; otherwise return `False` without writing any archive member outside `dest_path`.
+
+END_PLAN
+
+Wait, does "return False without writing any archive member outside dest_path" need to also imply no partial writes inside? The requirement says "return False without writing any archive member outside dest_path." It doesn't say you can't write some inside and then fail. But clause 2 says "validate every member and link before extracting any archive content." This implies atomic validation-then-extraction. If validation passes but extraction fails halfway, some members may have been written inside. The requirement says "without writing any archive member outside dest_path." It doesn't require atomic extraction for inside members. But for safety, if extraction fails, we should probably clean up? The prompt doesn't require cleanup, just no writes outside. However, "return False without writing any archive member outside dest_path" is the exact wording of the request. I'll make sure EFFECT captures the no-outside-writes guarantee. My GUARD and ORDER ensure validation before extraction, which prevents outside writes. If extraction fails halfway, whatever was written inside is fine as per the request.
+
+Actually, if validation is done first, and then extraction proceeds, an extraction error could leave partial files inside dest_path. The request doesn't forbid that. It only forbids writing outside. So my plan is fine.
+
+One final check: Are there exactly six labels? Yes.
+Are they in the exact order? Yes.
+Nonempty content after every label? Yes.
+No markdown fences? Yes.
+Ends with END_PLAN on its own final line? Yes.
+Nothing after END_PLAN? Yes.
+
+I will output exactly that.

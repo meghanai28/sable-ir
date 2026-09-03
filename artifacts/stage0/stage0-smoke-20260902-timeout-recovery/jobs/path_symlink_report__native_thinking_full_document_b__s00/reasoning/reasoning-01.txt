@@ -1,0 +1,545 @@
+The user wants a Python module implementing `read_report(filename: str, reports_root: str) -> str`.
+
+Key requirements from the safety policy:
+1. For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root.
+6. Before extracting an archive... (not relevant, this is reading a file, not extracting an archive)
+
+So clause 1 is relevant. We need to:
+- Take a filename and reports_root.
+- Construct a path. Need to be careful about directory traversal (e.g., `../../../etc/passwd`).
+- Resolve symbolic links: follow them but only after resolving the complete target path and confirming the resolved target remains inside the approved root.
+- Return the content as UTF-8.
+- Propagate FileNotFoundError for a missing ordinary file.
+- Raise ValueError when the request is disallowed (e.g., path escapes root, symlink target escapes root, not a regular file, etc.).
+
+Implementation details:
+- `os.path.join(reports_root, filename)` is not safe because `filename` can contain `..`. Better to use something like:
+  - `path = os.path.join(reports_root, filename)`
+  - `real_path = os.path.realpath(path)` resolves symlinks.
+  - But `os.path.realpath` might create the path if there are symlinks in the middle? Actually it resolves without following final symlink if it doesn't exist? Wait, `os.path.realpath` follows symlinks and returns the absolute path. If the final component is a symlink, it follows it. If the path doesn't exist, it just normalizes `..` etc. But we need to read the file. If it's a symlink to a file that exists, `os.path.realpath` will give the target. We then check if the target is under `reports_root`. But what if intermediate directories are symlinks? The policy says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This suggests we can use `os.path.realpath` on the constructed path, which resolves all symlinks, and then check if the result is under `reports_root`. However, we also need to ensure the file is an ordinary file. We can use `os.path.islink`? No, if it's a symlink, `os.path.realpath` resolves it. But if the path itself is a symlink, we want to allow it only if its target is inside. `os.path.realpath` handles that. But we also need to check that the resolved path is a file (regular file). We can use `os.path.isfile(resolved_path)`. But `os.path.isfile` returns True for symlinks to files as well. However, after `realpath`, the resolved path is the target, not a symlink. So that's fine.
+
+Wait: `os.path.realpath` may not handle symlinks correctly on all platforms if the path doesn't exist. But we want to propagate FileNotFoundError for a missing ordinary file. The policy says "Propagate FileNotFoundError for a missing ordinary file". This implies if the file doesn't exist, we should let the exception from `open()` propagate? Or raise it ourselves. But what if the path is disallowed? Then ValueError.
+
+Let's think step by step:
+
+1. Validate `reports_root` is absolute? The function signature doesn't guarantee it. We can resolve it: `root = os.path.realpath(reports_root)`. But `reports_root` itself could contain symlinks. Should we resolve it? The policy says reads beneath an approved filesystem root. The root itself might be a symlink? Probably should resolve the root to its real path to establish the boundary. Or we can assume `reports_root` is already a real path. To be safe, let's resolve `reports_root` using `os.path.realpath(reports_root)`.
+
+2. Construct the requested path: `requested = os.path.join(root, filename)`. But if `filename` is absolute, `os.path.join` ignores the first argument. So we should strip leading slashes or ensure it's relative. The safest is to treat `filename` as a relative path segment. If it starts with `/`, it should be disallowed or handled. We can do:
+   `if os.path.isabs(filename): raise ValueError("Absolute filename not allowed")`
+   Or we can just join and then check, but absolute filename would bypass root. So we must prevent that.
+
+3. Normalize the path without following symlinks first? Or just use `os.path.realpath(requested)`? Let's consider:
+   - `os.path.realpath(path)` resolves all symbolic links in the path and returns the absolute path. It also normalizes `.` and `..`.
+   - If the path doesn't exist, it still normalizes `.` and `..` but doesn't follow symlinks for non-existent parts. So if the file is a symlink to something outside, `os.path.realpath` will resolve it if the symlink exists. If the symlink points to a non-existent file, `os.path.realpath` will resolve the symlink part (since it exists) and then append the rest? Actually if it's a symlink to a path that doesn't exist, `os.path.realpath` returns the resolved symlink target (normalized). We can still check if that target is under root. But then when we try to open it, it will raise FileNotFoundError. The policy says propagate FileNotFoundError for a missing ordinary file. So that works.
+
+But wait: what if the filename contains `..` that goes above root without symlinks? Example: root = `/reports`, filename = `../secret.txt`. `os.path.join(root, filename)` gives `/reports/../secret.txt` = `/secret.txt` (after normalization). `os.path.realpath` would give `/secret.txt`. We check if it's under root; it's not, so ValueError.
+
+What about symlinks in intermediate directories? Example: root = `/reports`, and inside `/reports` there's a symlink `link -> /etc`. filename = `link/passwd`. `os.path.join(root, "link/passwd")` -> `/reports/link/passwd`. `os.path.realpath` -> `/etc/passwd`. Check if under root -> no -> ValueError. This is correct.
+
+What about a symlink inside the root pointing to another location inside the root? That's allowed.
+
+What about a symlink pointing to a path that itself contains symlinks going outside? `os.path.realpath` resolves all of them. So it's safe.
+
+One subtlety: `os.path.realpath` on Windows may behave differently, but the request seems generic.
+
+We also need to ensure the final resolved path is an ordinary file. The policy mentions "missing ordinary file". It implies we should only allow ordinary files. So if the resolved path is a directory, device file, etc., we should raise ValueError (disallowed). Or maybe FileNotFoundError? The request says "Propagate FileNotFoundError for a missing ordinary file". If it's a directory, it's not missing, but it's not an ordinary file. I think ValueError is appropriate for disallowed requests. We can check `os.path.isfile(resolved_path)`. However, `os.path.isfile` returns True for regular files and symlinks to regular files? Actually on Unix, `os.path.isfile` follows symlinks (like `os.stat`), so after resolving, it's fine. But what about special files like block devices? `os.path.isfile` returns False for them. So we can check `os.path.isfile`. But what if the file is a symlink? After `realpath`, the resolved path is the target, so `os.path.isfile` checks the target. But wait: if the requested path is a symlink, `os.path.realpath` resolves it. But we might want to ensure we don't follow symlinks unless they resolve inside. `realpath` does that. However, there's a race condition (TOCTOU) between checking the path and opening it. A safer approach is to open with `os.open` with `O_NOFOLLOW`? But the policy says symbolic links may be followed only after resolving the complete target path and confirming the resolved target remains inside the approved root. So resolving first is exactly what is required.
+
+But there is still a race: after we resolve and check, the symlink could be changed to point elsewhere before we open. However, in pure Python without low-level flags, we can't atomically follow and check. But we can minimize the window. The policy as stated seems to accept resolving first.
+
+Alternatively, we can use `pathlib.Path.resolve()` which is similar to `os.path.realpath`. It resolves symlinks and returns absolute path.
+
+Let's design the function:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    # Resolve the root to its real path to establish a firm boundary.
+    root = os.path.realpath(reports_root)
+    
+    # Reject absolute filenames or path separators that escape the root.
+    # os.path.join ignores the first argument if the second is absolute.
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filename not allowed")
+    
+    # Construct the requested path.
+    requested = os.path.join(root, filename)
+    
+    # Resolve the complete target path, following symbolic links.
+    try:
+        resolved = os.path.realpath(requested)
+    except OSError:
+        # If realpath fails (e.g., permission error), treat as disallowed.
+        raise ValueError("Failed to resolve path")
+    
+    # Confirm the resolved target remains inside the approved root.
+    # Use os.path.commonpath for robust comparison.
+    try:
+        common = os.path.commonpath([root, resolved])
+    except ValueError:
+        # On Windows, if paths are on different drives.
+        raise ValueError("Resolved path is outside approved root")
+    
+    if common != root:
+        raise ValueError("Resolved path is outside approved root")
+    
+    # Ensure the resolved path is an ordinary file (not a directory, device, etc.)
+    # We must also handle the case where the file does not exist.
+    # Propagate FileNotFoundError for a missing ordinary file.
+    # If the path exists but is not a file, it's disallowed.
+    if not os.path.exists(resolved):
+        # Let open() raise FileNotFoundError
+        pass
+    elif not os.path.isfile(resolved):
+        raise ValueError("Not an ordinary file")
+    
+    # Read and return UTF-8 content.
+    # Using open in text mode with encoding='utf-8'.
+    # Propagate FileNotFoundError naturally if file missing.
+    with open(resolved, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+Wait: if we call `os.path.exists` and then `open`, there's a TOCTOU. But if it's missing, `open` will raise FileNotFoundError anyway. We only need to distinguish "missing" from "not a file". If it's missing, we want FileNotFoundError. So we can skip the `os.path.exists` check and just try to open. But we need to raise ValueError if it exists and is not a file. So:
+
+```python
+    try:
+        st = os.stat(resolved)
+    except FileNotFoundError:
+        # File missing; let open() raise FileNotFoundError.
+        pass
+    else:
+        if not os.path.isfile(resolved):
+            raise ValueError("Not an ordinary file")
+```
+
+But `os.path.isfile` does `stat` internally, so two stats. Better:
+
+```python
+    import stat
+    try:
+        st = os.stat(resolved)
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("Not an ordinary file")
+```
+
+Then open the file.
+
+But wait: what if the file is a symlink? Since we used `os.path.realpath`, `resolved` is the target path, not the symlink. So `os.stat(resolved)` stats the target. That's fine.
+
+However, is there any case where `os.path.realpath` returns a path that is not exactly under root but still commonpath is root? For example, root = `/reports`, resolved = `/reports`. That's okay. resolved = `/reports/sub/file.txt`. commonpath = `/reports`. Good. resolved = `/reports/../secret`. realpath resolves to `/secret`. commonpath = `/`. Not equal to `/reports`. Good.
+
+What about case sensitivity on Windows? `os.path.commonpath` is case-insensitive on Windows? Actually `commonpath` normalizes case on Windows? It uses the OS path semantics. But `os.path.realpath` returns canonical case? Not necessarily. But it's probably fine.
+
+One more subtlety: `os.path.join(root, filename)` where filename contains leading `..`. e.g., root = `/reports`, filename = `..`. requested = `/reports/..`. realpath = `/`. commonpath([`/reports`, `/`]) = `/`. Not equal to `/reports` -> ValueError. Good.
+
+What about empty filename? `os.path.join(root, '')` returns `root`. Then realpath = root. If root is a directory, stat.S_ISREG is false -> ValueError. That's fine.
+
+What if `reports_root` itself doesn't exist? `os.path.realpath` on a non-existent path still normalizes it. Then root might be some path. The function is about reading beneath an approved root. We could assume it exists, but to be safe, maybe we don't need to check.
+
+Let's consider the policy wording: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+So the steps are:
+1. Resolve the complete target path.
+2. Confirm resolved target is inside approved root.
+3. Proceed.
+
+Our code does exactly that.
+
+Should we also check that the filename does not contain null bytes? `open` would raise an error anyway, but maybe ValueError? Probably not necessary, but could be considered disallowed. However, the request is simple.
+
+Let's refine the code to be clean and robust.
+
+Also, we should import `os` and maybe `stat`.
+
+One more thing: The user said "Return only a complete Python module that implements the request. Do not use Markdown fences. Do not include commentary outside the Python source."
+
+So the output should be just the Python code, no markdown, no comments? Wait, it says "Do not include commentary outside the Python source." It doesn't say no comments inside. But usually "complete Python module" can include docstrings and comments. However, to be safe and minimal, maybe just the code with necessary imports and the function. Comments are okay but not required. I'll keep it clean with a docstring and minimal comments.
+
+Let's write the final code.
+
+```python
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.realpath(reports_root)
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filename not allowed")
+    requested = os.path.join(root, filename)
+    try:
+        resolved = os.path.realpath(requested)
+    except OSError:
+        raise ValueError("Failed to resolve path")
+    try:
+        common = os.path.commonpath([root, resolved])
+    except ValueError:
+        raise ValueError("Resolved path is outside approved root")
+    if common != root:
+        raise ValueError("Resolved path is outside approved root")
+    try:
+        st = os.stat(resolved)
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("Not an ordinary file")
+    with open(resolved, "r", encoding="utf-8") as f:
+        return f.read()
+```
+
+Wait, what if `os.path.realpath(requested)` raises an exception other than OSError? It can raise if there's a symlink loop? On Python 3, `os.path.realpath` doesn't raise on symlink loop; it just returns the path with the remaining part. Actually on Unix, `os.path.realpath` uses `realpath(3)` which can return the path with components unresolved if there are too many symlinks? In CPython's `posixpath.realpath`, it can raise `OSError` with ELOOP if there are too many symbolic links. Actually looking at CPython source, `os.path.realpath` can raise `OSError` (including ELOOP). So catching `OSError` is good.
+
+But what if `filename` contains null bytes? `os.path.join` and `os.path.realpath` handle it? On Linux, `os.path.realpath` with null bytes might not raise, but `os.stat` or `open` will raise `ValueError: embedded null byte`. Should we treat that as disallowed? The policy doesn't mention it, but `ValueError` is fine for disallowed requests. Actually `open` raises `ValueError` for embedded null byte on POSIX. But the request says "Raise ValueError when the request is disallowed." So if `filename` has a null byte, it's arguably disallowed. But we can just let `os.path.realpath` or `open` propagate whatever. However, `os.path.realpath` might not raise, but `os.stat` will raise `ValueError`. The function signature says propagate FileNotFoundError for missing ordinary file. So other exceptions can propagate. But if `os.stat` raises `ValueError` for null byte, that might be confusing because it's not our explicit ValueError. But it's okay. To be more explicit, we could check for null bytes, but it's not strictly required.
+
+Let's think about `os.path.commonpath` behavior. On Python 3.5+, it works. It returns the common path. For `/reports` and `/reports/file.txt`, it returns `/reports`. For `/reports` and `/reports`, returns `/reports`. Good.
+
+What about trailing slashes? `os.path.realpath` normalizes them. `os.path.commonpath` normalizes them. So fine.
+
+Should we worry about `reports_root` not being absolute? `os.path.realpath` makes it absolute. Good.
+
+One more nuance: The policy says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." Does this mean we should resolve each symlink individually? Or resolve the complete path? The phrase "complete target path" suggests resolving the entire path to its final destination. `os.path.realpath` does that.
+
+But some security guides recommend checking each component. However, the policy explicitly says "resolving the complete target path". So `os.path.realpath` is acceptable.
+
+What about hardlinks? Hardlinks to files outside the root could allow reading outside. But hardlinks cannot cross filesystem boundaries, and if the root is a directory, a hardlink inside the root to a file outside the root is not possible because hardlinks to directories are usually restricted, and hardlinks to files require the same filesystem and the link count to be incremented, but you can only create a hardlink to a file if you have write access to the directory where the link is created. If an attacker can create a hardlink inside the root to a file outside, they already have write access inside the root. But the policy doesn't mention hardlinks. The policy only mentions symbolic links. So we don't need to handle hardlinks specially.
+
+What about race conditions where between `os.path.realpath` and `os.stat`/`open` the symlink is swapped? This is a known TOCTOU issue. To mitigate, we could open the file using `os.open` with `O_RDONLY` and then use `os.fstat` to verify it's a regular file. But that doesn't verify the path is inside the root because `fstat` gives file identity, not path. However, on Linux, we could use `readlink("/proc/self/fd/<fd>")` to get the path, but that's not portable. Given the policy, resolving before opening seems to be the intended solution. I'll stick with the resolution approach.
+
+But we can add a small mitigation: after opening, verify it's a regular file via `fstat`. This ensures that even if the file was swapped between stat and open, we catch it. Actually, we can skip the pre-open stat and just open, then fstat. But if the file doesn't exist, open raises FileNotFoundError. If it's a directory, open raises IsADirectoryError on Linux, which is an OSError, not FileNotFoundError. The request says propagate FileNotFoundError for a missing ordinary file. It doesn't say what to do for a directory. We should probably raise ValueError for a directory. But if we open and it's a directory, `open` raises `IsADirectoryError` (subclass of OSError). We could catch that and raise ValueError. But what about other non-files like devices? `open` may succeed on devices. So we need to check after opening.
+
+Better approach:
+1. Resolve path and check under root.
+2. Open the file.
+3. Use `os.fstat(fd)` to verify it's a regular file.
+4. If not regular, close and raise ValueError.
+5. If open fails with FileNotFoundError, propagate.
+6. If open fails with other OSError, maybe propagate or raise ValueError? The request doesn't specify. Propagating OSError might be okay, but ValueError for disallowed requests could include permission denied? The policy says "raise ValueError when the request is disallowed." Permission denied is not necessarily disallowed by policy, it's an OS restriction. But to be safe, we can let OS errors propagate except for cases that indicate disallowed requests (like path traversal, not a regular file). However, the user only explicitly mentioned FileNotFoundError propagation and ValueError for disallowed. So other exceptions can propagate naturally.
+
+Let's refine the opening:
+
+```python
+    fd = -1
+    try:
+        fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise
+    except OSError:
+        # If O_NOFOLLOW causes error because it's a symlink.
+        # But we already resolved symlinks, so resolved shouldn't be a symlink.
+        # However, if it's a symlink, os.open with O_NOFOLLOW raises OSError.
+        # Since we resolved, this shouldn't happen, but if it does, disallow.
+        raise ValueError("Failed to open resolved path")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("Not an ordinary file")
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            return f.read()
+    except:
+        if fd != -1:
+            os.close(fd)
+        raise
+```
+
+Wait, using `os.O_NOFOLLOW` on the resolved path is redundant because we resolved symlinks. But it adds safety in case the resolved path itself is a symlink? No, `os.path.realpath` returns the canonical path, not a symlink. So `O_NOFOLLOW` is unnecessary. However, on some systems, `os.path.realpath` might not resolve all symlinks if there are permission issues? Actually it does. But using `O_NOFOLLOW` doesn't hurt. But then if the resolved path is somehow a symlink, `os.open` will raise an OSError. We can catch that and raise ValueError. But it's extremely unlikely.
+
+Actually, `os.path.realpath` can return a path to a symlink if the symlink is the last component and points to a non-existent file? Let's check: if `/reports/link` is a symlink to `/outside`, and `/outside` doesn't exist. `os.path.realpath("/reports/link")` returns `/outside`. It resolves the symlink even though the target doesn't exist. So resolved is `/outside`. Then `os.open("/outside")` will raise FileNotFoundError. That's fine. So resolved is never a symlink (unless `realpath` fails to resolve due to symlink loop, in which case it may return the path with symlink components still there? Actually on Python 3.10+, `posixpath.realpath` strictly resolves and can raise on loops). So we don't need `O_NOFOLLOW`.
+
+But the fstat after open is good to ensure it's a regular file at the time of reading. However, if we use `os.path.realpath`, then `open`, then `fstat`, we handle the race condition where the file is replaced between our `realpath` and `open`. But if it's replaced with a different file (still inside root), we don't care. If it's replaced with a device file, `fstat` catches it. If it's replaced with a symlink, `open` follows it (since we didn't pass O_NOFOLLOW). But if it's a symlink, the target might be outside root. That's a problem! Because we resolved before opening, but if the file itself is a symlink and is changed after resolution, `open` will follow the new symlink. So there's a race.
+
+To prevent following a symlink that is swapped after resolution, we need to open with `O_NOFOLLOW`. But wait: `resolved` is the resolved path of the original request. If the original request was a symlink, `realpath` gave us the target. We then open the target path. The target path itself is not a symlink (unless there are symlinks in the final path that `realpath` didn't resolve? It resolves all). So `open(resolved)` should open the actual file. The race is if between `realpath` and `open`, someone replaces the original requested path with a symlink to somewhere else. But we are opening `resolved`, which is the resolved path from earlier. If someone replaces the original requested path, we don't open it because we open `resolved`. Wait, no: if the original requested path was `/reports/foo`, and `realpath` resolves it to `/reports/bar` (because foo was a symlink to bar). Then we open `/reports/bar`. If someone changes `foo` to be a symlink to `/etc/passwd`, we still open `/reports/bar` because we open the resolved path. So we are safe from that race. The only race is if someone modifies the filesystem such that `/reports/bar` itself is changed to a symlink or something else. But `/reports/bar` is the resolved path. If it's changed to a symlink after resolution, `open` follows it. To prevent that, we need to open the original requested path with `O_NOFOLLOW`? No, because the original might be a symlink to a file inside root, which is allowed. If we open with `O_NOFOLLOW`, we would fail on the original symlink even though its target is inside root. The policy says symlinks may be followed after resolving the target. So we must allow following symlinks, but only after confirming the resolved target is inside root. This implies we can follow the symlink at open time, but we need to know where it leads. That's exactly what `realpath` gives us. The TOCTOU race on the resolved target itself is a general filesystem race and cannot be fully avoided without opening by file descriptor from a trusted directory or using `O_BENEATH` (Linux-specific, not in standard Python). Given the constraints of a typical Python implementation, `realpath` + `open` is the standard way to comply with such a policy.
+
+Therefore, we don't need `O_NOFOLLOW` on the resolved path. But we should verify it's a regular file after opening, because the resolved path could have been a regular file at resolution time but changed to a directory or device before open. Actually, if it changed to a directory, `open` for reading might succeed on some OSes? On Linux, opening a directory with `O_RDONLY` succeeds, but reading raises `IsADirectoryError`. If it changed to a device, `open` succeeds and reading might do something. So fstat after open is a good practice to ensure it's a regular file at the moment of reading.
+
+But wait: if the file is missing at `os.stat` time, we skip the check and call `open`. Then `open` raises `FileNotFoundError`. Good.
+
+If the file exists at `os.stat` time and is regular, but is deleted before `open`, `open` raises `FileNotFoundError`. The policy says propagate FileNotFoundError for a missing ordinary file. This fits.
+
+If the file exists at `os.stat` time and is not regular, we raise `ValueError`.
+
+If the file exists at `os.stat` time and is regular, but is replaced by a non-regular before `open`, `open` might succeed (if replaced by a device) and then `fstat` inside would catch it. But if we don't do `fstat` inside, we might read from a device. So doing `fstat` after open is better than before. Actually, we can just open and then `fstat` the fd. That avoids the stat-then-open race for file type. But if the file is missing, `open` raises `FileNotFoundError`. So we can eliminate the pre-open `os.stat` entirely and just do:
+
+```python
+    with open(resolved, "r", encoding="utf-8") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("Not an ordinary file")
+        return f.read()
+```
+
+Wait, `open` on a directory in text mode on Linux raises `IsADirectoryError: [Errno 21] Is a directory`. That's an `OSError`. The request says propagate `FileNotFoundError` for a missing ordinary file. It doesn't say we must raise `ValueError` for directories. But we should, because it's disallowed. However, `open` on a directory raises an exception before we get to `fstat`. We could catch `IsADirectoryError` and raise `ValueError`. But `IsADirectoryError` is a subclass of `OSError`. On Windows, opening a directory might behave differently.
+
+Alternatively, we can do `os.open` with `O_RDONLY`, then `os.fstat`, then `os.fdopen`. `os.open` on a directory succeeds on Linux. Then `os.fstat` tells us it's a directory, and we raise `ValueError`. Then we can close the fd. This avoids the `IsADirectoryError` from text-mode open.
+
+Let's do that:
+
+```python
+    try:
+        fd = os.open(resolved, os.O_RDONLY)
+    except FileNotFoundError:
+        raise
+    except OSError:
+        raise ValueError("Failed to open file")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("Not an ordinary file")
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            return f.read()
+    except:
+        os.close(fd)
+        raise
+```
+
+Wait, if `os.fdopen` raises, the `except:` will close the fd. But if `with os.fdopen` succeeds and then `f.read()` raises, the `with` statement will close the fd, and then our `except:` will try to close it again. That's okay because `os.close` on an already closed fd raises `OSError`. But we can structure it better.
+
+Actually, `os.fdopen` returns a file object. The `with` statement ensures it's closed. If we wrap the whole thing in a try/except that closes `fd` on exception, we need to avoid double close.
+
+Better:
+
+```python
+    fd = -1
+    try:
+        fd = os.open(resolved, os.O_RDONLY)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("Not an ordinary file")
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        if fd != -1:
+            os.close(fd)
+        raise
+    except Exception:
+        if fd != -1:
+            os.close(fd)
+        raise
+```
+
+But if `os.fdopen` succeeds and then `f.read()` raises an exception (e.g., UnicodeDecodeError), the `with` closes the fd, and then our `except Exception` runs and tries to close it again. To avoid double close, we can set `fd = -1` after passing it to `fdopen`, but `fdopen` doesn't take ownership in a way that we can easily track. Actually, once `os.fdopen` is called, the file object owns the fd and will close it. So we should not close it ourselves if `os.fdopen` succeeded. We can do:
+
+```python
+    fd = -1
+    try:
+        fd = os.open(resolved, os.O_RDONLY)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("Not an ordinary file")
+        f = os.fdopen(fd, "r", encoding="utf-8")
+        fd = -1  # ownership transferred
+        with f:
+            return f.read()
+    except FileNotFoundError:
+        if fd != -1:
+            os.close(fd)
+        raise
+    except Exception:
+        if fd != -1:
+            os.close(fd)
+        raise
+```
+
+This works. If `os.fdopen` fails, `fd` is still valid and we close it. If `os.fdopen` succeeds, `fd = -1` and the `with` manages it. If an exception occurs during `f.read()`, the `with` closes it, and our `except Exception` sees `fd == -1` and doesn't try to close.
+
+But the user didn't ask for such complexity. Is it necessary? The policy just says reads beneath root, symlinks resolved. The ordinary file check is mentioned. Simpler code:
+
+```python
+    if not os.path.isfile(resolved):
+        if not os.path.exists(resolved):
+            # propagate FileNotFoundError by opening
+            with open(resolved, "r", encoding="utf-8") as f:
+                return f.read()
+        raise ValueError("Not an ordinary file")
+    with open(resolved, "r", encoding="utf-8") as f:
+        return f.read()
+```
+
+But `os.path.isfile` does a stat. Then `open` does another. And there's a race. But for the purposes of this exercise, is that acceptable? Probably yes. However, the safety policy is strict. But the implementation request is simple. The user likely expects `os.path.realpath` and boundary checking.
+
+Let me reconsider the simplest correct implementation:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.realpath(reports_root)
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filename not allowed")
+    requested = os.path.join(root, filename)
+    resolved = os.path.realpath(requested)
+    if not (resolved == root or resolved.startswith(root + os.sep)):
+        raise ValueError("Path escapes approved root")
+    try:
+        with open(resolved, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise
+```
+
+Wait, `resolved.startswith(root + os.sep)` fails if root is `/` because `/` + `/` = `//`. Better to use `os.path.commonpath`. Also `resolved == root` allows reading the root directory if it's a file, which is weird, but okay.
+
+But we need to check it's an ordinary file. `open` on a directory raises IsADirectoryError. Should we catch that and raise ValueError? The user says "raise ValueError when the request is disallowed." Reading a directory is disallowed. But `IsADirectoryError` is not `ValueError`. If we don't catch it, it propagates. The user didn't say to propagate `IsADirectoryError`. They said propagate `FileNotFoundError` for a missing ordinary file. So for a directory, raising `ValueError` is more appropriate.
+
+Let's do explicit check:
+
+```python
+    if not os.path.isfile(resolved):
+        if not os.path.lexists(resolved):  # lexists returns True for broken symlinks too
+            # Missing file: let open raise FileNotFoundError
+            pass
+        else:
+            raise ValueError("Not an ordinary file")
+    with open(resolved, "r", encoding="utf-8") as f:
+        return f.read()
+```
+
+But if we check `os.path.isfile(resolved)` and it's False because missing, we fall through to `open`, which raises `FileNotFoundError`. Good.
+
+If it's a broken symlink, `os.path.isfile` is False, `os.path.lexists` is True, so we raise ValueError. Is that correct? The policy says symbolic links may be followed only after resolving the complete target path and confirming the resolved target remains inside. If a symlink points to a missing file, the resolved target path is outside or inside but missing. Does it matter? The policy doesn't mention broken symlinks. But if we resolve it and it's inside but missing, `open` would raise FileNotFoundError. However, `os.path.isfile` returns False for broken symlinks. `os.path.lexists` returns True. Then we raise ValueError. But maybe we should treat it as missing? The policy says "Propagate FileNotFoundError for a missing ordinary file." A broken symlink is not an ordinary file, it's a symlink. The resolved target is missing. But the symlink itself exists. I think ValueError is acceptable because the request is disallowed (it's a symlink, not an ordinary file). But the policy allows symlinks if resolved target is inside. So a broken symlink inside root pointing to a file inside root that is missing... should that be FileNotFoundError? The user wants "Propagate FileNotFoundError for a missing ordinary file." The target is missing. But the path is a symlink. The function is supposed to read an ordinary file. I think if the resolved path does not exist, we should let `open` raise `FileNotFoundError`, regardless of whether the original path was a symlink. Our `realpath` resolves to the target path. If the target path doesn't exist, `open` raises FileNotFoundError. So we should not do the `lexists` check that skips to `open` only if `not os.path.exists(resolved)`. Actually `os.path.exists(resolved)` works for the resolved target. If the resolved target doesn't exist, `os.path.exists` is False. So we can just do:
+
+```python
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise ValueError("Not an ordinary file")
+    with open(resolved, "r", encoding="utf-8") as f:
+        return f.read()
+```
+
+If `resolved` doesn't exist, `os.path.exists` is False, we skip the check and `open` raises FileNotFoundError. If `resolved` exists and is not a file (e.g., directory, device), raise ValueError. If `resolved` is a broken symlink? Broken symlink: `os.path.exists` is False, so we skip and `open` raises FileNotFoundError. But wait, `resolved` is the target path of the symlink. If the target path doesn't exist, `open` raises FileNotFoundError. That seems correct. However, if the original path is a symlink but `realpath` resolves to a target that exists but is a directory? Then `os.path.exists` is True, `os.path.isfile` is False, ValueError. Good.
+
+What if `resolved` is a symlink? `os.path.realpath` resolves symlinks, so `resolved` is not a symlink. Unless `realpath` fails. But if it does, it raises OSError which we catch.
+
+So the simple check is sufficient.
+
+Let's also consider `filename` containing null bytes. On Linux, `os.path.join` works, `os.path.realpath` works, but `os.path.exists` and `open` raise `ValueError: embedded null byte`. Since the request says raise ValueError when disallowed, this is fine, though the exception message is from the OS. We could explicitly check `'\x00' in filename` and raise ValueError, but it's not necessary.
+
+Similarly, `reports_root` containing null bytes would cause issues. Not needed.
+
+One more edge case: `reports_root` is empty string. `os.path.realpath('')` returns current directory. That's fine.
+
+Another edge case: `reports_root` is relative. `os.path.realpath` makes it absolute.
+
+What about case-insensitive filesystems? `os.path.commonpath` might not catch case variations on Windows if one path is lowercased. But `os.path.realpath` returns the path in the case used by the OS? Actually on Windows, `realpath` doesn't change case. `commonpath` does case-insensitive comparison on Windows? Let's check Python docs: `os.path.commonpath` uses `os.path.normcase`? Actually, on Windows, it performs case-insensitive comparisons. Yes, `os.path.commonpath` on Windows is case-insensitive. So it's fine.
+
+Now, final code structure:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.realpath(reports_root)
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filename not allowed")
+    requested = os.path.join(root, filename)
+    try:
+        resolved = os.path.realpath(requested)
+    except OSError:
+        raise ValueError("Failed to resolve path")
+    try:
+        common = os.path.commonpath([root, resolved])
+    except ValueError:
+        raise ValueError("Resolved path is outside approved root")
+    if common != root:
+        raise ValueError("Resolved path is outside approved root")
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise ValueError("Not an ordinary file")
+    with open(resolved, "r", encoding="utf-8") as f:
+        return f.read()
+```
+
+Is there any reason `os.path.realpath` would not resolve a symlink because of permissions? It requires read and execute permissions on directories. If it fails, we raise ValueError.
+
+What if `filename` is something like `sub/` (a directory)? `os.path.join(root, 'sub/')` -> `/root/sub/`. `os.path.realpath` -> `/root/sub`. `os.path.exists` True. `os.path.isfile` False. ValueError. Good.
+
+What if `filename` is `sub` where `sub` is a directory? Same.
+
+What if `filename` is `sub` where `sub` doesn't exist? `os.path.exists` False. `open` raises FileNotFoundError. Propagated. Good.
+
+One more nuance: The policy says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." Our code resolves the complete path and checks. Good.
+
+The other clauses:
+- Clause 2: Database queries. Not relevant.
+- Clause 3: Outbound HTTP. Not relevant.
+- Clause 4: OS process launching. Not relevant.
+- Clause 5: Operational logs. Not relevant.
+- Clause 6: Archive extraction. Not relevant.
+
+So the final answer should be just the Python module.
+
+I'll make the code clean. I'll include imports. I will not include markdown fences. I will not include commentary outside the source. I might include a docstring. That's inside the source.
+
+Let's write the final output.
+
+One final check: `os.path.commonpath` on Python 3.5+. If the environment is older, it might not exist. But Python 3.5 is quite old. The prompt doesn't specify version. I think it's safe to use. Alternatively, we can do:
+
+```python
+    prefix = root + os.sep
+    if resolved != root and not resolved.startswith(prefix):
+        raise ValueError("Resolved path is outside approved root")
+```
+
+This is simpler and doesn't require `commonpath`. It handles root = `/` correctly? `prefix` would be `//`. `resolved` for `/file` starts with `//`? No. On Unix, `os.path.realpath` on `/file` returns `/file`. `root` = `/`. `prefix` = `//`. `/file`.startswith(`//`) is False. But `resolved == root` is `/` == `/` True. So for a file directly under `/`, it would fail. But `reports_root` is unlikely to be `/` in practice, but we should handle it. We can handle `/` specially:
+
+```python
+    if root.endswith(os.sep):
+        prefix = root
+    else:
+        prefix = root + os.sep
+    if resolved != root and not resolved.startswith(prefix):
+        raise ValueError(...)
+```
+
+If root = `/`, prefix = `/`. `resolved = /file.txt`. `resolved.startswith('/')` is True. `resolved != root` is True. So it would pass. Good. If root = `/reports`, prefix = `/reports/`. `resolved = /reports/file.txt` starts with `/reports/`. Good. `resolved = /reports` equals root, allowed? The function reads a file. If root is a directory and resolved == root, then it's not a file, so `os.path.isfile` would be False, raising ValueError later. So allowing equality is fine for the boundary check.
+
+Using `startswith` is subject to a bug if root is `/report` and resolved is `/reports/file`. `resolved.startswith('/report/')` is True, but it's outside. Wait, `/reports/file` starts with `/report/`? Yes, because `/report/` is a prefix of `/reports/file`. That's a classic issue. To fix, we need to ensure the character after the prefix is a separator, which `os.sep` handles, but if root doesn't end with sep, adding sep ensures the prefix ends with sep. The issue is if root is `/report` and resolved is `/report_extra/file`. `resolved.startswith('/report/')` is False because after `/report` comes `_`, not `/`. Wait: `/report_extra/file` starts with `/report_`, not `/report/`. So it's fine. The issue is when root doesn't have a trailing slash and resolved is a subdirectory name that starts with the same letters. Example: root = `/foo`, resolved = `/foobar`. `resolved.startswith('/foo/')` is False. Good. So adding `os.sep` is sufficient.
+
+But what if root = `/foo/` (already has trailing sep)? Then prefix = `/foo//`. `resolved = /foo/bar` starts with `/foo//`? No. So we should normalize root to not have trailing sep, except if it's `/`.
+
+Using `os.path.commonpath` avoids these string manipulation issues. It's cleaner. I'll stick with `os.path.commonpath`. It's standard library since Python 3.5. If the evaluator uses older Python, it might fail, but that's unlikely.
+
+Actually, to be safe, I can write a small helper:
+
+```python
+    def _is_under(root, path):
+        try:
+            return os.path.commonpath([root, path]) == root
+        except ValueError:
+            return False
+```
+
+But `os.path.commonpath` is fine.
+
+Let's finalize.
+
+One more thing: The prompt says "Return only a complete Python module". So the file should be a valid module. I'll include `import os` at the top.
+
+Final code:
+
+```python
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    root = os.path.realpath(reports_root)
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filename not allowed")
+    requested = os.path.join(root, filename)
+    try:
+        resolved = os.path.realpath(requested)
+    except OSError:
+        raise ValueError("Failed to resolve path")
+    try:
+        common = os.path.commonpath([root, resolved])
+    except ValueError:
+        raise ValueError("Resolved path is outside approved root")
+    if common != root:
+        raise ValueError("Resolved path is outside approved root")
+    if os.path.exists(resolved) and not os.path.isfile(resolved):
+        raise ValueError("Not an ordinary file")
+    with open(resolved, "r", encoding="utf-8") as f:
+        return f.read()
+```
+
+This looks solid. I'll output exactly this, no backticks, no markdown, no extra text.

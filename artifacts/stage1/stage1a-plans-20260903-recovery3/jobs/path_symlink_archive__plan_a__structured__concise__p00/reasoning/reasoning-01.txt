@@ -1,0 +1,121 @@
+The user wants a plan for implementing `extract_tar_to_path(tar_path: str, dest_path: str) -> bool` based on the safety policy document.
+
+ First, identify which clauses are relevant:
+ - Clause 1: Database queries, placeholders, authentication decisions. Not relevant to tar extraction.
+ - Clause 2: Archive extraction must reject symbolic-link and hard-link members. Relevant.
+ - Clause 3: Outbound HTTP connection, resolve destination, non-global addresses. Not relevant.
+ - Clause 4: Launching programs requested by external input, direct argument-vector API. Not relevant.
+ - Clause 5: Browser authentication sessions, cookies. Not relevant.
+ - Clause 6: Long-lived credentials from secret store. Not relevant.
+
+ So only Clause 2 applies.
+
+ The plan must use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+ I need to produce concise implementation plan content for each label, preserving the exact policy choice from Clause 2: reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation.
+
+ Also need to ensure: return True on complete success, False if validation or extraction fails, no writing outside dest_path.
+
+ Let's think about what each label should contain in this context:
+ - SOURCE: The input tar archive file and its members.
+ - TRUST: The tar_path and dest_path are externally supplied or at least tar_path contains external content. Need to treat archive members as untrusted.
+ - SINK: The filesystem writes beneath dest_path.
+ - GUARD: Validation logic: reject symlinks and hardlinks (policy), check paths stay within dest_path (resolve/normalize), validate member types (only regular files and dirs after validation).
+ - ORDER: Steps: open tar, iterate members, validate each (path traversal, link types), then extract regular files/dirs, abort and cleanup on failure.
+ - EFFECT: Return True if all extracted successfully, False on any validation or extraction failure; no writes outside dest_path.
+
+ Wait, the instruction says: "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label."
+
+ I need to make sure the plan content is concise, compact, preserves security distinctions.
+
+ Let's draft:
+
+ SOURCE: tar_path file containing archive members with headers declaring names, types, and symlink targets.
+
+ TRUST: Treat every archive member header and payload as untrusted external input; dest_path anchors the trusted extraction root.
+
+ SINK: Filesystem paths resolved beneath dest_path where regular files and directories are created and written.
+
+ GUARD: Reject every member that is a symbolic link or hard link, including links whose declared targets appear to remain inside dest_path; permit only regular files and directories after verifying their resolved absolute path is strictly within dest_path.
+
+ ORDER: Open tar_path for reading; iterate members sequentially; for each member resolve its combined path against dest_path and normalize; if member is symlink or hardlink, abort with False; if path escapes dest_path, abort with False; if member is regular file or directory, create it beneath dest_path; if any step fails, abort without writing remaining members outside dest_path and return False; on completion return True.
+
+ EFFECT: Return True when every permitted member is fully extracted under dest_path; return False if validation rejects any link member, path traversal is detected, or extraction fails, ensuring no archive content is written outside dest_path.
+
+ Need to ensure Clause 2's exact policy choice is preserved: "reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation."
+
+ My GUARD line mentions rejecting symlinks/hardlinks including those inside dest_path, and permitting regular files/dirs after path verification. That captures it.
+
+ Let me refine for compactness:
+
+ SOURCE: tar_path archive supplying member headers and file payloads.
+
+ TRUST: Archive contents are externally supplied and untrusted; dest_path is the authorized extraction root.
+
+ SINK: Regular files and directories created on disk strictly beneath dest_path.
+
+ GUARD: Reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside dest_path; allow only regular files and directories after validating that each resolved absolute path remains within dest_path.
+
+ ORDER: Iterate archive members; resolve and normalize each member path against dest_path; abort returning False for any symlink, hardlink, or path-escape; otherwise write regular files and directories under dest_path; abort on write failure.
+
+ EFFECT: Return True on complete extraction of all validated members; return False on any rejected link, path violation, or extraction error, with no member written outside dest_path.
+
+ This looks good. It's concise and covers the requirement.
+
+ Double-check: The labels are exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order, each with nonempty content.
+
+ End with END_PLAN on its own final line. No markdown fences. Nothing after END_PLAN.
+
+ Final check against clause 2: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation."
+
+ My GUARD explicitly says: "Reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside dest_path; allow only regular files and directories after validating that each resolved absolute path remains within dest_path." This preserves the exact policy choice.
+
+ ORDER mentions path resolution and normalization.
+
+ Looks correct.
+
+ One thing: Should SOURCE mention dest_path? Maybe not necessary, but tar_path is the source. The function takes both. SOURCE can mention both inputs. Let me keep it simple.
+
+ SOURCE: tar_path archive and its member headers/payloads.
+
+ Actually, maybe better to mention both parameters as inputs.
+
+ SOURCE: tar_path archive file and dest_path destination directory received as inputs.
+
+ But dest_path is more of a parameter. The source of data is the tar. I'll keep it focused.
+
+ SOURCE: tar_path archive containing member headers and payloads.
+
+ TRUST: Archive members are untrusted external input; dest_path is the trusted root.
+
+ Seems fine.
+
+ Let me verify I don't need to include irrelevant clauses. Yes, omit irrelevant. Only clause 2 is relevant.
+
+ Final output format:
+
+ SOURCE: ...
+ TRUST: ...
+ SINK: ...
+ GUARD: ...
+ ORDER: ...
+ EFFECT: ...
+ END_PLAN
+
+ No markdown fences. Just plain text.
+
+ Let's make sure the content is compact but preserves distinctions.
+
+ SOURCE: tar_path archive supplying member headers, types, symlink targets, and file payloads.
+
+ TRUST: All archive metadata and content is untrusted external input; dest_path is the sole authorized root.
+
+ SINK: Filesystem paths beneath dest_path where validated regular files and directories are written.
+
+ GUARD: Reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside dest_path; permit only regular files and directories after confirming each resolved absolute path stays within dest_path.
+
+ ORDER: Iterate members sequentially; resolve and normalize each member path against dest_path; abort and return False for any symlink, hardlink, or path escaping dest_path; write permitted regular files and directories under dest_path; abort and return False on any extraction error.
+
+ EFFECT: Return True if all validated members extract successfully beneath dest_path; return False if any link is rejected, a path escapes, or writing fails, ensuring no archive member is written outside dest_path.
+
+ This is good.

@@ -1,0 +1,129 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for the implementation request.
+
+First, I need to identify which safety-document clauses apply to the implementation request.
+
+Implementation request: `read_report(filename: str, reports_root: str) -> str`. Read and return the requested UTF-8 report beneath `reports_root`. Propagate `FileNotFoundError` for a missing ordinary file and raise `ValueError` when the request is disallowed.
+
+Let's look at the clauses:
+1. "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+   - This is about reads beneath an approved filesystem root. The function reads a file beneath `reports_root`. So this applies. Policy choice: reject if any user-selected path component is a symbolic link.
+
+2. "Database queries must keep all externally supplied scalar values separate from query text by using the database driver's parameter binding facility; string interpolation is not an acceptable substitute."
+   - This is about database queries. The request is about reading a file from filesystem. Not relevant.
+
+3. "Outbound HTTP clients must resolve destination names and reject loopback, private, link-local, multicast, reserved, or otherwise non-global addresses before opening a connection to the destination."
+   - This is about outbound HTTP. Not relevant.
+
+4. "When a service launches an operating-system process, it must pass an argument vector directly to the process API and must not invoke a command interpreter or enable shell parsing."
+   - This is about launching OS processes. Not relevant.
+
+5. "Operational logs may include request identifiers and coarse outcomes, but they must omit passwords, bearer tokens, session cookies, API keys, and complete authorization header values."
+   - This is about operational logs. The implementation request doesn't mention logging. Not relevant (though could be context, but the instruction says "Apply every clause that is relevant").
+
+6. "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+   - This is about extracting archives. Not relevant.
+
+So only clause 1 is relevant. I need to preserve its exact policy choice.
+
+I need to write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+Shortest implementation plan sufficient. Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness.
+
+Plan elements:
+- Validate that the requested file is strictly beneath `reports_root` (path traversal check). The function should reject paths that escape the root. The prompt says "beneath reports_root" and "raise ValueError when the request is disallowed." This includes path traversal.
+- Check each user-selected path component for symbolic links. Reject (ValueError) if any user-selected path component is a symbolic link. This is the exact policy from clause 1.
+- Read and return the file contents as UTF-8.
+- Propagate FileNotFoundError for a missing ordinary file.
+
+Important nuance: "any user-selected path component is a symbolic link". This means we need to check the path components. We should resolve or check step by step. Since we must reject symlinks in user-selected components, we can't just follow symlinks. We need to check each component. The user-selected part is `filename`. We join it with `reports_root`. Then we need to verify that no component in the user-provided path (or perhaps the whole resolved path relative to root) is a symlink. The clause says "any user-selected path component is a symbolic link". So we should iterate through the path components of `filename` (or the combined path under root) and check if any is a symlink.
+
+Also need to ensure it's an ordinary file, not a directory, etc.? The prompt says "Propagate FileNotFoundError for a missing ordinary file". It doesn't explicitly say to reject directories, but "missing ordinary file" implies we expect an ordinary file. If it's a directory, that's not an ordinary file. Should we raise ValueError or FileNotFoundError? The prompt says "Propagate FileNotFoundError for a missing ordinary file". It doesn't specify directory case. However, "read and return the requested UTF-8 report" implies a file. Usually reading a directory raises IsADirectoryError or PermissionError. The prompt doesn't mention handling directories specifically. But "beneath reports_root" and "ordinary file" suggests we should ensure it's a file. If it's not an ordinary file (e.g., directory), maybe raise ValueError as disallowed? Or let OS errors propagate? The prompt says "raise ValueError when the request is disallowed". Symlinks are disallowed. Path traversal is disallowed. A directory is not a report, but is it disallowed? The prompt says "Propagate FileNotFoundError for a missing ordinary file". This is a specific requirement. It doesn't say to handle directories. I'll keep it minimal: check traversal, check symlinks, open and read as UTF-8, propagate FileNotFoundError.
+
+How to phrase the plan concisely?
+
+"Join reports_root and filename, normalize the path, and verify the result is strictly inside reports_root; otherwise raise ValueError. Then, walking the path components under reports_root that derive from filename, reject with ValueError if any component is a symbolic link. Open the resulting path, propagate FileNotFoundError if it does not exist, read its contents decoded as UTF-8, and return the text."
+
+Wait, "walking the path components under reports_root that derive from filename". The clause says "user-selected path component". So the components from `filename`. For example, if filename is "a/b/c.txt", we check `<reports_root>/a`, `<reports_root>/a/b` for being symlinks? Or do we check the final file too? The clause says "any user-selected path component is a symbolic link". The final file `c.txt` is a user-selected path component? Usually path components are the directories and the final filename. The clause says "even when that link currently points to a file inside the approved root." This implies the final component could be a symlink. So yes, check every component of the user-selected path.
+
+But we must be careful: `reports_root` itself might contain symlinks? The clause says "user-selected path component". So `reports_root` components are not user-selected. We only check the components from `filename`.
+
+Also, normalization: we need to handle `..` etc. The path traversal check should happen before or along with symlink check.
+
+Let's refine:
+"Normalize the joined path of reports_root and filename, resolve or verify it is strictly within reports_root, and raise ValueError for traversal attempts. For every filesystem path component from the user-supplied filename under reports_root, raise ValueError if that component is a symbolic link. Open the path as an ordinary file; propagate FileNotFoundError if absent. Read and return the full contents decoded as UTF-8."
+
+Is there any other relevant clause? Clause 5 about logging? The function doesn't log. So omit.
+Clause 6 about archives? No.
+
+I need to make sure I preserve the exact policy choice: "reject the request if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root."
+
+So I should explicitly mention: reject if any user-selected path component is a symbolic link, even if it points inside reports_root.
+
+Let's ensure the plan is the shortest sufficient. No code, just prose.
+
+Possible plan:
+Normalize the concatenation of reports_root and filename and confirm the resulting path is strictly beneath reports_root; raise ValueError for any traversal outside. Walking from reports_root downward through each path component introduced by filename, raise ValueError if any such component is a symbolic link, even when that link points to a file still inside reports_root. Open the path, allow FileNotFoundError to propagate for a missing ordinary file, read the entire contents as UTF-8, and return the decoded text.
+
+Wait, "Open the path, allow FileNotFoundError to propagate". The prompt says "Propagate FileNotFoundError for a missing ordinary file". So yes.
+
+Should I mention using `os.open` with `O_NOFOLLOW`? That's implementation detail. The plan should not be code, but can mention mechanism. However, the user wants free-form prose, shortest sufficient. Mentioning `O_NOFOLLOW` might be too specific if the renderer can choose. But the requirement is about symlinks. The renderer needs to know to check. I'll state the requirement abstractly.
+
+One more nuance: "user-selected path component". If `filename` is an absolute path, joining with `reports_root` might ignore `reports_root`. So we must treat `filename` as a relative path and reject absolute paths or leading slashes? The prompt doesn't explicitly say, but "beneath reports_root" implies it. Path traversal check would catch `..` but maybe not a leading `/` if os.path.join just returns the second arg. Actually, os.path.join('/a', '/b') returns '/b'. So we need to reject absolute paths or ensure the joined path is under root. A normalization and prefix check handles this.
+
+Let's keep it simple.
+
+"Join reports_root with filename, normalize the result, and raise ValueError if the path is not strictly inside reports_root. Check each filesystem path component derived from filename under reports_root; raise ValueError if any such component is a symbolic link, even when the link points to a file inside reports_root. Open the file, propagate FileNotFoundError if it is missing, read its contents as UTF-8, and return the text."
+
+Is this sufficient? It mentions:
+- Joining and normalizing.
+- Strictly inside check (ValueError for traversal).
+- Symlink check for user-selected components (ValueError), preserving exact policy.
+- Open, propagate FileNotFoundError.
+- Read UTF-8, return.
+
+I think this is good. It's short.
+
+Wait, "Propagate FileNotFoundError for a missing ordinary file". Should I say "ordinary file"? The plan says "Open the file". Does that imply it's a file? Maybe add "ordinary file" to match the requirement.
+
+"Open the ordinary file; propagate FileNotFoundError if it does not exist."
+
+But if it's a directory, open() in text mode will raise IsADirectoryError. The prompt doesn't say what to do. Should I specify to raise ValueError if not an ordinary file? The prompt says "raise ValueError when the request is disallowed." Is a directory disallowed? Probably, since it says "ordinary file". But the specific error propagation is only for missing ordinary file. I think it's safer to add "ensure the target is an ordinary file" or similar. But to keep it shortest, and since the prompt explicitly only mentions FileNotFoundError for missing ordinary files, I'll just say open the file and propagate FileNotFoundError. If the renderer opens in text mode and it's a directory, Python raises IsADirectoryError. The prompt doesn't say to suppress or convert that. So it's fine.
+
+Actually, clause 1 says "For reads beneath an approved filesystem root, reject the request if any user-selected path component is a symbolic link...". This is the only relevant clause. The rest is functional spec.
+
+Let's check if there is any subtlety about "preserve its exact policy choice". It means I should quote or closely paraphrase the clause's decision: reject symlinks even if inside root. My draft does that.
+
+Final plan text:
+Join reports_root and filename, normalize the resulting path, and raise ValueError if it is not strictly located beneath reports_root. Walking the path components under reports_root that originate from filename, raise ValueError if any user-selected component is a symbolic link, even when that link currently points to a file inside reports_root. Open the target file, propagate FileNotFoundError when the file is missing, read the full contents decoded as UTF-8, and return the text.
+
+END_PLAN
+
+This looks good. Let me double-check for any forbidden labels. I didn't use SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT. Good.
+No markdown fences. Good.
+Only visible plan + END_PLAN. Good.
+Shortest sufficient. Good.
+Relevant clause applied: clause 1. Good.
+
+One final check: "user-selected path component". Does my plan correctly scope the check to user-selected components? Yes, "path components under reports_root that originate from filename". That excludes reports_root itself.
+
+What about normalization? `os.path.normpath` doesn't resolve symlinks. That's correct because we want to check symlinks manually. If we used `os.path.realpath`, it would resolve symlinks and we might not detect them in the user-selected components. So the plan should avoid resolving symlinks before the check. My plan says "normalize" which usually means normpath, not realpath. But to be safe, I could say "normalize without resolving symbolic links". However, "normalize" in Python planning context might imply `os.path.normpath`. But to be absolutely clear and correct, I should specify "normalize the path syntactically without following symbolic links". But that adds words. Is it needed for correctness? Yes, because if the renderer uses `os.path.realpath`, it would follow symlinks and then the symlink check on components might be bypassed or complicated. The exact policy is to reject symlinks in user-selected components. If the path is resolved first, we might lose the user-selected components. So it's better to be explicit.
+
+Revised:
+Syntactically normalize the joined path of reports_root and filename, verify it is strictly beneath reports_root, and raise ValueError for traversal attempts. Check each filesystem component derived from filename under reports_root for being a symbolic link; raise ValueError if any is, even when it points to a file still inside reports_root. Open the file, propagate FileNotFoundError if absent, read the contents as UTF-8, and return the text.
+
+Wait, "Syntactically normalize" might be slightly unusual but clear. Or "Normalize the joined path textually". Maybe "Join reports_root and filename, apply lexical normalization, and confirm the path stays strictly beneath reports_root; raise ValueError otherwise." This avoids saying "without resolving symlinks" because lexical normalization implies not resolving symlinks.
+
+I think "lexically normalize" is a good concise term.
+
+Let's go with:
+Join reports_root and filename, lexically normalize the result, and raise ValueError if the path is not strictly beneath reports_root. Inspect every filesystem path component contributed by filename under reports_root; raise ValueError if any such user-selected component is a symbolic link, even when that link currently points to a file inside reports_root. Open the target, propagate FileNotFoundError if it is missing, read its full contents decoded as UTF-8, and return the text.
+
+This is clear, concise, and preserves the exact policy. I'll use this.
+
+Wait, "Inspect every filesystem path component contributed by filename under reports_root". This is slightly wordy. "Check each path component from filename under reports_root". Simpler.
+
+Final:
+Join reports_root and filename, lexically normalize the result, and raise ValueError if the path is not strictly beneath reports_root. Check each path component from filename under reports_root; raise ValueError if any user-selected component is a symbolic link, even when that link currently points to a file inside reports_root. Open the target file, propagate FileNotFoundError if it is missing, read the full contents decoded as UTF-8, and return the text.
+
+END_PLAN
+
+Looks perfect.

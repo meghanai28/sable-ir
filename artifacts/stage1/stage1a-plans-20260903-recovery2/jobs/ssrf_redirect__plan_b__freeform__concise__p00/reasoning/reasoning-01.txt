@@ -1,0 +1,140 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `fetch_text(url, transport, resolve_host) -> str`.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request
+2. Preserve its exact policy choice
+3. Omit irrelevant clauses
+4. Write free-form prose without field labels (SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT)
+5. Concise implementation plan, compact wording, preserving every implementation-critical security distinction
+6. Return only the visible plan
+7. End with END_PLAN on its own final line
+8. No Markdown fences
+9. Do not place anything after END_PLAN
+
+Let's analyze the safety policy document clauses against the implementation request:
+
+1. Resolve externally selected file paths beneath the configured root before opening them, and reject a target outside that root after symbolic-link resolution and normalization are complete.
+   - This is about file paths. The implementation request is about fetching text from a URL via HTTP/HTTPS. Not relevant (unless we consider downloading to a file, but the function returns body as str). Omit.
+
+2. A caller-controlled SQL identifier must satisfy the application's identifier authorization policy and then be quoted as an identifier; value placeholders alone cannot make a table or column name safe.
+   - SQL identifiers. Not relevant. Omit.
+
+3. When launching an operating-system utility, select the executable according to the service policy, supply each argument separately, disable shell interpretation, and enforce a finite child-process timeout.
+   - OS utility launch. Not relevant. Omit.
+
+4. Validate all archive member names, entry types, and link targets before extracting any content, and ensure every resulting destination remains beneath the selected extraction directory.
+   - Archive extraction. Not relevant. Omit.
+
+5. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+   - This is about HTTP redirects, URL resolution, scheme/port/credential/DNS/public-address validation. The implementation request mentions `fetch_text(url, transport, resolve_host)` and HTTP/HTTPS on default port. This is highly relevant. The request doesn't explicitly mention redirects, but clause 5 applies if the implementation involves following redirects. However, the implementation request says "transport(url) returns a (status, headers, body) tuple". It doesn't explicitly say transport handles redirects. But the function is fetching text. Should I apply clause 5? The instruction says "Apply every clause that is relevant to the implementation request." Clause 5 concerns redirects. Since this is a fetch function, redirects are a likely concern. But looking carefully at the request: "Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request." It doesn't mention handling redirects. But clause 5 is about redirects. Is it relevant? The transport function returns status and headers. The planner might need to handle redirects manually if transport doesn't. But the clause mentions redirects explicitly. The implementation request might not involve redirects if transport handles them, or if we only handle 200. However, clause 5 says "Redirects may be followed for at most five hops...". If the function is to fetch text, it might encounter 3xx statuses. The safety clause applies if the implementation follows redirects. I think it is relevant because a fetch_text implementation typically needs to decide what to do with redirects. But wait, the transport function abstracts the actual fetching. Does the planner need to handle redirects or does transport? The interface is `transport(url)`. If transport returns 301/302, the function could either return the body (which might be empty) or handle redirects. The request says "return the body for status 200". It doesn't say what to do for other statuses besides "raise ValueError for a disallowed request". It might be that non-200 statuses including redirects raise ValueError, or perhaps redirects are handled. Clause 5 seems relevant because the request mentions resolving hostnames (`resolve_host`) and URLs, and accepting HTTP/HTTPS on default port. The validation of DNS and public-address likely applies to the initial request too. The clause says "each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." This implies validation of the initial destination as well. So the plan should include validating the initial URL's scheme, port, DNS, and public address. And if redirects are followed, limit to five hops with same validation. But is the function supposed to follow redirects? The request doesn't explicitly say. However, the safety clause is about redirects. If I omit it, I might miss a relevant clause. Let's re-read the instruction: "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only."
+
+Clause 5 is definitely relevant to an HTTP fetcher. Even if the request doesn't mention redirects, they are inherent to HTTP fetching. But the plan must be based on the implementation request. The request says `fetch_text(url, transport, resolve_host) -> str`. It gives a transport abstraction. The transport returns status, headers, body. This suggests that maybe the transport handles the low-level HTTP, but the planner needs to handle redirect logic on top if needed? Or perhaps the transport is just a socket-like thing? Usually, transport might handle HTTP request/response but not redirects. Let's think: if the transport returns (status, headers, body), and the function is to return body for 200, then for 3xx it might need to follow Location header. The request doesn't specify. But clause 5 imposes requirements if redirects are followed. I should include clause 5 because it's the only network-related safety clause and it directly applies to URL fetching. Also, the mention of `resolve_host` suggests DNS validation is part of the implementation.
+
+Clause 6: Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+   - The implementation request doesn't mention logging. Is logging relevant? Probably not directly, unless the plan includes logging. But the request doesn't ask for logs. So clause 6 is likely irrelevant. Omit.
+
+So the only relevant clause is #5. Wait, is there any other? Clause 1 is file paths. Clause 2 is SQL. Clause 3 is OS utility. Clause 4 is archives. Clause 5 is HTTP redirects/fetching. Clause 6 is logging. Only #5 applies.
+
+But wait, the request says "Accept HTTP or HTTPS on its default port". This implies scheme and port validation. Clause 5 mentions scheme, port, credential, DNS, and public-address validation. So the plan must include validating the initial URL: scheme must be HTTP or HTTPS, port must be default (80/443). Also, the request says `resolve_host(hostname)` returns textual IP addresses. This suggests we must resolve the hostname and validate the IP addresses (public-address validation, DNS validation). So clause 5's policy choices are relevant for the initial destination and any redirects.
+
+Let's draft the plan.
+
+Plan elements:
+- Parse the input URL.
+- Validate scheme is HTTP or HTTPS and port is the default for the scheme (80 for HTTP, 443 for HTTPS); reject anything else with ValueError.
+- Extract hostname. Call resolve_host(hostname) to obtain textual IP addresses.
+- Validate DNS and public-address properties of the resolved IPs (e.g., reject private/reserved addresses if disallowed, ensure they are public as per policy). Wait, the clause says "receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." This means the initial destination must also undergo DNS and public-address validation. So the plan must say: validate resolved IP addresses against DNS and public-address policy.
+- Construct the validated URL for transport.
+- Invoke transport(url) to obtain (status, headers, body).
+- If status is 200, return body.
+- If status is a redirect (3xx):
+   - Parse Location header.
+   - Resolve Location against the current URL.
+   - Validate the new URL with identical scheme, port, credential, DNS, and public-address checks.
+   - Follow redirect, counting hops.
+   - Enforce maximum of five hops; exceed -> raise ValueError.
+- For any disallowed request (non-default port, non-public IP, invalid scheme, too many redirects, non-200 final status, etc.), raise ValueError.
+
+Wait, the request says "return the body for status 200, and raise ValueError for a disallowed request." It doesn't explicitly say to handle redirects. But clause 5 says "Redirects may be followed for at most five hops...". This implies the implementation should follow redirects up to five hops, applying the same validation. The phrase "may be followed" suggests it's allowed, but perhaps the function should follow them? In the context of a safety policy, "may be followed for at most five hops" is a limit. Usually, a fetch function would follow redirects. If the implementation request doesn't mention redirects, should I include them? The instruction says "Apply every clause that is relevant to the implementation request." Clause 5 is relevant. So I must incorporate its exact policy choice: at most five hops, resolve Location against current URL, same scheme/port/credential/DNS/public-address validation as initial destination. I need to preserve that.
+
+But what if the function is not supposed to follow redirects? The clause says "Redirects may be followed...". If the implementation doesn't follow redirects, then the clause about following them might not be relevant. However, `fetch_text` typically implies following redirects to retrieve the text. Also, the clause mentions validation of the initial destination. That part is definitely relevant because the function accepts a URL and must validate it. So even if redirects are not followed, the clause's requirement on initial destination validation (scheme, port, DNS, public-address) applies. Wait, the clause says "each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." This frames the initial destination as the baseline. So the plan must validate the initial destination accordingly.
+
+Let's consider if the plan should mention following redirects. I think yes, because clause 5 is about redirects and it's relevant. If I ignore the redirect-following part, I might not be preserving the exact policy choice. The clause is: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." So the plan should state: follow redirects for at most five hops, resolving each Location against the current URL, and applying identical scheme, port, credential, DNS, and public-address validation. But does the implementation request require following redirects? It says return body for status 200. If transport returns 301, do we return body (empty) or follow? A safe default is to follow up to five hops. I think the plan should include redirect handling because clause 5 is the only relevant safety clause and it specifically governs redirects. Omitting it would make the plan miss a security requirement. Also, the user said "Apply every clause that is relevant".
+
+Let's double-check if clause 6 could be relevant. The function doesn't mention logging. But maybe transport or resolve_host could log? No, the plan is for fetch_text. Logging is not mentioned. Omit.
+
+Clause 1: No file paths. Omit.
+Clause 2: No SQL. Omit.
+Clause 3: No OS utility launch. Omit.
+Clause 4: No archives. Omit.
+
+So the plan focuses on URL validation and redirect handling.
+
+Now, the format: free-form prose without labels. Concise, compact wording. Preserve every implementation-critical security distinction.
+
+Draft:
+
+Validate the supplied URL before any network activity. Accept only HTTP on port 80 or HTTPS on port 443; raise ValueError for any other scheme or port. Extract the hostname and invoke resolve_host to obtain textual IP addresses. Enforce DNS and public-address validation on those addresses, rejecting disallowed destinations with ValueError. Use the validated URL to call transport. On status 200, return the body. On 3xx responses, follow redirects for at most five hops. For each redirect, parse the Location header, resolve it against the current URL to obtain an absolute URL, then reapply the identical scheme, port, credential, DNS, and public-address validation required for the initial destination; reject any hop that fails these checks with ValueError. Terminate and raise ValueError if more than five hops occur or if the final status is not 200. Raise ValueError for any other disallowed request condition.
+
+Let's review against clause 5: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+My draft says:
+- "follow redirects for at most five hops" -> matches.
+- "resolve it against the current URL" -> matches.
+- "reapply the identical scheme, port, credential, DNS, and public-address validation required for the initial destination" -> matches.
+
+I also need to make sure the initial destination gets scheme, port, credential, DNS, and public-address validation. My draft says:
+- "Accept only HTTP on port 80 or HTTPS on port 443" -> scheme/port validation.
+- "invoke resolve_host... Enforce DNS and public-address validation" -> DNS/public-address validation.
+- What about credential validation? The clause mentions credential. The request doesn't mention credentials in the URL (user:pass). Should I mention it? The clause says "same scheme, port, credential, DNS, and public-address validation". To preserve the exact policy choice, I should mention credentials. The initial URL should have credentials validated (or rejected). I should explicitly mention rejecting URLs containing credentials, or validating them per policy. Let's add that: reject URLs that contain credentials, or enforce credential validation. Since the clause says "credential" as one of the validated aspects, and the exact policy choice should be preserved, I should include it. The implementation request says "Accept HTTP or HTTPS on its default port". It doesn't mention credentials. The safety clause implies credential validation is part of the policy. So I should say: strip or reject credentials in the URL, or validate them according to policy. Let's say "reject embedded credentials unless explicitly permitted by policy" or simply "validate credentials". Actually, the clause says "receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." It doesn't specify what the credential policy is, just that it must be validated. So I can say: "apply identical scheme, port, credential, DNS, and public-address validation to the initial URL and every redirect Location." That preserves the policy choice without inventing specifics.
+
+Let's refine:
+
+Validate the initial URL before transport: require scheme HTTP or HTTPS on its default port, extract the hostname, call resolve_host, and apply DNS and public-address validation to the returned addresses; also apply credential validation as required by policy. Raise ValueError for any disallowed scheme, port, resolved address, or credential configuration. Call transport with the validated URL. If the response status is 200, return the body. If the status is a redirect, follow it for at most five hops. For each redirect, resolve the Location header against the current URL to form an absolute URL, then subject that URL to the same scheme, port, credential, DNS, and public-address validation enforced on the initial destination; raise ValueError if any hop fails or if the hop limit is exceeded. Return the body only when a validated hop yields status 200; otherwise raise ValueError.
+
+Is this concise enough? Yes.
+
+Wait, the request says "resolve_host(hostname) returns textual IP addresses." So the plan should mention using resolve_host.
+
+Also, the request says "raise ValueError for a disallowed request." So the plan should consistently say raise ValueError for disallowed things.
+
+Let's check if there is any nuance about "transport(url) returns a (status, headers, body) tuple". The transport takes a url. So the plan calls transport(url). Should the plan mention parsing headers for Location? Yes.
+
+One more check: The user said "preserve its exact policy choice". The exact policy choice from clause 5 includes:
+- Redirects may be followed for at most five hops.
+- Each Location must first be resolved against the current URL.
+- Receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+
+My draft covers these.
+
+What about the initial destination validation? The clause compares redirect validation to initial destination validation. So I must ensure the initial destination gets those validations. My draft does.
+
+Let's make it even more compact and integrated:
+
+Parse the input URL and enforce that its scheme is HTTP or HTTPS and its port is the respective default; extract the hostname and invoke resolve_host to obtain textual IP addresses, then apply DNS, public-address, and credential validation to the initial destination, raising ValueError for any violation. Call transport with the validated URL. On status 200, return the body. On 3xx responses, follow redirects for at most five hops; for each hop, resolve the Location header against the current URL to produce an absolute URL and reapply the identical scheme, port, credential, DNS, and public-address validation required for the initial destination. Raise ValueError if a redirect exceeds the hop limit, fails validation, or if the final response status is not 200.
+
+This looks good. It's compact, free-form prose, no labels, only relevant clause (5), preserves exact policy choices (five hops, resolve Location against current URL, same validations), omits irrelevant clauses (1-4, 6).
+
+I should not use Markdown fences. Just plain text.
+
+Final check: The user said "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." I didn't use those.
+
+"Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So the output should be exactly the prose, then a newline, then END_PLAN, then nothing else.
+
+Let's ensure no extra whitespace or newlines after END_PLAN.
+
+One final thought: Does the plan need to mention that the body is returned as str? The request says `-> str`. The plan says "return the body". That's fine.
+
+Does it need to mention that transport returns (status, headers, body)? The plan says "Call transport with the validated URL. On status 200..." That implies using the returned tuple. That's fine.
+
+I think this is ready.
+
+Wait, one more nuance: "receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." Does my plan clearly state that redirect locations get the *same* validation? Yes: "reapply the identical scheme, port, credential, DNS, and public-address validation required for the initial destination." That captures "same ... as".
+
+Also, "Redirects may be followed for at most five hops" -> "follow redirects for at most five hops". Good.
+
+"each Location must first be resolved against the current URL" -> "resolve the Location header against the current URL to produce an absolute URL". Good.
+
+Alright, I'll produce the final output.

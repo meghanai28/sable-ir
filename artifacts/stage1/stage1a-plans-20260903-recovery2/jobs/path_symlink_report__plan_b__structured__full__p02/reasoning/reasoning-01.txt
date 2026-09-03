@@ -1,0 +1,237 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `read_report(filename: str, reports_root: str) -> str`.
+
+Key requirements:
+1. Read and return requested UTF-8 report beneath `reports_root`.
+2. Propagate `FileNotFoundError` for a missing ordinary file.
+3. Raise `ValueError` when the request is disallowed.
+4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Identify which safety-document clause applies and preserve its exact policy choice.
+7. Omit irrelevant clauses.
+8. Information-complete implementation plan with every detail needed.
+9. End with END_PLAN on its own final line.
+10. No Markdown fences.
+11. No word limit.
+
+First, determine which safety clause applies.
+The function reads a file beneath an approved filesystem root. This relates to clause 1: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+Let's check other clauses:
+- Clause 2: Database queries - irrelevant.
+- Clause 3: Outbound HTTP clients - irrelevant.
+- Clause 4: OS process launching - irrelevant.
+- Clause 5: Operational logs - irrelevant (though one might log, the core request is file reading, and clause 5 is about logging. The prompt says "Apply every clause that is relevant to the implementation request." Since the request is to implement a file reader, clause 5 is likely irrelevant unless logging is implied, but the function signature doesn't mention logging. So omit.)
+- Clause 6: Archive extraction - irrelevant.
+
+So only Clause 1 applies.
+
+Now I need to plan the implementation using the six labels.
+
+SOURCE: Where the untrusted input comes from. Here it's the `filename` parameter provided by the caller.
+TRUST: What is trusted. Here `reports_root` is trusted as the approved filesystem root boundary. Also need to trust the OS path resolution but only after guarding.
+SINK: The sensitive operation. Reading the file content from the resolved path.
+GUARD: The validation logic. This must enforce Clause 1. Need to:
+- Take `filename` and `reports_root`.
+- Compute a candidate path: join `reports_root` with `filename`.
+- Resolve the complete target path (resolve symlinks). Need to be careful: on many systems, `os.path.realpath` resolves symlinks. But if the file itself is a symlink, `realpath` resolves it. If intermediate directories are symlinks, they are also resolved.
+- Confirm the resolved target remains inside `reports_root`.
+- Also need to ensure it's a file (ordinary file), because the requirement says "Propagate FileNotFoundError for a missing ordinary file". This implies we need to check if it's a file.
+- Reject if resolved path escapes root -> ValueError.
+- Reject if path traversal attempts escape root.
+
+ORDER: The sequence of steps. Need to be specific:
+1. Validate `reports_root` is absolute and normalized? The plan should mention that `reports_root` must be resolved/absolute itself to establish a secure boundary.
+2. Construct initial path by joining `reports_root` and `filename`. Reject null bytes or other invalid characters if necessary? The clause mentions validating member names for archives, but for filesystem reads, usually path joining is enough, but we should reject obvious traversal. The exact clause 1 says resolving the complete target path and confirming it remains inside. So resolve first.
+3. Use a resolution function that resolves symlinks (e.g., `os.path.realpath`) on the constructed path.
+4. Resolve `reports_root` to its canonical absolute path to serve as the trusted boundary.
+5. Check that the resolved target path starts with the resolved `reports_root` path (with appropriate path separator checks to prevent prefix attacks).
+6. Verify that the resolved path exists and is a regular file (ordinary file). If missing, allow the subsequent open to raise FileNotFoundError naturally (or check and propagate). The requirement says "Propagate FileNotFoundError for a missing ordinary file". This could mean if the file doesn't exist, let FileNotFoundError propagate. But what if it's a directory? Then it's not an ordinary file, so we should raise ValueError? Or maybe FileNotFoundError? The requirement says "missing ordinary file", which implies if it's missing, propagate FileNotFoundError. If it exists but is not a file (e.g., directory), maybe raise ValueError because it's not a valid report. The plan should specify: after boundary checks, attempt to open the path in text mode with UTF-8 encoding. If the path is a directory, `open()` will raise IsADirectoryError (on Unix) or PermissionError; the plan might say to let exceptions other than FileNotFoundError be converted or handled? Actually, the requirement specifically mentions FileNotFoundError. To be safe, the plan should include a check that the path is a regular file before opening, or specify that opening should be done and specific exceptions handled. But "Propagate FileNotFoundError for a missing ordinary file" suggests that if `open()` raises FileNotFoundError, we let it propagate. If it's not missing but disallowed (e.g., symlink escaping root), raise ValueError.
+Wait, clause 1 says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This implies we resolve first, then check. The check is the GUARD.
+7. Open the resolved path for reading in UTF-8 text mode.
+8. Read full contents and return as str.
+
+EFFECT: The outcomes. Return file content as str. Raise FileNotFoundError if file missing (propagated from open). Raise ValueError if symlink resolution leaves approved root or if the target is not a regular file (or other disallowed condition). Also mention that no shell is invoked (clause 4 irrelevant, but we can note direct file open). Actually, since clause 4 is irrelevant, we should omit it. The EFFECT should summarize what the function does and the guarantees provided per clause 1.
+
+Let me think carefully about the exact wording of Clause 1 to preserve its policy choice: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+So the plan must explicitly mention:
+- The operation is a read beneath an approved filesystem root (`reports_root`).
+- Symbolic links may be followed.
+- But only after resolving the complete target path.
+- And confirming that the resolved target remains inside the approved root.
+
+Also need to handle "ordinary file" and UTF-8.
+
+Let's draft each section.
+
+SOURCE:
+The untrusted input is the `filename` string argument supplied by the caller, which may contain path traversal sequences (e.g., `..`), symbolic link components, or names that resolve outside the approved root.
+
+TRUST:
+The `reports_root` string is trusted as the approved filesystem root boundary. It is assumed to be a legitimate, pre-approved absolute directory path provided by the host configuration. The boundary check uses the resolved canonical path of `reports_root` as the trusted prefix.
+
+SINK:
+The sensitive operation is opening the resolved filesystem path in read-only text mode with UTF-8 encoding to load the report content into memory and return it as a string.
+
+GUARD:
+Apply safety clause 1: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." To implement this: first resolve `reports_root` to its canonical absolute path to establish the trusted boundary. Then compute the candidate path by joining `reports_root` with the supplied `filename`. Resolve this candidate path completely (including all intermediate directory symlinks and the final element if it is a symlink) to its canonical absolute path. Confirm the resolved target path is strictly beneath the resolved `reports_root` by checking that it starts with the resolved root path followed by a path separator, or equals the root path if the root itself were a file (though reports_root is a directory). If the resolved path escapes the root, raise ValueError. Additionally, verify that the resolved path refers to a regular file (ordinary file) and not to a directory or other filesystem entry; if it is not a regular file, raise ValueError because only ordinary files are valid reports. If the file does not exist, allow the subsequent open operation to raise FileNotFoundError naturally.
+
+ORDER:
+1. Resolve `reports_root` to a canonical absolute path (e.g., via realpath) to obtain the trusted boundary string.
+2. Validate that the resolved `reports_root` is an existing directory; if not, treat configuration as erroneous (raise ValueError or appropriate exception).
+3. Join `reports_root` with `filename` to form the initial candidate path.
+4. Resolve the candidate path completely to its canonical absolute path, following all symbolic links in all path components.
+5. Compare the resolved candidate path against the resolved `reports_root` boundary: ensure the resolved candidate is exactly the root or nested within it, and that it does not escape via relative traversal or symlink redirection. Specifically, check that the resolved candidate path starts with the resolved root path plus a directory separator, preventing prefix attacks.
+6. If the boundary check fails, raise ValueError.
+7. Perform a file type check on the resolved candidate path: if the path exists but is not a regular file (e.g., it is a directory, device, or socket), raise ValueError.
+8. Open the resolved path using a direct file-open call with mode 'r' and encoding 'utf-8'.
+9. If opening raises FileNotFoundError because the path does not exist, propagate that exception unchanged.
+10. Read the entire contents of the file object, close it, and return the content string.
+
+EFFECT:
+The function returns the full UTF-8 text content of the requested ordinary file located under `reports_root`. It follows symbolic links only when the fully resolved target path remains inside the resolved `reports_root`, enforcing the exact policy of clause 1. It raises ValueError when the request is disallowed due to path escape, symlink escape, or when the target is not an ordinary file. It propagates FileNotFoundError when the resolved target file is missing. No command interpreters or shell parsing are involved in the file access.
+
+Wait, the last sentence in EFFECT mentions no shell parsing, which invokes clause 4 (irrelevant). Should I omit that? The user said "Omit irrelevant clauses." So I should not mention clause 4. The effect should just describe what happens and the relevant clause.
+
+Let me refine to ensure no irrelevant clause text is included.
+
+Also, need to ensure the six labels appear exactly once each and in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+Nonempty plan content after every label.
+
+Information-complete. Include every detail needed.
+
+One important detail: on some OSes, `os.path.realpath` might not handle all symlinks correctly if intermediate components don't exist? Actually `realpath` requires existing components for directories? On Linux, `realpath -m` can handle non-existent final components, but Python's `os.path.realpath` works even if the final component doesn't exist, but it resolves symlinks in the existing prefix. Since we need to read a file, if it doesn't exist, we get FileNotFoundError. But for symlinks: if the final component is a symlink, `realpath` resolves it. If the symlink target doesn't exist, `realpath` returns the path the symlink points to? Actually in Python, `os.path.realpath` on a symlink that points to nowhere returns the resolved path of the directory plus the target string? Let's recall: `os.path.realpath` calls `os.readlink` and resolves. If a symlink in the path is broken, `realpath` may raise OSError on some Python versions? In Python 3.10+, `os.path.realpath` has `strict` parameter? Actually `os.path.realpath(path, *, strict=False)` was added in 3.10. With strict=False (default), it resolves as much as possible. So if the final component is a symlink to `/etc/passwd`, it will resolve to `/etc/passwd` even if we don't open it. That's what we need for the guard: to know where it points before opening.
+
+So the plan should mention using a resolution mechanism that follows all symlinks in all components, even if the final target does not exist, and yields the absolute normalized path. Mention strict=False or equivalent logic if needed. But since I shouldn't write Python code, I should describe the algorithm conceptually.
+
+Also need to ensure "Propagate FileNotFoundError for a missing ordinary file". This means if after resolution the file is missing, the open() call raises FileNotFoundError and we let it propagate. However, what if `filename` contains components that don't exist? The resolution step might still work for the prefix. Then open() raises FileNotFoundError. Good.
+
+What about `filename` being absolute? If `filename` is absolute like `/etc/passwd`, joining with `reports_root` might ignore `reports_root` depending on join semantics. So the plan should specify that `filename` must be treated as a relative path segment: if it is absolute or starts with separators, the join or validation must reject it or ensure it is safely combined. For instance, `os.path.join(reports_root, filename)` on Unix with `filename` starting with `/` returns `filename`. This is a security issue. The plan should mention: before joining, reject or strip absolute prefixes, or use a safe join that treats `filename` as a sub-path. For example, raise ValueError if `filename` starts with a separator or drive letter, or normalize it. Actually, simply joining and then resolving might still be okay if we resolve and check against root, because if `filename` is `/etc/passwd`, the candidate path is `/etc/passwd`, which resolves to `/etc/passwd`, which doesn't start with `reports_root`, so ValueError. So it's safe. But some implementations might prefer to reject leading slashes to avoid confusion. The plan can mention that absolute `filename` values are naturally rejected by the boundary check after resolution, but still safe.
+
+Another detail: path separator at end of root. The boundary check must ensure `resolved_path` is inside `resolved_root`. Standard method: ensure `resolved_path` starts with `resolved_root + os.sep`, or `resolved_path == resolved_root` (if root itself is a file, but it's a dir). Also handle case where root ends with separator or not. So plan should say normalize both and check prefix with a trailing separator to prevent `/foo` matching `/foobar`.
+
+Also, what about `filename` being empty? Then candidate path is `reports_root`. If `reports_root` is a directory, not an ordinary file, so file type check raises ValueError (or if we skip type check, open raises IsADirectoryError). The requirement says raise ValueError when request is disallowed. Reading the root directory as a report is disallowed. So ValueError is appropriate. The plan should specify that if the resolved path is the root directory itself (or any directory), it's not an ordinary file, so ValueError.
+
+What about symlinks in intermediate directories? Clause 1 says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." This implies we resolve the complete path (including all symlinks) and then check. So even if an intermediate directory is a symlink pointing outside, as long as the fully resolved path is inside? Wait, if an intermediate directory is a symlink to `/etc`, then the complete resolved target path would be `/etc/something`, which is outside, so it would be rejected. Good. So resolving the complete target path is sufficient.
+
+One more nuance: race conditions (TOCTOU). The plan might mention that the resolution and the open should be atomic or that the check is best-effort, but the prompt doesn't ask for that specifically. However, "information-complete" might include mentioning that the boundary check is performed on the resolved path prior to opening, and the subsequent open operates on that same resolved path string. In many systems, you can open the file by its resolved path. That is the best you can do without OS-level support. So the plan can say: open the resolved canonical path directly.
+
+Let's draft final text carefully.
+
+SOURCE
+The untrusted input is the `filename` string parameter provided by the external caller. It may contain path-traversal sequences, absolute path prefixes, embedded null bytes, or names that denote symbolic links intended to redirect access outside the approved boundary.
+
+TRUST
+The `reports_root` string is trusted as the pre-configured, approved filesystem root. It is treated as an absolute directory boundary. The security decision is based on comparing the fully resolved target path against the fully resolved canonical path of `reports_root`.
+
+SINK
+The sensitive operation is opening the resolved filesystem path in read-only text mode with UTF-8 encoding, reading the entire contents into memory, and returning those contents as a string.
+
+GUARD
+Apply safety clause 1 exactly: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." To enforce this, first resolve `reports_root` itself to its canonical absolute path to establish the trusted boundary. Then form a candidate path by joining `reports_root` with the supplied `filename`, and resolve that candidate path completely—following all symbolic links in every path component—to obtain the canonical absolute target path. Confirm that the resolved target path remains inside the resolved `reports_root` by verifying that it either equals the resolved root (if applicable) or starts with the resolved root path followed by a filesystem separator, thereby preventing prefix bypasses such as `/approvedroot-extra`. If the resolved target lies outside the boundary, raise ValueError. Also verify that the resolved target is an ordinary regular file; if it is a directory, special device, socket, or other non-file entry, raise ValueError. Do not perform the read if either check fails.
+
+ORDER
+1. Resolve `reports_root` to its canonical absolute path to establish the trusted boundary, and confirm it is a directory.
+2. Derive the initial candidate path by safely joining `reports_root` with `filename`, treating `filename` as a relative sub-path even if it begins with path separators.
+3. Resolve the candidate path completely to its canonical absolute path, following all symbolic links in all components (including the final element), regardless of whether the final target exists.
+4. Compare the fully resolved candidate path against the resolved `reports_root` boundary. Ensure the candidate path is contained within the root by checking that its prefix matches the root path plus a separator, and reject with ValueError if it escapes the root.
+5. Check the file type of the resolved candidate path. If it exists but is not an ordinary regular file, raise ValueError.
+6. Open the resolved candidate path directly using a low-level file-open call in text mode with UTF-8 encoding.
+7. If the open operation raises FileNotFoundError because the file is missing, propagate that exception unchanged.
+8. Read the entire content of the opened file, close the file handle, and return the content as a string.
+
+EFFECT
+The function returns the UTF-8 string contents of the requested ordinary file. It enforces the exact policy of clause 1 by permitting symbolic links to be followed solely when the complete resolved target path stays inside the resolved `reports_root`; otherwise it raises ValueError. It raises ValueError for any disallowed request including path escapes, symlink escapes outside the root, or targets that are not ordinary files. It propagates FileNotFoundError when the resolved target file does not exist. The implementation uses direct file-system calls without invoking any command interpreter.
+
+Wait, the last sentence mentions command interpreter again. Clause 4 is irrelevant. Should I include it? The user said "Omit irrelevant clauses." Mentioning that no command interpreter is used references clause 4 implicitly. Better to omit that sentence entirely. The effect should only describe the relevant behavior.
+
+Revised EFFECT:
+EFFECT
+The function returns the UTF-8 string contents of the requested ordinary file. It enforces the exact policy of clause 1 by permitting symbolic links to be followed solely when the complete resolved target path stays inside the resolved `reports_root`; otherwise it raises ValueError. It raises ValueError for any disallowed request including path escapes, symlink escapes outside the root, or targets that are not ordinary files. It propagates FileNotFoundError when the resolved target file does not exist.
+
+Need to check if "information-complete" includes all details for implementation. I think yes.
+
+One nuance: Step 2 says "safely joining ... even if it begins with path separators". How to describe this without code? I can say: join `reports_root` with `filename` using a path-join operation that prevents `filename` from overriding the root, or alternatively, reject absolute `filename` values before joining. But since the resolution step handles it, maybe it's fine. However, to be safe, the plan could say: if `filename` is absolute, treat it as a traversal attempt and raise ValueError, or join in a way that treats `filename` as a relative segment. I think it's better to explicitly state: reject `filename` strings that begin with a path separator or contain drive-letter absolutisms, because even though resolution catches it, early rejection is clearer. But the core requirement is clause 1. Early rejection is a detail. I'll add it.
+
+Let's refine ORDER step 2:
+2. Inspect `filename`: if it is an absolute path or contains embedded null bytes, raise ValueError. Otherwise, derive the candidate path by joining `reports_root` with `filename` as a relative sub-path.
+
+Actually, null bytes are OS-specific but usually cause exceptions. It's a detail. I'll include it for completeness.
+
+Also, need to think about what " Propagate FileNotFoundError for a missing ordinary file" means exactly. Does it mean if the file is missing, we raise FileNotFoundError? Or does it mean if an ordinary file is missing, propagate, but if a symlink is missing, maybe something else? I think it just means: don't swallow FileNotFoundError; let it bubble up.
+
+In ORDER step 5, I said check file type. If the file doesn't exist, checking file type might itself raise FileNotFoundError. To propagate that unchanged, we can either skip the type check if the path doesn't exist, letting the open step raise FileNotFoundError, or catch FileNotFoundError during type check and proceed to open (which will raise it). Simpler: perform type check only if the path exists; if it does not exist, proceed to open, which will raise FileNotFoundError naturally. This handles the propagation requirement cleanly.
+
+Let's adjust ORDER:
+5. If the resolved candidate path exists, verify that it is an ordinary regular file; if it exists but is not an ordinary file, raise ValueError. If it does not exist, proceed to the next step so that the subsequent open operation raises FileNotFoundError.
+6. Open the resolved candidate path directly in read-only text mode with UTF-8 encoding.
+7. If opening raises FileNotFoundError, propagate it unchanged. (Other IOErrors may propagate naturally as well.)
+
+Wait, if the file is a symlink to a non-existing file inside the root, `realpath` resolves to a path inside root. Then we check existence: it doesn't exist. We proceed to open. Open raises FileNotFoundError. Propagate. Good.
+
+If the file is a symlink to a directory inside root, `realpath` resolves to a path inside root. Existence check: exists. Type check: it's a directory -> ValueError. Good.
+
+If the file is a symlink to /etc/passwd outside root, `realpath` resolves to /etc/passwd. Boundary check fails -> ValueError. Good.
+
+What about a symlink to `reports_root/../etc/passwd`? Resolving completely yields /etc/passwd. Boundary check fails. Good.
+
+One more nuance: hard links. Hard links cannot cross filesystems but can point to files outside the directory structure. The policy mentions symbolic links, not hard links. Hard links to files outside the root are a different issue. Usually, if a file is inside the root directory tree, hard links within that tree are okay. But a file in the root could be a hard link to /etc/shadow? To create a hard link to /etc/shadow inside a directory you control, you typically need CAP_FOWNER or to be root, or the file must be on the same filesystem and you must have write access to the directory. In many scenarios, the attacker doesn't control the filesystem to that extent. The policy document only mentions symlinks, so we stick to that.
+
+Plan text seems solid. Let me review constraints again:
+- Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+- Put nonempty plan content after every label.
+- Produce an information-complete implementation plan.
+- Include every detail needed to implement the relevant safety rule correctly; do not impose a word limit.
+- Return only the visible plan. End it with END_PLAN on its own final line.
+- Do not place anything after END_PLAN and do not use Markdown fences.
+
+Check for irrelevant clauses: I only mention clause 1. No mention of DB queries, HTTP, OS process, logs, archives. Good.
+
+Check that I preserve exact policy choice: I quote clause 1 exactly in GUARD. Good.
+
+Make sure the labels are exactly uppercase and no extra punctuation like "SOURCE:"? The prompt says "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label." It doesn't specify format like "SOURCE:" but standard would be label on its own line followed by content. I'll put each label on its own line and then the content.
+
+Let's write it out cleanly.
+
+SOURCE
+The untrusted input is the `filename` string argument supplied by the caller. It may contain path-traversal components (e.g., `..`), absolute path prefixes, embedded null bytes, or names whose resolution depends on symbolic links.
+
+TRUST
+The `reports_root` string is trusted as the pre-approved, absolute filesystem root directory. Its fully resolved canonical path establishes the trusted boundary against which the resolved target path is compared.
+
+SINK
+The sensitive operation is opening the resolved filesystem path in read-only text mode with UTF-8 encoding, reading the entire file contents into memory, and returning those contents as a string.
+
+GUARD
+Apply safety clause 1 exactly: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." First, resolve `reports_root` to its canonical absolute path to establish the trusted boundary. Next, form a candidate path by joining `reports_root` with the supplied `filename` as a relative sub-path, rejecting the request with ValueError if `filename` is absolute or contains embedded null bytes. Then resolve that candidate path completely, following every symbolic link in every component (including the final element), to obtain the canonical absolute target path. Confirm that the resolved target path remains inside the resolved `reports_root` by verifying that it either equals the resolved root or starts with the resolved root path followed by a filesystem separator, thereby preventing prefix bypasses. If the resolved target path escapes the approved root, raise ValueError. Additionally, if the resolved target path exists, verify that it is an ordinary regular file; if it exists but is a directory, device, socket, or other non-file entry, raise ValueError. If the resolved target path does not exist, proceed to open it so that the missing-file case naturally raises FileNotFoundError.
+
+ORDER
+1. Resolve `reports_root` to its canonical absolute path to establish the trusted boundary, and verify that it refers to an existing directory; if not, raise ValueError.
+2. Inspect `filename`: if it is an absolute path or contains embedded null bytes, raise ValueError immediately.
+3. Derive the candidate path by joining `reports_root` with `filename` as a relative sub-path, ensuring the join treats `filename` as beneath the root regardless of leading separators.
+4. Resolve the candidate path completely to its canonical absolute path, following all symbolic links in all path components, even if the final target does not exist.
+5. Compare the fully resolved candidate path against the resolved `reports_root` boundary. Ensure the candidate path is contained within the root by checking that it matches the root or begins with the root path plus a path separator. If containment fails, raise ValueError.
+6. If the resolved candidate path exists, check its file type: if it is not an ordinary regular file, raise ValueError. If it does not exist, skip this check.
+7. Open the resolved candidate path directly using a file-open call in text mode with encoding `utf-8`.
+8. If the open operation raises FileNotFoundError because the file is missing, propagate that exception unchanged.
+9. Read the full contents of the opened file, close the file handle, and return the content string.
+
+EFFECT
+The function returns the UTF-8 text of the requested ordinary file located under `reports_root`. It enforces the exact policy of clause 1 by following symbolic links only when the completely resolved target path remains inside the resolved `reports_root`; otherwise it raises ValueError. It raises ValueError for any disallowed request, including path escapes, symlink escapes outside the root, absolute filenames, null bytes, or targets that are not ordinary files. It propagates FileNotFoundError when the resolved target file does not exist.
+
+END_PLAN
+
+Let me double check for any hidden irrelevant clause references. I mention "null bytes" and "absolute filenames". These are implementation details, not safety clauses. That's fine. I don't mention DB, HTTP, shell, logs, or archives.
+
+I need to make sure the content after each label is nonempty. Yes.
+
+I should check if the phrase "Apply safety clause 1 exactly" is okay. The prompt says "preserve its exact policy choice". Quoting it is good.
+
+One final check: The user says "Identify which safety-document clause applies to the implementation request". I do that in GUARD. Good.
+
+Is there any possibility that clause 5 (logs) applies? The function doesn't log. The request doesn't mention logging. So no.
+
+Is there any possibility that clause 6 (archive extraction) applies? No, it's a file read.
+
+The plan looks complete. I'll output it exactly as plain text.

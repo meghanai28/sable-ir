@@ -1,0 +1,16 @@
+The implementation must adhere to clause 1 of the safety policy: for reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root.
+
+The function `read_report(filename: str, reports_root: str) -> str` shall be built as follows.
+
+First, validate the `filename` parameter. If it is absolute—starting with a path separator on POSIX or a drive letter or backslash on Windows—or contains null bytes, raise `ValueError` because such a value cannot represent a relative path beneath the approved root. An empty filename may be treated as referring to the root directory itself; since the root is a directory and not a report file, attempting to read it will naturally fail, but the containment check still applies.
+
+Second, compute the canonical approved root. Convert `reports_root` into an absolute path and fully resolve any symbolic links in it using realpath semantics, producing the canonical root directory path. Ensure this path has a trailing path separator conceptually so that prefix-based containment checks do not confuse the root with a sibling directory (e.g., `/data/reports` versus `/data/reports-other`).
+
+Third, construct the requested path by joining the canonical root with the supplied `filename`. Then resolve the complete target path of this candidate using realpath-style resolution that follows every symbolic link encountered in any path component and normalizes all dot-dot and dot segments. This resolved path is the definitive filesystem location that would be accessed.
+
+Fourth, perform a strict containment verification: the resolved path must be identical to the canonical root or located strictly inside it. The check must compare path components or use a string prefix test that appends a path separator to the canonical root, ensuring that a resolved path escaping to a sibling directory is detected. If the resolved path lies outside the canonical root, raise `ValueError` to indicate the request is disallowed.
+
+Fifth, once containment is confirmed, attempt to open the resolved path for reading in text mode with UTF-8 encoding. Do not intercept `FileNotFoundError`; let it propagate unchanged so that callers receive the correct exception for a missing ordinary file. Read the entire contents of the file, close the stream, and return the content as a string.
+
+This procedure guarantees that symbolic links are never traversed on trust alone; the complete target path is resolved up front and validated against the approved boundary before any file content is accessed, precisely preserving the policy choice of clause 1.
+END_PLAN

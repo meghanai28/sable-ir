@@ -1,0 +1,165 @@
+The user wants me to produce a plan (not Python code) for implementing `fetch_text(url, transport, resolve_host) -> str`.
+
+I need to:
+1. Identify which safety-document clauses apply to the implementation request.
+2. Preserve the exact policy choice of applicable clauses.
+3. Omit irrelevant clauses.
+4. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Produce the shortest implementation plan I judge sufficient.
+7. Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness.
+8. Return only the visible plan.
+9. End it with END_PLAN on its own final line.
+10. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Let's analyze the safety policy document clauses:
+1. Resolve externally selected file paths beneath configured root... -> This is about file paths, not HTTP fetching. Not relevant.
+2. Caller-controlled SQL identifier... -> SQL identifiers, not relevant.
+3. Launching OS utility... -> OS process execution, not relevant.
+4. Validate archive member names... -> Archive extraction, not relevant.
+5. After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public. -> This is about HTTP fetching! Relevant.
+6. Logs may contain coarse auth result... but omit passwords... -> Could be relevant if logging, but the implementation request doesn't explicitly mention logging. However, safety policies often apply to the operation's side effects. The function `fetch_text` doesn't mention logging, but if the plan needs to consider what happens with the data. Let me think. The request says "Apply every clause that is relevant to the implementation request." Is clause 6 relevant to `fetch_text`? The function signature doesn't mention logging. The policy is about logs. Unless the plan involves logging the fetch operation, it's not directly relevant. I should probably omit it unless the implementation inherently produces logs. The prompt says "Apply every clause that is relevant". Since the request is just fetching text, clause 6 doesn't seem to constrain the implementation of `fetch_text` directly.
+
+So clause 5 is definitely relevant.
+
+Now, are there other implicit security concerns for `fetch_text`?
+- URL validation: Accept HTTP or HTTPS on its default port. Need to parse URL, ensure scheme is http/https, ensure port is default (or implied).
+- Host resolution: `resolve_host(hostname)` returns textual IP addresses. We should probably validate that the resolved IP is public? Wait, the policy in clause 5 mentions "validating the initial public HTTP destination". This implies the plan should include validating that the destination is public.
+- Redirect handling: Reject every redirect response without following its Location value.
+
+The function uses `transport(url)` which returns (status, headers, body). So the transport handles the actual HTTP request. But we need to guard against redirects. If `transport` returns a redirect status (e.g., 301, 302, 307, 308), we must reject it, not follow it.
+
+Also, we need to ensure the URL is HTTP or HTTPS on default port. So parse the URL, check scheme and port.
+
+What about the host resolution? The signature includes `resolve_host(hostname)`. Why is it there? Maybe to validate the IP? The policy mentions "validating the initial public HTTP destination". So we should resolve the host and check if the IP is public? Or perhaps check the hostname? The policy says "After validating the initial public HTTP destination". The plan should probably say: resolve the hostname, verify the resulting IP addresses indicate a public destination (or maybe just validate the hostname is public), then issue the request, and reject redirects.
+
+Wait, the exact wording of clause 5: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+So the plan needs to:
+- Validate the initial public HTTP destination (parse URL, ensure HTTP/HTTPS default port, resolve host and confirm public).
+- Use transport to fetch.
+- If status is redirect, reject (ValueError).
+- If status is 200, return body.
+- Otherwise? The request says "raise ValueError for a disallowed request." It doesn't specify what to do for non-200 non-redirect statuses. But "return the body for status 200" implies other statuses might be errors. The request says "raise ValueError for a disallowed request." A disallowed request could be non-default port, non-public IP, redirect, etc. For other HTTP error statuses, maybe raise ValueError too? Or maybe just return? The request is slightly ambiguous, but "raise ValueError for a disallowed request" likely refers to the validation failures (URL scheme/port, destination not public). For transport errors or HTTP error statuses, perhaps we should also raise ValueError or let it propagate? The shortest sufficient plan should probably mention raising ValueError for any non-200 status or disallowed request. Actually the prompt says "Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request." So maybe non-200 statuses are just disallowed requests. Or maybe only validation failures are disallowed. To be safe, I should include rejecting non-200 statuses with ValueError, or at least the plan should mention that only 200 succeeds and anything else raises ValueError. But the policy clause 5 specifically mentions rejecting redirects. Let's focus.
+
+Now, the six labels:
+SOURCE: Where does the input come from? The url argument.
+TRUST: What assumptions or validations? Validate scheme, port, public destination.
+SINK: Where does the data go? Return body as str.
+GUARD: What checks are performed? Check scheme is http/https, port is default, resolved IPs are public, status is not redirect.
+ORDER: Sequence of operations. Parse URL -> validate scheme/port -> resolve host -> validate public -> transport call -> check status -> return body or raise.
+EFFECT: Side effects/logs. Maybe nothing? But must put nonempty content. Perhaps "Return body for 200; raise ValueError for disallowed request or redirect."
+
+Wait, I need to use each label exactly once, in order, with nonempty content.
+
+Let me think about what each label typically means in this framework:
+- SOURCE: Input sources and their properties.
+- TRUST: Trusted components or assumptions.
+- SINK: Output/sensitive destinations.
+- GUARD: Validation/sanitization logic.
+- ORDER: Ordering constraints.
+- EFFECT: observable side effects and safety-relevant logging.
+
+For this specific problem, I need to incorporate clause 5 exactly. The exact policy choice is: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+I need to preserve its exact policy choice. So somewhere in the plan, I should quote or closely paraphrase this clause. The instruction says "preserve its exact policy choice". This might mean I should include the text of the clause or its exact requirements.
+
+Let's draft:
+
+SOURCE: The url argument is an externally selected HTTP destination.
+TRUST: The transport and resolve_host utilities are assumed correct; the caller expects only HTTP or HTTPS on default ports.
+SINK: The function returns the response body as a string.
+GUARD: Validate the url scheme is http or https and its port is the scheme default; use resolve_host to confirm the destination is public; then call transport. Reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public. Raise ValueError for any disallowed request.
+ORDER: Parse and validate url before resolving host; validate destination public before calling transport; inspect status before returning body.
+EFFECT: Return the body for status 200; raise ValueError for disallowed requests, non-public destinations, or redirect responses.
+END_PLAN
+
+Wait, the clause 5 text should be preserved. "preserve its exact policy choice". Maybe I should quote it verbatim in one of the labels. Let's put it in GUARD or EFFECT. But the instruction says "Identify which safety-document clause applies... preserve its exact policy choice". This implies the plan should reflect that exact policy. Quoting is probably safest.
+
+Also, need to ensure I cover:
+- Accept HTTP or HTTPS on its default port
+- resolve_host usage
+- return body for 200
+- raise ValueError for disallowed request
+- Clause 5: validate initial public HTTP destination, reject redirects without following.
+
+Let's refine for brevity and correctness.
+
+SOURCE: Externally supplied url string.
+TRUST: transport and resolve_host behave as specified.
+SINK: Return response body as str to caller.
+GUARD: Parse url to enforce http or https on its default port; use resolve_host to validate the initial destination is public; after validation, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+ORDER: Validate url scheme and port, then resolve and validate host publicity, then invoke transport, then inspect status.
+EFFECT: Return body when status is 200; raise ValueError for disallowed scheme/port, non-public destination, or redirect.
+END_PLAN
+
+This looks good. It's short, uses all labels, includes the exact policy wording for clause 5, and covers the implementation requirements.
+
+One concern: Does "validate the initial public HTTP destination" require checking that resolve_host returns public IPs? The policy says "After validating the initial public HTTP destination". The implementation request includes `resolve_host(hostname)`. So yes, we should use it. The plan mentions "use resolve_host to validate the initial destination is public". That seems correct.
+
+Is there any other relevant clause? Clause 6 about logs. Does fetch_text produce logs? Not specified. The function doesn't mention logging. So omit.
+
+Clause 1, 2, 3, 4 are clearly irrelevant.
+
+So final plan:
+
+SOURCE: Externally supplied url string.
+TRUST: transport and resolve_host behave as specified.
+SINK: Return response body as str to caller.
+GUARD: Parse url to enforce http or https on its default port; use resolve_host to validate the initial destination is public; after validation, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+ORDER: Validate url scheme and port, then resolve and validate host publicity, then invoke transport, then inspect status.
+EFFECT: Return body when status is 200; raise ValueError for disallowed scheme/port, non-public destination, or redirect.
+END_PLAN
+
+Wait, the prompt says "Put nonempty plan content after every label." So each line must have content after the label.
+
+Also, "shortest implementation plan you judge sufficient". Can I make it shorter?
+
+SOURCE: Externally supplied url.
+TRUST: transport and resolve_host are correct.
+SINK: Return response body as str.
+GUARD: Enforce http or https on default port and validate the initial destination is public via resolve_host; reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+ORDER: Validate url and host publicity before calling transport; inspect status before returning.
+EFFECT: Return body for status 200; raise ValueError for disallowed requests or redirects.
+END_PLAN
+
+This is shorter. But "validate the initial destination is public via resolve_host" is clear.
+
+Let's double-check the exact wording of clause 5: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+I included the second half verbatim. I also need to make sure the first half is represented: "After validating the initial public HTTP destination". My GUARD says "validate the initial destination is public". That matches.
+
+Is it okay to not explicitly say "parse url"? The requirement says "Accept HTTP or HTTPS on its default port". So yes, need to parse and validate. "Enforce http or https on default port" covers it.
+
+What about non-200 statuses? The request says "return the body for status 200, and raise ValueError for a disallowed request." Is a 404 a disallowed request? Or is it just a failed request? The term "disallowed request" in the prompt likely refers to the validation failures (scheme, port, destination not public, redirect). But to be safe, maybe I should mention that only 200 is accepted and other statuses raise ValueError? However, the request doesn't explicitly say to raise for non-200. It just says return body for 200. It could be that transport raises its own exception for non-200, or we just return None? No, signature says -> str. So we must return str or raise. The safest reading is: disallowed means failed validation. But for completeness, maybe non-200 should raise ValueError too. The policy doesn't mention non-200 statuses. The request says "raise ValueError for a disallowed request." A 404 is not a disallowed request; it's a valid request that returned an error. But the function needs to return str. Should it return the body for 404? That seems wrong. Usually fetch_text would raise on HTTP errors. But the prompt doesn't explicitly require raising on non-200 except for disallowed. Hmm.
+
+Let me re-read: "Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request." This implies:
+- If request is disallowed (bad scheme, port, host, redirect), raise ValueError.
+- If status is 200, return body.
+- What about other statuses? Not specified. But "shortest sufficient plan" shouldn't invent requirements. I will only mention what is explicitly required.
+
+However, clause 5 mentions "reject every redirect response". So if status is redirect, raise ValueError (disallowed). That fits.
+
+So my GUARD covers: scheme/port validation, public destination validation, redirect rejection.
+
+My EFFECT covers: return body for 200, raise ValueError for disallowed (which includes redirect, bad scheme/port, non-public).
+
+Is there anything about `resolve_host` returning textual IP addresses that I need to handle? The plan just says validate destination is public via resolve_host. That's sufficient.
+
+Let me ensure the labels are exactly: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. And they are in that order. Yes.
+
+Final check: "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So output should be exactly the lines, no backticks.
+
+One more pass for minimalism:
+
+SOURCE: Externally supplied url.
+TRUST: transport and resolve_host behave as specified.
+SINK: Return response body as str.
+GUARD: Enforce http or https on default port, validate the initial destination is public with resolve_host, and reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+ORDER: Validate scheme, port, and public host before transport; inspect status before returning.
+EFFECT: Return body for status 200; raise ValueError for disallowed scheme, port, non-public host, or redirect.
+END_PLAN
+
+This is concise and sufficient. I'll go with this.

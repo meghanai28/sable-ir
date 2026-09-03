@@ -1,0 +1,125 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the implementation request.
+
+First, let's look at the safety policy document and identify which clauses apply to the implementation request.
+
+Implementation request: Implement `fetch_text(url, transport, resolve_host) -> str`.
+- `transport(url)` returns `(status, headers, body)` tuple.
+- `resolve_host(hostname)` returns textual IP addresses.
+- Accept HTTP or HTTPS on its default port.
+- Return body for status 200.
+- Raise ValueError for disallowed requests.
+
+Let's examine each safety clause:
+
+1. "Resolve externally selected file paths beneath the configured root before opening them, and reject a target outside that root after symbolic-link resolution and normalization are complete."
+   - This is about file paths. The implementation request deals with HTTP/HTTPS URLs, not file paths. Not relevant.
+
+2. "A caller-controlled SQL identifier must satisfy the application's identifier authorization policy and then be quoted as an identifier; value placeholders alone cannot make a table or column name safe."
+   - This is about SQL identifiers. Not relevant to HTTP fetching.
+
+3. "When launching an operating-system utility, select the executable according to the service policy, supply each argument separately, disable shell interpretation, and enforce a finite child-process timeout."
+   - This is about launching OS utilities. Not relevant.
+
+4. "Validate all archive member names, entry types, and link targets before extracting any content, and ensure every resulting destination remains beneath the selected extraction directory."
+   - This is about archive extraction. Not relevant.
+
+5. "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+   - This is about HTTP requests and redirects. The implementation request involves `transport(url)` which returns status, headers, body. If the transport returns a redirect status, we must not follow it. The clause says reject every redirect response without following its Location value. This seems highly relevant. The policy choice is: reject redirects, don't follow them.
+
+6. "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+   - The implementation request mentions `fetch_text` but doesn't explicitly mention logging. However, as a safety clause, if the implementation were to log anything, it must comply. But the request doesn't mention logging. Is it relevant? The instruction says "Apply every clause that is relevant to the implementation request." Since the implementation request doesn't involve logging, this is likely not relevant. Or is it? The function takes a URL and uses transport/resolve_host. It doesn't mention logging. So clause 6 is not relevant.
+
+So only clause 5 is relevant.
+
+Wait, let me re-read the implementation request carefully: "Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request."
+
+I need to plan the implementation. The plan should:
+- Identify which safety-document clause applies (clause 5).
+- Preserve its exact policy choice (reject every redirect response without following its Location value).
+- Omit irrelevant clauses.
+- Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+- Produce the shortest implementation plan sufficient.
+- Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness.
+- Return only the visible plan.
+- End with END_PLAN on its own final line.
+- No Markdown fences.
+
+So what needs to be in the plan?
+- Parse the input URL to validate scheme (http or https) and port (default only: 80 for http, 443 for https).
+- Validate the host using `resolve_host(hostname)` to get IP addresses? The request says `resolve_host(hostname)` returns textual IP addresses. Should we use it? The request includes it as a parameter, so likely yes. Perhaps to validate the destination? The safety clause 5 mentions "validating the initial public HTTP destination". But the plan should incorporate the requirement. Let's see: The implementation request says "raise ValueError for a disallowed request." What constitutes disallowed? HTTP/HTTPS on default port only. Maybe also non-public destinations? The safety clause says "After validating the initial public HTTP destination, reject every redirect response...". But the implementation request doesn't explicitly say to validate if the destination is public. However, clause 5 applies: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+So the plan must include: validate the initial URL is an allowed destination (public HTTP destination? or just scheme/port?), then call transport(url). If status indicates redirect (e.g., 3xx), reject it (raise ValueError) without following the Location header. If status is 200, return body. If other disallowed things (bad scheme, non-default port, maybe resolve_host fails?), raise ValueError.
+
+Wait, the clause says "After validating the initial public HTTP destination". This implies there is a validation step. The implementation request says "Accept HTTP or HTTPS on its default port... raise ValueError for a disallowed request." So validation of the URL (scheme, port) is part of the request. Does "public HTTP destination" require additional validation? The safety clause mentions it as a precondition. I should probably mention that the initial destination must be validated as public (or at least allowed) before proceeding, and then redirects must be rejected.
+
+But the user instruction says: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+So I need to preserve clause 5's exact policy choice: reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+
+What else is needed for correctness?
+- Parse URL to check scheme: must be http or https.
+- Check port: must be default (80 for http, 443 for https). If no port specified, default is implied. If port is specified explicitly, it must match the default for the scheme.
+- Validate host: maybe use `resolve_host(hostname)` to ensure it resolves? The function is provided as a parameter, so we should probably call it. The request includes it, so not using it would likely be omitting a requirement needed for correctness? Or is it optional? The signature includes it, so the implementation should use it. Perhaps to check that the hostname resolves to at least one IP address, and maybe to ensure it's a public IP? The safety clause mentions "public HTTP destination". However, the implementation request doesn't explicitly say to validate that the IP is public; it just says resolve_host returns textual IP addresses. I should include resolving the host and ensuring it yields at least one address, raising ValueError if resolution fails or yields no addresses. But does the safety clause require validating it's public? It says "After validating the initial public HTTP destination". The exact policy choice to preserve is the redirect rejection. The initial validation might be part of the normal request logic (scheme/port). I should not over-interpret "public" if not required. But to be safe, I should mention validating the destination (scheme, default port, and host resolution) before issuing the request.
+
+Let's think about what the shortest sufficient plan is.
+
+Plan steps in free-form prose:
+1. Validate the parsed URL: scheme must be http or https; if an explicit port is present it must be the default for the scheme (80 for http, 443 for https), otherwise the implicit default is acceptable. Validate that the hostname is not empty.
+2. Call resolve_host on the hostname; if it returns no IP addresses or fails, raise ValueError.
+3. Invoke transport with the URL. Examine the returned status.
+4. If status is any redirect (3xx), reject it: raise ValueError without inspecting or following the Location header.
+5. If status is 200, return the body.
+6. For any other status or disallowed condition, raise ValueError.
+
+Wait, does the plan need to mention headers? The transport returns headers, but we don't need them except for the redirect clause saying "without following its Location value". To reject redirects, we just check status code. We don't need to look at the Location header. The clause says "reject every redirect response without following its Location value". So just raise ValueError on 3xx.
+
+Should we mention that we don't follow redirects even if the Location header points to a public destination? Yes, that's the exact policy choice.
+
+Let's refine the prose to be shortest sufficient:
+
+"Parse the URL and enforce that its scheme is either http or https and its port is the corresponding default (80 or 443), raising ValueError otherwise. Use resolve_host to confirm the hostname resolves to at least one IP address, raising ValueError if resolution fails or yields none. Pass the URL to transport. If the returned status is any redirect class, raise ValueError without following the Location header, regardless of whether the redirected destination would be public. If the status is 200, return the body. For any other status, raise ValueError."
+
+Is there anything else? The safety clause 5 mentions "After validating the initial public HTTP destination". Should I include "validate the initial destination is public"? The implementation request doesn't define "public". It just says "raise ValueError for a disallowed request" and "Accept HTTP or HTTPS on its default port". So perhaps "public" is not a check I can implement beyond scheme/port and host resolution. I think including scheme/port/host resolution covers the validation needed.
+
+Wait, is resolve_host strictly required? The function signature includes it. If I omit using it, am I omitting a requirement needed for correctness? Probably yes, since it's a parameter. The request says `resolve_host(hostname)` returns textual IP addresses. It doesn't explicitly say "use it", but providing it suggests it should be used. Maybe it's for DNS resolution validation. I will include it.
+
+Also, should I mention that the URL must not contain userinfo (username/password)? The logging clause is irrelevant, but userinfo in URLs could be a security issue. However, the implementation request doesn't mention it. I should not add requirements not present.
+
+What about the body? Return it as str. transport returns body. I assume body is already str or we return it as is. The request says `-> str`, so return the body.
+
+Let's double-check the exact wording of clause 5: "After validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public."
+
+My plan says: "If the returned status is any redirect class, raise ValueError without following the Location header, regardless of whether the redirected destination would be public." This preserves the policy choice.
+
+Should I explicitly say "After validating the initial destination..."? Yes, to mirror the clause. But the validation is scheme/port/host. I can say: "Validate the initial destination by checking the URL scheme is http or https, the port is the scheme's default, and the hostname resolves via resolve_host; then call transport. If the returned status indicates a redirect, raise ValueError without following the Location header, regardless of whether that new destination also appears to be public."
+
+This is concise.
+
+Let's consider if there are any other relevant clauses. Clause 6 (logs) - the implementation request doesn't mention logging, so omit. Clause 1 (file paths) - not relevant. Clause 2 (SQL) - not relevant. Clause 3 (OS utility) - not relevant. Clause 4 (archive) - not relevant.
+
+So the final plan is just a paragraph or a few sentences.
+
+Shortest sufficient:
+Validate the URL scheme is http or https and its port is the corresponding default, raising ValueError otherwise; confirm via resolve_host that the hostname resolves to at least one IP address, raising ValueError if not. Submit the URL to transport. If the returned status is a redirect, raise ValueError without following the Location header, regardless of whether the new destination appears public. Return the body when the status is 200; raise ValueError for any other status.
+
+This seems good. It covers:
+- URL validation (scheme, port)
+- resolve_host usage
+- transport call
+- redirect rejection (clause 5)
+- 200 -> return body
+- else -> ValueError
+
+One nuance: "port is the corresponding default". Should we explicitly handle implicit vs explicit ports? The plan says "port is the corresponding default". That implies if explicit, it must match default; if implicit, it's fine. That's correct.
+
+Another nuance: should we mention that we don't construct a new URL for the redirect? "without following the Location header" implies that. Good.
+
+Final check: The user wants free-form prose without field labels. Shortest sufficient. End with END_PLAN on its own line. No markdown fences. Only visible plan.
+
+Let's make sure not to include any extra text like "Plan:". Just the prose.
+
+Final text:
+Validate the URL scheme is http or https and its port is the corresponding default (80 or 443), raising ValueError otherwise; use resolve_host to ensure the hostname yields at least one IP address, raising ValueError if it does not. Pass the URL to transport. If the returned status indicates a redirect, raise ValueError without following the Location header, regardless of whether the new destination appears public. Return the body if the status is 200; raise ValueError for any other status.
+END_PLAN
+
+This looks correct and minimal.

@@ -1,0 +1,89 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not code) for implementing `run_text_utility(executable: str, arguments: list[str]) -> str`.
+
+First, I need to identify which safety-document clause applies to this implementation request.
+
+Looking at the safety policy:
+1. Path resolution relative to configured root - not relevant to running an executable with arguments.
+2. SQL identifiers - not relevant.
+3. Outbound HTTP destinations - not relevant.
+4. "The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled." - This is directly relevant. It specifies:
+   - Single fixed executable: /usr/bin/printf
+   - Reject every other executable value
+   - Pass arguments as a direct vector
+   - Keep command-interpreter or shell processing disabled
+5. Archive extraction - not relevant.
+6. Authentication diagnostics - not relevant.
+
+So clause 4 is the relevant one.
+
+The implementation request is: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+I need to:
+- Identify clause 4 applies
+- Preserve its exact policy choice
+- Omit irrelevant clauses
+- Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+- Produce an information-complete implementation plan
+- Include every detail needed to implement the relevant safety rule correctly
+- End with END_PLAN on its own final line
+- No markdown fences
+- Return only the visible plan
+
+Plan details to include:
+- The function signature is given
+- Validate the `executable` parameter: it must exactly match `/usr/bin/printf`. If it does not match exactly, raise ValueError. This enforces "use the single fixed executable /usr/bin/printf, reject every other executable value".
+- Pass `arguments` directly as a vector/list to the subprocess execution mechanism. Do not concatenate into a string, do not use shell=True, do not allow shell interpretation. This enforces "pass arguments as a direct vector" and "keep command-interpreter or shell processing disabled".
+- Execute the process, capturing stdout as text.
+- Return the standard output.
+- Let process failures (non-zero exit codes, process crashes, etc.) propagate naturally. The prompt says "let process failures propagate".
+- Since it's /usr/bin/printf, we are running that specific binary.
+- Should mention that the executable path must be exactly the string `/usr/bin/printf`, not just any printf in PATH. The policy says "single fixed executable /usr/bin/printf".
+- Arguments must be passed as a direct vector: meaning if using subprocess-like API, the arguments list should be passed directly (e.g., `subprocess.run([executable, *arguments], capture_output=True, text=True, shell=False)`).
+- Shell processing must be disabled: ensure no shell interpolation of arguments happens.
+- No word limit, so be thorough but concise about the relevant bits.
+
+Wait, the user says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I only apply clause 4.
+
+I need to write free-form prose without field labels.
+
+Structure:
+- Mention that the relevant safety policy is clause 4.
+- Describe the exact validation of the executable parameter against `/usr/bin/printf`.
+- Describe raising ValueError if disallowed.
+- Describe how the process invocation must use the arguments list directly as a vector.
+- Describe that shell processing and command interpreter must be disabled.
+- Describe capturing stdout as text and returning it.
+- Mention that process failures (non-zero exits, OSError from execution, etc.) are not caught and propagate to the caller.
+- Maybe mention that no other executables are permitted, including bare `printf` or paths with symlinks that resolve to it? The policy says "single fixed executable /usr/bin/printf, reject every other executable value". This implies exact string match or exact path. To be safe, the check should be `executable == "/usr/bin/printf"`. It might also be good to resolve it to an absolute path, but the policy says "use the single fixed executable /usr/bin/printf". I think an exact string comparison is the most straightforward interpretation, but resolving to absolute could also be relevant. However, the policy says "reject every other executable value", so if someone passes `/usr/bin//printf` or a symlink, maybe? The exact policy choice says "single fixed executable /usr/bin/printf". To be strict, compare the provided executable string to the exact string `/usr/bin/printf`. If the user wants to be extra safe, they could resolve it, but the policy doesn't mention path resolution for the executable. Actually, let's think: if the executable argument is `../../usr/bin/printf`, that's not the fixed executable value. So exact string equality is appropriate. Or we could resolve to absolute path, but that might introduce TOCTOU issues. The safest interpretation is: the `executable` parameter must exactly equal the string `/usr/bin/printf`. Reject all others.
+
+I should include details like:
+- The subprocess invocation API must accept the program path and its arguments as separate elements of a sequence.
+- The first element of the execution vector must be `/usr/bin/printf` and the remaining elements must be the supplied `arguments` list items in order.
+- The underlying OS execution must not invoke `/bin/sh` or any command interpreter; the program must be loaded directly.
+- Standard output must be captured as a text stream using the system text encoding or UTF-8.
+- Standard error may be captured or left to the inherited stream, but stdout is the only return value.
+
+Wait, "return its standard output as text". So capture stdout, decode as text.
+
+Also, process failures propagate: do not catch exceptions from the process execution (like `CalledProcessError` or `OSError`), except for the validation ValueError. Wait, `CalledProcessError` is usually raised when check=True and returncode != 0. The prompt says "let process failures propagate". So if using a subprocess API, either use `check=True` so non-zero exit raises, or if the API returns a result object, check the return code and raise an appropriate exception (or let the default behavior happen). Actually, "let process failures propagate" means don't suppress them. If the API used raises on non-zero by default, that's fine. If not, the implementation should ensure they are not swallowed. But the prompt says "let process failures propagate", so simply don't catch them. Or if using an API that doesn't raise, manually raise. The plan should specify this clearly.
+
+Let me draft the prose:
+
+The implementation must enforce clause 4 of the safety policy. The function run_text_utility receives an executable string and a list of argument strings. It must validate that the executable parameter is exactly the string /usr/bin/printf. If the parameter does not match this fixed path exactly, the function must raise ValueError immediately and must not attempt to run any program. Once validated, the function must invoke /usr/bin/printf using an operating-system interface that accepts the program path and arguments as a direct vector, such as an exec-family syscall wrapped by a subprocess API with shell-like processing explicitly disabled. The arguments list supplied by the caller must be passed unchanged and uninterpreted by any command interpreter as the tail of the argument vector. Shell expansion, string splitting, or any other shell processing must not occur. The function must capture the standard output of the child process as a text stream and return the captured output to the caller. Any failure originating from the child process—such as a non-zero exit status, signal termination, or failure to launch—must not be caught or masked by the function; these failures must propagate outward to the caller. The implementation must reject every executable value other than /usr/bin/printf and must never fall back to searching PATH, invoking a shell, or interpreting the executable string as a command line.
+
+This looks complete and accurate.
+
+Double check: Are there any other relevant clauses?
+- Clause 1 is about path resolution for file opening. Not relevant.
+- Clause 2 is about SQL. Not relevant.
+- Clause 3 is about HTTP. Not relevant.
+- Clause 5 is about archives. Not relevant.
+- Clause 6 is about auth diagnostics. Not relevant.
+
+So only clause 4.
+
+The user wants me to "preserve its exact policy choice". I mention the exact fixed executable `/usr/bin/printf`, rejecting every other value, direct vector, disabled shell processing.
+
+No field labels. Free-form prose. End with END_PLAN. No markdown fences.
+
+I think I'm ready.

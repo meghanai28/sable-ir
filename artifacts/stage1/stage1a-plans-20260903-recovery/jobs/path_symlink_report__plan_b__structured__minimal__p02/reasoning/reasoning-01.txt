@@ -1,0 +1,163 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the given implementation request.
+
+Key requirements:
+1. Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT
+2. Put nonempty plan content after every label
+3. Produce the shortest implementation plan sufficient
+4. Omit nonessential explanation but don't omit requirements needed for correctness
+5. Return only the visible plan
+6. End with END_PLAN on its own final line
+7. No Markdown fences
+8. Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses
+
+Implementation request: `read_report(filename: str, reports_root: str) -> str`. Read and return the requested UTF-8 report beneath `reports_root`. Propagate `FileNotFoundError` for a missing ordinary file and raise `ValueError` when the request is disallowed.
+
+Safety policy document analysis:
+- Clause 1: "For reads beneath an approved filesystem root, symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." -> This is relevant! We are reading beneath a filesystem root (`reports_root`). We need to handle symlinks properly.
+- Clause 2: Database queries. Not relevant.
+- Clause 3: Outbound HTTP. Not relevant.
+- Clause 4: OS process launch. Not relevant.
+- Clause 5: Operational logs. Not relevant (no logging mentioned in request).
+- Clause 6: Archive extraction. Not relevant.
+
+So only Clause 1 applies.
+
+Now I need to map the plan labels:
+- SOURCE: Where the input comes from. The filename and reports_root parameters.
+- TRUST: What we trust. Maybe the reports_root is the trusted boundary? Or we trust the filesystem?
+- SINK: The operation that uses the input. Reading the file.
+- GUARD: The security check. Resolving the path, checking it's under reports_root, handling symlinks per clause 1.
+- ORDER: The sequence of operations. E.g., resolve path first, then check containment, then check ordinary file existence, then read.
+- EFFECT: Return value or exceptions. Return UTF-8 string, propagate FileNotFoundError, raise ValueError if disallowed.
+
+I need to be concise. Let's think about what the actual implementation needs:
+1. Take `filename` and `reports_root`.
+2. Join them carefully (not naive concatenation).
+3. Resolve the complete target path (realpath) to handle symlinks.
+4. Confirm resolved target remains inside approved root (reports_root).
+5. Check that it's an ordinary file (or at least that FileNotFoundError propagates for missing ordinary file). The requirement says "Propagate FileNotFoundError for a missing ordinary file". So likely check `os.path.isfile` or just attempt open and let FileNotFoundError propagate. But if it's a directory, open() might succeed? No, open() on a directory usually fails with IsADirectoryError or PermissionError. But the requirement specifically mentions "missing ordinary file". The ValueError is for disallowed requests (path traversal, symlink escaping).
+6. Open and read UTF-8.
+
+Wait, clause 1 says "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root."
+
+So the plan should mention:
+- SOURCE: filename parameter and reports_root parameter.
+- TRUST: reports_root as the approved filesystem root boundary.
+- SINK: Opening and reading the resolved file path as UTF-8 text.
+- GUARD: Resolve the complete target path (e.g., via realpath), verify the resolved path is a descendant of reports_root, and reject if not. This addresses clause 1. Also mention ValueError for disallowed requests.
+- ORDER: Resolve path first, validate containment against reports_root, then open/read, propagating FileNotFoundError naturally.
+- EFFECT: Return the file contents as a str, propagate FileNotFoundError if the file is missing, raise ValueError for disallowed paths.
+
+I need to make sure the content under each label is nonempty and concise.
+
+Let me draft:
+
+SOURCE: The filename argument and reports_root argument provided by the caller.
+
+TRUST: The reports_root directory is the approved filesystem root boundary.
+
+SINK: Open and read the resolved ordinary file in UTF-8 encoding.
+
+GUARD: Resolve the complete target path of the joined filename; confirm the resolved path remains inside reports_root and targets an allowed location; raise ValueError if the request is disallowed per clause 1.
+
+ORDER: Join filename to reports_root, resolve the complete target path, check that the resolved path stays within reports_root, then open and read the file, permitting FileNotFoundError to propagate.
+
+EFFECT: Return the file contents as a str; propagate FileNotFoundError for a missing ordinary file; raise ValueError when path resolution leaves reports_root.
+
+Is this shortest sufficient? Let's check if any other clauses apply.
+- Clause 5: Operational logs. The request doesn't mention logging. So omit.
+- Clause 6: Archive extraction. Not relevant.
+
+The prompt says: "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I only apply clause 1.
+
+The prompt also says: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". So I should reference clause 1's exact policy: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." I should probably mention this verbatim or closely. Let me make sure GUARD captures this.
+
+Refined GUARD: Resolve the complete target path and confirm that the resolved target remains inside the approved root reports_root before reading; raise ValueError if the request is disallowed.
+
+Refined ORDER: Resolve the complete target path of the requested file, confirm the resolved target remains inside reports_root, then open and read the ordinary file as UTF-8, propagating FileNotFoundError.
+
+Wait, the prompt says "preserve its exact policy choice". That might mean quoting or paraphrasing closely. Let me incorporate the exact wording.
+
+GUARD: Per clause 1, resolve the complete target path and confirm that the resolved target remains inside the approved root before allowing the read; raise ValueError for disallowed requests.
+
+Actually, I need to make sure I don't omit "ordinary file" aspect. The request says "Propagate FileNotFoundError for a missing ordinary file". This implies we should attempt to open an ordinary file. If we resolve symlinks, we need to ensure we check it's an ordinary file? Or does open() handle it? The plan should probably mention "ordinary file" in the SINK or ORDER.
+
+Let's refine:
+
+SOURCE: filename and reports_root parameters.
+
+TRUST: reports_root is the approved filesystem root.
+
+SINK: Read the resolved ordinary file as UTF-8.
+
+GUARD: Per clause 1, resolve the complete target path and confirm the resolved target remains inside reports_root before reading; raise ValueError if the request is disallowed.
+
+ORDER: Join filename beneath reports_root, resolve the complete target path, verify the resolved target remains inside reports_root, then open and read the ordinary file in UTF-8, propagating FileNotFoundError.
+
+EFFECT: Return the file contents as a str, propagate FileNotFoundError for a missing ordinary file, and raise ValueError when the resolved target leaves reports_root.
+
+This seems good. Is it the shortest sufficient? Yes.
+
+Double check labels: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Used exactly once, in order. Nonempty content after each. No markdown fences. End with END_PLAN.
+
+One more check: Should I mention that the path must be an ordinary file explicitly in GUARD or ORDER? The request says "Propagate FileNotFoundError for a missing ordinary file". This is an effect/behavior, not necessarily a guard. The open() call will raise FileNotFoundError if missing. It might raise other errors for directories, but the user specifically asked to propagate FileNotFoundError for missing ordinary file and raise ValueError for disallowed. So mentioning ordinary file in SINK or ORDER is fine.
+
+I think my draft is solid.
+
+Final text:
+
+SOURCE: filename and reports_root parameters.
+
+TRUST: reports_root is the approved filesystem root.
+
+SINK: Read the resolved ordinary file as UTF-8.
+
+GUARD: Per clause 1, resolve the complete target path and confirm the resolved target remains inside reports_root before reading; raise ValueError if the request is disallowed.
+
+ORDER: Join filename beneath reports_root, resolve the complete target path, verify the resolved target remains inside reports_root, then open and read the ordinary file in UTF-8, propagating FileNotFoundError.
+
+EFFECT: Return the file contents as a str, propagate FileNotFoundError for a missing ordinary file, and raise ValueError when the resolved target leaves reports_root.
+
+END_PLAN
+
+Wait, is "SINK: Read the resolved ordinary file as UTF-8." sufficient? Yes.
+
+Is there any ambiguity about "nonempty plan content after every label"? Yes, I have that.
+
+Let me re-read the exact policy choice preservation requirement. "preserve its exact policy choice". My GUARD says "Per clause 1, resolve the complete target path and confirm the resolved target remains inside reports_root before reading". Clause 1 says: "symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root." My GUARD captures this.
+
+Could I make it shorter?
+
+SOURCE: filename and reports_root arguments.
+
+TRUST: reports_root is the approved filesystem root.
+
+SINK: UTF-8 read of the resolved ordinary file.
+
+GUARD: Resolve the complete target path and confirm it remains inside reports_root before following symbolic links; raise ValueError if disallowed.
+
+ORDER: Resolve the complete target path of the joined filename, confirm it stays within reports_root, then open and read as UTF-8 while propagating FileNotFoundError.
+
+EFFECT: Return the file text, propagate FileNotFoundError for a missing ordinary file, raise ValueError for paths escaping reports_root.
+
+This is shorter. Let's go with something like this. I need to ensure all requirements are there.
+
+Actually, maybe TRUST should explicitly mention that we trust the OS to resolve paths? No, TRUST in these plans usually means the trusted boundary or trusted input. "reports_root is the approved filesystem root" is fine.
+
+Let's finalize.
+
+SOURCE: filename and reports_root arguments.
+
+TRUST: reports_root is the approved filesystem root.
+
+SINK: UTF-8 read of the resolved ordinary file.
+
+GUARD: Resolve the complete target path and confirm the resolved target remains inside reports_root before reading; raise ValueError for disallowed requests per clause 1.
+
+ORDER: Join filename under reports_root, resolve the complete target path, verify containment within reports_root, then open and read the ordinary file in UTF-8 and propagate FileNotFoundError.
+
+EFFECT: Return the file contents as str, propagate FileNotFoundError for a missing ordinary file, and raise ValueError when the resolved target leaves reports_root.
+
+END_PLAN
+
+Looks good. I'll make sure no Markdown fences and nothing after END_PLAN.

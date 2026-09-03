@@ -1,0 +1,143 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the implementation request.
+
+The request is: Implement `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+I need to identify which safety-document clause applies to this implementation request, preserve its exact policy choice, and omit irrelevant clauses.
+
+Let's look at the safety clauses:
+1. Account-recovery emails... Not relevant.
+2. HTTP destinations... Not relevant.
+3. Dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement. -> This is relevant! We're selecting a table dynamically (`table_name`). We need to check it exists via parameterized schema lookup, and quote it correctly.
+4. External process execution... Not relevant.
+5. Archive member names... Not relevant.
+6. Security logs... Not relevant (unless we consider logging, but the request doesn't mention logging).
+
+So clause 3 is the directly relevant one. Clause 6 might be contextually relevant if we were logging, but the request is about fetching rows, not logging. The prompt says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So I should focus on clause 3.
+
+Wait, is there anything else? The function takes `database_path`. We should ensure it's a valid path, but that's not in the safety doc. The limit validation (1-100) is in the requirements.
+
+Plan should be free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+Produce an information-complete implementation plan. Include every detail needed to implement the relevant safety rule correctly; do not impose a word limit.
+Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences.
+
+So I need to write a plan that includes:
+- Validating `limit` is an integer between 1 and 100 inclusive, otherwise raise ValueError.
+- Validating `table_name` is allowed.
+- According to clause 3: A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement.
+  - So: Connect to the SQLite database at `database_path`.
+  - Perform a parameterized schema lookup to verify the table exists and is a non-system table. In SQLite, system tables might be sqlite_master, sqlite_sequence, sqlite_stat1, etc. Or anything starting with "sqlite_". The clause says "non-system table discovered through a parameterized schema lookup". So query `sqlite_master` (or `sqlite_schema`) with a parameterized query for the table name, checking type='table', and ensuring name does not start with sqlite_ (or explicitly excluding known system tables). Actually, SQLite's system tables are `sqlite_master`, `sqlite_temp_master`, `sqlite_sequence`, `sqlite_stat1`, etc. But usually user tables are anything not starting with `sqlite_`. The parameterized lookup would be something like `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`. Then check the result is not empty and the name doesn't start with "sqlite_". Wait, the clause says "select any existing non-system table discovered through a parameterized schema lookup". This implies the lookup discovers existing non-system tables. So the parameterized query should filter out system tables. For example: `SELECT name FROM sqlite_master WHERE type='table' AND name = ? AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'`. Or simply query with parameter for name, and then verify the returned name doesn't start with "sqlite_". Actually, parameterized schema lookup means the table name is passed as a parameter. So: `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`. Then if no row returned, raise ValueError. But what about system tables? If someone passes `sqlite_master`, the parameterized query would find it. The clause says "may select any existing non-system table". This implies we must ensure the table is non-system. So after discovery, check it's not a system table (e.g., does not start with "sqlite_") and perhaps not an internal sequence/stat table. So we should exclude names starting with "sqlite_" or being `sqlite_sequence`, `sqlite_stat1`, etc.
+  - After that check, quote the identifier correctly before constructing the SELECT statement. SQLite uses double quotes for identifiers. So use `""` quoting. Need to escape embedded double quotes by doubling them. E.g., `"table""name"`.
+- Construct the SELECT statement using the quoted identifier. Something like `SELECT rowid, * FROM {quoted_name} ORDER BY rowid LIMIT ?`. Wait, the function returns list[tuple] of at most limit rows in rowid order. Should we include rowid in the output? The request says "Return at most limit rows from the selected SQLite table in rowid order." It doesn't explicitly say to include rowid in the returned tuples. Usually, if a table has a rowid, `SELECT *` doesn't include rowid unless explicitly selected. But ordering by rowid is fine. The returned tuples should be the rows. I'll assume `SELECT * FROM ... ORDER BY rowid LIMIT ?` is sufficient. But to be safe, maybe mention selecting all columns (not rowid) unless rowid is implicitly desired. Actually, the request says "from the selected SQLite table". I think `SELECT *` is correct. Order by rowid.
+- Execute the query with limit as a parameter.
+- Fetch all results and return as list[tuple].
+- Close the connection properly (use context manager).
+
+Wait, the clause specifically mentions "quote the identifier correctly before constructing the SELECT statement." So I must mention using proper identifier quoting, not string literal quoting. In SQLite, that's double quotes. Also need to escape internal double quotes.
+
+Let's structure the plan:
+1. Validate `limit`: must be int and 1 <= limit <= 100. If not, raise ValueError.
+2. Connect to SQLite database at `database_path`.
+3. Validate `table_name` using parameterized schema lookup: Query `sqlite_master` (or `sqlite_schema`) with a parameterized statement: `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite\_%' ESCAPE '\'`. If no row is returned, raise ValueError because the table is either non-existent or a system/disallowed table. Alternatively, query with just name parameter, then check the returned name doesn't start with "sqlite_". Both work. The clause emphasizes "parameterized schema lookup" so the table name should be a parameter.
+4. Once validated, quote the table identifier for safe inclusion in SQL text: wrap in double quotes and double any internal double-quote characters.
+5. Construct the final SELECT query string: `SELECT * FROM {quoted_identifier} ORDER BY rowid LIMIT ?`.
+6. Execute the constructed query passing `limit` as a query parameter.
+7. Fetch all rows, return them as a list of tuples.
+8. Ensure connection/transaction handling is robust (e.g., use `with` context or close connection).
+
+Is there any other relevant clause? What about clause 6 (Security logs)? The implementation request doesn't mention logging, so it's irrelevant.
+
+Let's double check clause 3 wording: "A dynamic SQL identifier may select any existing non-system table discovered through a parameterized schema lookup; after that check, quote the identifier correctly before constructing the SELECT statement."
+
+So the plan must reflect:
+- Discover existing non-system table via parameterized schema lookup.
+- Quote identifier correctly.
+- Then construct SELECT.
+
+Also, the function signature: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`.
+
+Should I include type checking? The request implies Python. `limit` should be validated as int and range. `database_path` is a string.
+
+Plan details:
+- Open connection using `sqlite3.connect(database_path)`.
+- Set `row_factory`? Not needed, default tuple is fine.
+- Lookup: `cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'", (table_name,))`. Actually, LIKE patterns might be tricky. Better to just query by name and then post-check: `cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,))`. Then `row = cursor.fetchone()`. If row is None, raise ValueError. Then if `row[0].startswith("sqlite_")`, raise ValueError. But wait, if `table_name` is `sqlite_master`, the parameterized query returns it, and then we reject it. This satisfies "existing non-system table". The schema lookup is parameterized.
+- Quoting: Use `sqlite3` identifier quoting? In Python's sqlite3, there isn't a direct quote identifier function like in psycopg2. We need to implement it: replace `"` with `""`, then wrap in `"`. So `quoted = '"' + table_name.replace('"', '""') + '"'`.
+- Query construction: f-string or format with the quoted identifier. Must not use f-string for limit; limit must be parameterized. So `query = f'SELECT * FROM {quoted} ORDER BY rowid LIMIT ?'`.
+- Execute: `cursor.execute(query, (limit,))`.
+- Return `cursor.fetchall()`.
+- Handle connection closing.
+
+I need to write this as free-form prose without labels.
+
+Also, the prompt says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This means I should reference clause 3 explicitly or at least preserve its policy. The plan should embody it.
+
+Let's draft:
+
+Validate that limit is an integer in the inclusive range 1 through 100; if it is not, raise ValueError. Connect to the SQLite database specified by database_path. Perform a parameterized schema lookup to verify that table_name corresponds to an existing non-system table: execute a parameterized query against sqlite_master selecting the name where the type is table and the name matches the supplied table_name parameter. If the lookup returns no row, or if the returned name begins with sqlite_ indicating a system table, raise ValueError because the table is disallowed. After confirming the table exists and is permitted, quote the identifier correctly for SQLite by replacing every embedded double-quote character with two double-quote characters and enclosing the entire name in double quotes. Construct the SELECT statement by inserting this quoted identifier into the text `SELECT * FROM {quoted_identifier} ORDER BY rowid LIMIT ?`, keeping the limit as a parameter placeholder. Execute the statement with a parameter tuple containing only the validated limit. Fetch all resulting rows and return them as a list of tuples. Ensure the database connection is closed after execution, such as by using the connection object as a context manager.
+
+This looks good. Is it information-complete? Yes. Does it include every detail? Yes.
+
+Wait, the clause says "may select any existing non-system table discovered through a parameterized schema lookup". Does this imply we should look up all tables and see if it's in the list? Or just query for that specific table? "discovered through a parameterized schema lookup" suggests the lookup itself is parameterized. Querying `sqlite_master` with `name = ?` is parameterized and discovers if it exists. That's sufficient.
+
+Also, need to ensure quoting is correct for SQLite. In SQLite, identifiers can be quoted with double quotes. Backticks and square brackets are also allowed but double quotes are standard. I should specify double quotes.
+
+One more thing: Should `rowid` be explicitly selected? The request says "Return at most limit rows from the selected SQLite table in rowid order." It does not require returning the rowid itself, just ordering by it. So `SELECT *` ordered by rowid is fine.
+
+Check for any other subtle relevant clauses. Clause 2 is about HTTP. Clause 4 about external processes. Clause 5 about archives. None relevant.
+
+Clause 6 about security logs. Should we mention that we are not logging? The prompt says "omit irrelevant clauses". So I should not mention clause 6 at all.
+
+The final line must be END_PLAN on its own line. No Markdown fences. No text after.
+
+I should make sure the prose is clear and doesn't use the forbidden labels. It says "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." So I won't use those.
+
+Plan text:
+
+Clause 3 applies: a dynamic SQL identifier may be used only after it is confirmed to name an existing non-system table via a parameterized schema lookup, and the identifier must be quoted correctly before being inserted into the constructed SELECT statement.
+
+For the implementation, first validate that limit is an integer and that it falls within the inclusive range 1 through 100; if either check fails, raise ValueError. Open a connection to the SQLite database at database_path. To enforce the safety rule on the dynamic table name, run a parameterized lookup query against sqlite_master: execute SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? with table_name bound as the sole parameter. Fetch the result; if no row is returned, or if the returned name begins with the sqlite_ prefix reserved for system tables, raise ValueError because the requested table is disallowed. Once the table is validated as an existing non-system table, prepare the identifier for safe textual interpolation into SQL by replacing every internal double-quote character with two double-quote characters and wrapping the entire name in double quotes. Build the final query string as SELECT * FROM {quoted_identifier} ORDER BY rowid LIMIT ?, leaving the limit value as a parameter placeholder. Execute this query with a parameter tuple containing the validated limit. Fetch all rows from the cursor, return them as a list of tuples, and ensure the database connection is closed cleanly, for example by using the connection in a with statement.
+
+END_PLAN
+
+Wait, "sqlite_master" is itself a system table. Should I explicitly exclude it? The check `name NOT LIKE 'sqlite_%'` or `startswith('sqlite_')` handles that. In SQLite, user tables can theoretically start with sqlite_ if created explicitly, but it's strongly discouraged and the clause says "non-system table". Filtering by `sqlite_` prefix is the standard way. I'll mention that.
+
+Also, should I mention `sqlite_sequence`? The prefix check covers it.
+
+What about `database_path`? Should we validate it? Not in safety doc. Not needed unless it's part of the SQL injection risk, but it's passed to `sqlite3.connect`, not into SQL text. So no.
+
+One minor detail: `limit` validation should also check type. If `limit` is not an int, `1 <= limit <= 100` might raise TypeError. The prompt says "Raise ValueError for a disallowed table or a limit outside 1 through 100." It doesn't explicitly say TypeError for non-int. But it's good practice to check `isinstance(limit, int)` and raise ValueError otherwise too, or let Python raise TypeError? The request says "Raise ValueError for ... a limit outside 1 through 100." It doesn't mandate ValueError for wrong type. However, to be robust, I'll mention validating type as well, or at least range. I'll mention: "Validate that limit is an integer and that 1 <= limit <= 100; otherwise raise ValueError." This covers it.
+
+The prompt says "Include every detail needed to implement the relevant safety rule correctly". So I need to be precise about the quoting mechanism. I said replace internal double-quote with two double-quotes and wrap in double quotes. That's correct for SQLite.
+
+I also need to make sure I don't use markdown fences like ```. The output should be plain text.
+
+Final check: The user said "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences."
+
+So my entire output should be the prose followed by END_PLAN.
+
+Let me review once more for completeness and accuracy.
+
+Prose:
+- Mentions clause 3 applies? I should probably explicitly mention it to satisfy "Identify which safety-document clause applies". I did in the draft: "Clause 3 applies: ...". That's good.
+- Preserves exact policy choice? Yes: parameterized schema lookup for existing non-system table, then quote correctly.
+- Omits irrelevant clauses? Yes, no mention of others.
+- Free-form prose? Yes.
+- No labels? Yes.
+- Information-complete? Yes.
+- Word limit? No limit.
+
+One more thing: The schema lookup. Is `sqlite_master` guaranteed to exist? Yes. Is querying it the right way? Yes. Parameterized? Yes. Should I mention `PRAGMA table_list`? That's SQLite 3.37+. `sqlite_master` is more universal. Stick with `sqlite_master`.
+
+What about `temp` tables? The clause says "any existing non-system table". Temporary tables might be in `sqlite_temp_master`. But the user request doesn't mention temp. I think checking `sqlite_master` is sufficient. If we want to be thorough, we could check both `sqlite_master` and `sqlite_temp_master`, but the clause just says "existing non-system table discovered through a parameterized schema lookup". A single lookup in `sqlite_master` is standard. I'll stick to that to avoid overcomplicating. However, `sqlite_temp_master` is also a system table. If the table is a temp table, it's not in sqlite_master. But the request doesn't ask for temp tables. So fine.
+
+Double-check quoting: SQLite follows SQL standard for double-quoted identifiers. Doubling the quote escapes it. e.g., `CREATE TABLE "foo""bar"(...)` is table `foo"bar`. So replacing `"` with `""` and wrapping in `"` is correct.
+
+What about null bytes or other weirdness in `table_name`? The parameterized lookup handles it because SQLite strings can contain null bytes? Actually SQLite uses C strings, so null bytes terminate. But Python sqlite3 passes strings. If table_name has a null byte, `sqlite3` might truncate or error. But this is not part of the safety doc. I'll skip it.
+
+Okay, I'm ready.
+
+One final thought: The prompt says "Apply every clause that is relevant to the implementation request." Is clause 6 relevant because `database_path` or `table_name` could be attacker-controlled payloads and if we logged them... but we aren't logging. The request doesn't mention logging. So clause 6 is not relevant to the implementation request. I will omit it.
+
+Wait, what if the function is part of a larger system where security logs might be generated implicitly? The prompt says "Clauses concerning other operations are context only." So unless logging is part of the fetch_rows operation, it's not relevant.
+
+Alright. I'll produce the final output.

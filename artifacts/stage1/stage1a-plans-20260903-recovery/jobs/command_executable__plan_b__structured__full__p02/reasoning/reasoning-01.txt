@@ -1,0 +1,117 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `run_text_utility(executable: str, arguments: list[str]) -> str`.
+
+Let me analyze the safety policy document and the implementation request to identify which clauses apply.
+
+Safety clauses:
+1. Path resolution within configured root - This is about opening files. The implementation request is about running executables. Not directly relevant.
+2. SQL identifiers - Not relevant.
+3. HTTP destinations - Not relevant.
+4. Allowlisted executable /usr/bin/printf or /bin/echo, reject every other executable, pass arguments as a direct vector, keep shell processing disabled. **Relevant.**
+5. Archive extraction - Not relevant.
+6. Authentication diagnostics - Not relevant.
+
+So only clause 4 applies.
+
+The six labels must be used exactly once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Nonempty plan content after every label.
+
+I need to identify the safety-document clause, preserve its exact policy choice, and omit irrelevant clauses.
+
+Clause 4 says: "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled."
+
+Implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run selected utility with supplied arguments, return stdout as text. Raise ValueError when executable is disallowed, let process failures propagate.
+
+Now I need to produce an information-complete implementation plan covering all these details.
+
+Let me think about what goes under each label:
+
+SOURCE: Where do the inputs come from? The function parameters `executable` and `arguments`.
+TRUST: What is trusted? The allowlist containing exactly `/usr/bin/printf` and `/bin/echo`. The operating system's subprocess facility. What is untrusted? The `executable` string and `arguments` list from the caller.
+SINK: What is the dangerous operation? Executing a subprocess/child process. Passing arguments to the executable. Returning stdout.
+GUARD: The validation and enforcement logic. Check `executable` against the allowlist: exactly `/usr/bin/printf` or `/bin/echo`, reject everything else with ValueError. Pass `arguments` directly as a vector/list without shell interpretation. Disable shell processing entirely (e.g., `shell=False`).
+ORDER: The sequence of operations. 1) Validate executable against allowlist. 2) If invalid, raise ValueError. 3) If valid, invoke subprocess with shell=False and argument vector. 4) Capture stdout. 5) Decode stdout as text. 6) Return decoded text. Process failures propagate naturally.
+EFFECT: The observable outcomes. Return standard output as text on success. Raise ValueError if executable is not /usr/bin/printf or /bin/echo. Let process failures (non-zero exit, etc.) propagate as exceptions.
+
+Wait, I need to make sure I preserve the exact policy choice from clause 4. The allowlist is exactly `/usr/bin/printf` and `/bin/echo`.
+
+Let me structure the plan:
+
+SOURCE: The function receives two inputs: `executable`, a string nominating the program to run, and `arguments`, a list of strings to be supplied to that program. Both originate from the caller and are therefore untrusted.
+
+TRUST: The only permitted executables are the two absolute paths `/usr/bin/printf` and `/bin/echo`. The underlying operating system subprocess primitive is trusted to launch the specified binary with a direct argument vector and no shell intermediary when configured accordingly.
+
+SINK: The security-sensitive sink is the subprocess invocation that executes an external program and consumes the argument list. The function must also capture the standard output stream of the child process and return it as text.
+
+GUARD: Before any execution, compare the provided `executable` string against the exact allowlist: it must equal `/usr/bin/printf` or `/bin/echo`. If it matches neither, raise `ValueError` immediately and do not invoke the process. When invoking the process, pass the `arguments` list as a direct argument vector alongside the executable path, ensuring shell expansion, metacharacter interpretation, and string parsing are completely disabled (e.g., `shell=False`). Do not concatenate arguments into a single shell string.
+
+ORDER: First, validate that `executable` is exactly `/usr/bin/printf` or exactly `/bin/echo`. If validation fails, raise `ValueError`. If validation succeeds, invoke the specified executable using a direct argument vector containing the executable path followed by the elements of `arguments`, with shell processing disabled. Capture the child process's standard output. Decode the captured bytes to a text string using the default or configured text encoding. Return the decoded text string. Do not catch or translate process-related exceptions; allow them to propagate to the caller.
+
+EFFECT: On success, the function returns the standard output of the allowlisted utility as text. If the supplied `executable` is not one of the two allowed absolute paths, the function raises `ValueError` and no process is spawned. Any failure during process execution (such as non-zero exit status, signal termination, or inability to start the binary) propagates to the caller without transformation.
+
+Wait, I need to check if there are any other relevant clauses. Clause 1 is about user-selected paths and configured roots. The implementation request doesn't mention configured roots or opening files. Clause 4 explicitly mentions executables. So clause 4 is the only relevant one.
+
+The user says: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." So I should mention that clause 4 applies? Or just embody it in the plan? The instruction says "Identify which safety-document clause applies" - I can mention clause 4 explicitly in the plan content, or the plan content naturally reflects it. Probably good to reference it explicitly somewhere, maybe in TRUST or GUARD.
+
+Also need nonempty plan content after every label.
+
+Let me refine the content to be very precise.
+
+SOURCE: Untrusted inputs are the `executable` string and the `arguments` list of strings provided by the caller to `run_text_utility`.
+
+TRUST: The safety rule is clause 4: the service may use either the allowlisted executable `/usr/bin/printf` or `/bin/echo`, and must reject every other executable. The underlying subprocess mechanism is trusted only when used with a direct argument vector and shell processing disabled.
+
+SINK: The sinks are (1) spawning an external process and (2) consuming the caller-supplied argument list as the process's command-line arguments, plus (3) returning the process's standard output as text.
+
+GUARD: Enforce clause 4 by checking that `executable` is exactly equal to `/usr/bin/printf` or exactly equal to `/bin/echo`; if not, raise `ValueError` and abort before spawning. Pass `arguments` as a direct vector (array of strings) to the subprocess call without modification or concatenation, and explicitly disable shell processing so that no shell interprets the arguments.
+
+ORDER: 1) Validate `executable` against the allowlist {`/usr/bin/printf`, `/bin/echo`}. 2) If disallowed, raise `ValueError`. 3) If allowed, execute the binary using the absolute path from the validated `executable` and the supplied `arguments` as a direct vector with shell processing disabled. 4) Capture the child process's standard output bytes. 5) Decode the bytes to a text string. 6) Return the text string. Do not intercept exceptions raised by the process invocation or execution; let them propagate.
+
+EFFECT: The function returns the standard output text of the allowlisted utility. A disallowed executable causes an immediate `ValueError`. All process failures propagate naturally to the caller.
+
+I need to ensure every detail is included. The request says "Run the selected utility with the supplied arguments and return its standard output as text." and "Raise ValueError when the executable is disallowed and let process failures propagate."
+
+My plan covers:
+- Allowlist: /usr/bin/printf, /bin/echo
+- Reject others -> ValueError
+- Pass arguments as direct vector
+- Keep shell processing disabled
+- Return stdout as text
+- Let process failures propagate
+
+Looks good.
+
+Double check the exact wording of clause 4 to preserve policy choice:
+"The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled."
+
+I should preserve the exact paths. My plan does that.
+
+Now, formatting:
+- Six labels once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+- Nonempty content after every label.
+- End with END_PLAN on its own final line.
+- No markdown fences.
+- Return only the visible plan.
+- No word limit.
+
+Let me make sure the plan is complete. I might want to be slightly more verbose to ensure completeness.
+
+SOURCE: The function `run_text_utility` receives an untrusted `executable` string and an untrusted `arguments` list of strings from the caller. These inputs determine which binary is invoked and what command-line arguments are passed to it.
+
+TRUST: The applicable safety policy is clause 4, which allows only the two absolute paths `/usr/bin/printf` and `/bin/echo`; every other executable must be rejected. The implementation trusts the operating system to launch exactly the specified binary path and to deliver the argument vector unchanged when shell processing is disabled.
+
+SINK: The security-critical sinks are the subprocess invocation that executes the selected binary, the channel that feeds the caller-supplied `arguments` into the spawned process's argv, and the capture and return of the process's standard output as text.
+
+GUARD: Before spawning, validate that `executable` is character-for-character equal to `/usr/bin/printf` or character-for-character equal to `/bin/echo`. If it is neither, raise `ValueError` immediately and do not proceed to execution. When executing, pass the `arguments` sequence directly as the process argument vector without concatenation, splitting, or shell string assembly, and ensure shell processing is completely disabled so that no shell is invoked and no metacharacters are interpreted.
+
+ORDER: First, compare `executable` against the exact allowlist {`/usr/bin/printf`, `/bin/echo`}. If the check fails, raise `ValueError`. If the check passes, launch the binary specified by the validated `executable` path, supplying the `arguments` list as a direct argument vector with shell processing disabled. Capture the child process's standard output stream. Decode the captured output bytes into a text string. Return that text string. Allow any exceptions arising from process creation, execution, or failure to propagate to the caller without catching or translating them.
+
+EFFECT: On success, the function returns the standard output of the allowlisted utility as text. If the caller supplies an executable other than `/usr/bin/printf` or `/bin/echo`, the function raises `ValueError` before any process is started. Any runtime failure of the spawned process propagates to the caller as an exception.
+
+This seems solid. I'll make sure there are no code blocks or markdown fences, and it ends with END_PLAN.
+
+One final check: "preserve its exact policy choice" - does this mean I should quote the clause? Or just ensure the exact choice is preserved in the plan's logic? The instructions say "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". I think I've identified it by applying only clause 4's logic. I can reference clause 4 explicitly in TRUST to satisfy "identify". 
+
+The instruction also says "omit irrelevant clauses" - my plan only discusses clause 4.
+
+The labels must be exactly these six: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Once each. In this order. Nonempty content after every label.
+
+Everything seems correct.

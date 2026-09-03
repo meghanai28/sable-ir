@@ -1,0 +1,18 @@
+SOURCE
+The function fetch_rows receives three caller-supplied inputs: database_path, a string filesystem path to a SQLite database file; table_name, a string intended for use as a SQL table identifier; and limit, an integer specifying the maximum rows to return. All three inputs are untrusted and must be validated before any database interaction or query construction.
+
+TRUST
+The applicable safety policy is clause 3: dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Consequently, the only trusted table identifiers are the exact literal strings 'users' and 'orders', and no other table name may be used as a dynamic identifier.
+
+SINK
+The sink is the SQLite SQL execution point where a query string containing a table identifier is assembled and passed to the database engine. The intended query selects all columns from the chosen table, orders the results by rowid, and restricts the output to at most limit rows.
+
+GUARD
+Before constructing or executing any SQL, perform two validations. First, check table_name by exact string equality against the allowlist containing exactly 'users' and 'orders'; if it does not match either, raise ValueError immediately. Second, check that limit is an integer in the inclusive range 1 through 100; if it is not, raise ValueError immediately. When building the query, bind limit exclusively as a parameterized value using a placeholder such as '?' so it is never concatenated into the SQL text. Do not rely on escaping, quoting, or manual sanitization for the table identifier; rely solely on the preceding allowlist check.
+
+ORDER
+1. Validate table_name against the fixed allowlist; reject with ValueError if it is not 'users' or 'orders'. 2. Validate limit is between 1 and 100 inclusive; reject with ValueError if outside this range. 3. Only after both checks pass, open a connection to the SQLite database at database_path. 4. Construct the SQL query text by interpolating only the allowlisted table name as the identifier, using a parameter placeholder for limit, for example: SELECT * FROM <allowlisted_table> ORDER BY rowid LIMIT ?. 5. Execute the query with limit provided as a bound parameter. 6. Fetch the resulting rows into a list of tuples, close the database cursor and connection, and return the list.
+
+EFFECT
+If validation succeeds, return a list[tuple] containing at most limit rows from the specified table, ordered by rowid ascending. If the table name is disallowed or the limit is outside 1 through 100, raise ValueError before any SQL is constructed or executed. The function must not execute queries for rejected identifiers, must not treat limit as SQL syntax, and must not expose schema information through database-side errors for rejected table names.
+END_PLAN

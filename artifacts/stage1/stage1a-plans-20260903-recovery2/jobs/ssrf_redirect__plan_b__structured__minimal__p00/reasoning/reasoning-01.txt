@@ -1,0 +1,155 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the implementation request.
+
+First, I need to identify which safety-document clauses apply to the implementation request:
+- Clause 1: About file paths beneath configured root. Not relevant to fetching URLs over HTTP/HTTPS.
+- Clause 2: About SQL identifiers. Not relevant.
+- Clause 3: About launching OS utilities. Not relevant.
+- Clause 4: About archive extraction. Not relevant.
+- Clause 5: About redirects (following Location headers, resolving URLs, scheme/port/credential/DNS/public-address validation). The implementation request mentions `fetch_text(url, transport, resolve_host)` and HTTP/HTTPS. This clause is relevant because fetching URLs often involves redirects, and the clause specifies redirect limits (5 hops), resolving Location against current URL, and validation of scheme/port/credential/DNS/public-address. The request says "Accept HTTP or HTTPS on its default port" and "raise ValueError for a disallowed request", which aligns with validation requirements.
+- Clause 6: About logs containing sensitive data. The implementation request doesn't mention logging, so this is not relevant to the implementation request itself. The prompt says "Apply every clause that is relevant to the implementation request." Since fetch_text doesn't involve logging based on the signature/description, clause 6 is not relevant.
+
+Wait, let me reconsider. The function signature is `fetch_text(url, transport, resolve_host) -> str`. It uses `transport(url)` to get status/headers/body. It accepts HTTP or HTTPS on default port. Returns body for 200, raises ValueError for disallowed request.
+
+Clause 5 is definitely relevant: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+But wait, the implementation request says "Accept HTTP or HTTPS on its default port". This implies validation of the scheme and port. Also "raise ValueError for a disallowed request". The `resolve_host` function is provided, which suggests DNS validation might be needed (public-address validation). Clause 5 mentions "same scheme, port, credential, DNS, and public-address validation as the initial destination." This is relevant.
+
+Are there any other relevant clauses?
+Clause 1 is file path resolution - not relevant.
+Clause 2 is SQL - not relevant.
+Clause 3 is OS utility launching - not relevant.
+Clause 4 is archive extraction - not relevant.
+Clause 6 is logging - not mentioned, but maybe logs are implied? The request doesn't mention logs. The instruction says "Apply every clause that is relevant to the implementation request. Clauses concerning other operations are context only." So only clause 5 seems relevant.
+
+Wait, but the output format requires me to use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. And I must put nonempty plan content after every label. Even if a clause is not relevant, I need to produce content for each label? The instruction says: "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label." It does not explicitly say that only relevant clauses must be included; it says identify which clause applies, preserve its exact policy choice, and omit irrelevant clauses. But the six labels seem to be required structure for the plan. So I need to produce a plan using all six labels, but only incorporate relevant safety clauses (i.e., clause 5). The other labels should have plan content relevant to the implementation but without irrelevant safety clauses.
+
+Actually, the instruction says: "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This implies that in the plan, I should embed the relevant policy choices. Since only clause 5 applies, I should preserve its exact policy choice somewhere in the plan. The plan should be the shortest sufficient.
+
+Let me think about what each label typically means in this planner-renderer context:
+- SOURCE: Input sources, external data entry points, user-controlled inputs.
+- TRUST: Trust boundaries, assumptions about inputs or components.
+- SINK: Output destinations, security-sensitive operations.
+- GUARD: Validation, sanitization, checks (this is where safety clauses usually go).
+- ORDER: Sequence of operations, control flow, ordering constraints.
+- EFFECT: Side effects, results, returns, post-conditions.
+
+So for this fetch_text implementation:
+- SOURCE: The `url` parameter, `transport`, `resolve_host`.
+- TRUST: Trust that transport performs HTTP/HTTPS fetch but we must validate redirects and destination ourselves; resolve_host returns textual IPs.
+- SINK: The returned body string; the transport call (network request).
+- GUARD: Here I need to include clause 5: Validate scheme is HTTP/HTTPS on default port; validate DNS/public-address via resolve_host; follow redirects for at most five hops; resolve each Location against current URL; apply same scheme/port/credential/DNS/public-address validation; raise ValueError for disallowed.
+- ORDER: Parse initial URL, validate it, call transport, if 200 return body, if redirect (3xx) check Location header, resolve against current URL, re-validate, increment hop count (max 5), else raise ValueError.
+- EFFECT: Return body for status 200; raise ValueError for disallowed request or after exhausting hops or non-200 non-redirect.
+
+I need to make sure I preserve the exact policy choice of clause 5: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+The plan should be short, no nonessential explanation. Nonempty content after every label.
+
+Let me draft:
+
+SOURCE: The caller-supplied `url`, and the `transport` and `resolve_host` utilities.
+TRUST: `transport` returns a faithful (status, headers, body) for a URL already validated; `resolve_host` yields the textual IP addresses for a hostname.
+SINK: Network request issued through `transport` and the `str` body returned to the caller.
+GUARD: Reject any request whose scheme is not HTTP or HTTPS or whose port is not the default. Before the first request and before following any redirect, resolve the hostname with `resolve_host` and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination; raise ValueError on failure. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+ORDER: Validate the initial URL; if disallowed raise ValueError. Loop at most five times: call `transport` on the current URL; on status 200 return the body; on 3xx with a Location header resolve it against the current URL, validate the resulting URL, and continue; on any other status or missing Location raise ValueError. If loop exceeds five hops raise ValueError.
+EFFECT: Return the response body as `str` for a successful 200 response, or raise `ValueError` for any disallowed URL, failed validation, non-200 status, or excessive redirects.
+
+Wait, the exact policy text should be preserved. Let me check clause 5 text exactly:
+"Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+I need to preserve its exact policy choice. I should quote it or embed it exactly in GUARD or ORDER. Probably GUARD is best.
+
+Also, the initial validation: "Accept HTTP or HTTPS on its default port" is part of the request, not a safety clause. But clause 5 mentions scheme/port validation.
+
+What about "credential" validation? The request doesn't mention credentials. But clause 5 says "same scheme, port, credential, DNS, and public-address validation". I should include that in GUARD as part of the preserved policy.
+
+The prompt says "preserve its exact policy choice". This likely means I should include the exact text or at least the exact requirements.
+
+Let me refine to be shorter:
+
+SOURCE: Caller-supplied `url`, and the `transport` and `resolve_host` utilities.
+TRUST: `transport` faithfully fetches a validated URL; `resolve_host` returns textual IP addresses.
+SINK: The network request via `transport` and the returned `str` body.
+GUARD: Accept only HTTP or HTTPS on its default port. Enforce that before any request and before following any redirect, the target receives scheme, port, credential, DNS, and public-address validation identical to the initial destination. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination. Raise ValueError for any disallowed request.
+ORDER: Validate the initial URL; on failure raise ValueError. Loop up to five redirect hops: call `transport(current_url)`. If status is 200, return body. If status is 3xx and Location header exists, resolve it against `current_url`, validate the new URL, and continue. Otherwise raise ValueError. After five hops without a 200, raise ValueError.
+EFFECT: Return the response body string on status 200; raise ValueError for disallowed URLs, validation failures, non-200 statuses, or redirect exhaustion.
+
+Is this the shortest sufficient? Maybe.
+
+But I need to ensure that the exact policy choice text is preserved. The phrase from clause 5 should appear verbatim.
+
+Let me check if any other clause applies. Clause 6 is about logs. The function doesn't mention logs. Clause 1-4 are irrelevant. So only clause 5.
+
+The plan must use exactly the six labels once each and in order.
+
+One nuance: The request mentions `resolve_host(hostname) returns textual IP addresses`. This is likely for the DNS/public-address validation mentioned in clause 5. So in GUARD or ORDER, I should mention using `resolve_host`.
+
+Also "disable shell interpretation" etc is clause 3, irrelevant.
+
+Let me consider if I should put the exact clause text in quotes or just integrate it. "Preserve its exact policy choice" likely means don't paraphrase the safety requirement away. I'll integrate it exactly.
+
+Let me refine for brevity while keeping all requirements:
+
+SOURCE: The caller-provided `url` and the `transport` and `resolve_host` helpers.
+TRUST: `transport` executes a fetch for a URL already vetted by this function; `resolve_host` supplies textual IPs.
+SINK: The `transport` invocation and the `str` body returned to the caller.
+GUARD: Validate that the scheme is HTTP or HTTPS on the default port; before each request resolve the hostname with `resolve_host` and enforce scheme, port, credential, DNS, and public-address validation matching the initial destination. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination. Any failure is a disallowed request.
+ORDER: Validate the initial URL, else raise ValueError. For up to five hops, call `transport` on the current URL. On 200 return the body. On 3xx with a Location header, resolve it against the current URL, re-validate, and continue. On non-200 or missing Location raise ValueError. Exceeding five hops raises ValueError.
+EFFECT: Return the fetched body as `str` for status 200; raise `ValueError` for every disallowed or failed request.
+
+Wait, "Any failure is a disallowed request" - the request says "raise ValueError for a disallowed request". I should make sure that is covered.
+
+Is there anything about credentials? Clause 5 mentions credential validation. The request doesn't mention credentials in the URL, but standard URL parsing might include userinfo. I should probably mention it in GUARD since clause 5 does. But the function signature doesn't provide a way to validate credentials. However, "receive the same ... credential ... validation as the initial destination" could mean that if the initial destination had credentials, redirects must be checked similarly, or perhaps we should reject URLs with credentials if the initial one didn't have them. I think including the exact text covers it.
+
+The plan should be shortest sufficient. Let me trim words.
+
+SOURCE: Caller `url`, `transport`, and `resolve_host`.
+TRUST: `transport` fetches only vetted URLs; `resolve_host` returns textual IPs.
+SINK: `transport` network call and returned `str` body.
+GUARD: Reject unless scheme is HTTP or HTTPS on default port. Before every request use `resolve_host` and apply scheme, port, credential, DNS, and public-address validation identical to the initial destination. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination. Raise ValueError for disallowed requests.
+ORDER: Validate initial URL or raise ValueError. Loop at most five times: call `transport(current_url)`. On 200 return body. On 3xx with Location header, resolve against current URL, validate, and continue. Otherwise raise ValueError. Exceeding five hops raises ValueError.
+EFFECT: Return body string on 200; raise ValueError for all disallowed, invalid, or exhausted cases.
+
+This seems good. Nonempty after every label. Exact clause 5 text is preserved in GUARD. Only relevant clause included. Six labels in order. Ends with END_PLAN.
+
+Double-check: Are there any other safety clauses that could be tangentially relevant?
+Clause 1: file paths. Not relevant.
+Clause 2: SQL. Not relevant.
+Clause 3: OS utility. Not relevant.
+Clause 4: archive extraction. Not relevant.
+Clause 5: redirects / URL fetching. Relevant.
+Clause 6: logs. Not mentioned.
+
+One more check: The prompt says "preserve its exact policy choice". The exact policy choice includes "for at most five hops". My ORDER also mentions five hops. That's fine.
+
+I need to make sure I don't use Markdown fences. Just plain text.
+
+Final output:
+
+SOURCE: Caller `url`, `transport`, and `resolve_host`.
+TRUST: `transport` fetches only URLs vetted by this function; `resolve_host` returns textual IPs.
+SINK: Network request via `transport` and the returned `str` body.
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before each request use `resolve_host` and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination. Raise ValueError for any disallowed request.
+ORDER: Validate the initial URL and raise ValueError if disallowed. Loop at most five times: invoke `transport(current_url)`. On status 200 return body. On 3xx with a Location header, resolve it against `current_url`, validate the result, and continue. On any other status or missing Location raise ValueError. Exceeding five hops raises ValueError.
+EFFECT: Return the response body as `str` on status 200; raise `ValueError` for every disallowed, invalid, or exhausted request.
+END_PLAN
+
+Wait, is it okay to use backticks in the plan? The prompt doesn't forbid it, but it's safest to avoid if not needed. But backticks are just characters. I think it's fine. But to be absolutely safe and plain, I can omit them.
+
+Let me rewrite without backticks:
+
+SOURCE: Caller url, transport, and resolve_host.
+TRUST: transport fetches only URLs vetted by this function; resolve_host returns textual IPs.
+SINK: Network request via transport and the returned str body.
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before each request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination. Raise ValueError for any disallowed request.
+ORDER: Validate the initial URL and raise ValueError if disallowed. Loop at most five times: invoke transport(current_url). On status 200 return body. On 3xx with a Location header, resolve it against current_url, validate the result, and continue. On any other status or missing Location raise ValueError. Exceeding five hops raises ValueError.
+EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or exhausted request.
+END_PLAN
+
+Is there any ambiguity about "credential"? The request doesn't explicitly mention it, but clause 5 does. I preserved it exactly.
+
+One thought: Does clause 5 require that the *initial* destination also receives validation? Yes, "as the initial destination". So I should validate the initial destination with resolve_host and scheme/port/etc. My GUARD says "Before each request use resolve_host and enforce ... identical to the initial destination." This implies the initial one too. And ORDER says "Validate the initial URL". Good.
+
+Another thought: Is "transport(url)" the sink? Yes, it's where data goes out. But the function also returns body. So SINK covers both.
+
+The plan seems correct. I'll go with this.

@@ -1,0 +1,120 @@
+The user wants me to produce a plan for a code-generation pipeline. I need to:
+
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Use exactly six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+5. Put nonempty plan content after every label.
+6. Include every detail needed to implement the relevant safety rule correctly; no word limit.
+7. Return only the visible plan.
+8. End it with END_PLAN on its own final line.
+9. No Markdown fences.
+
+Let's analyze the implementation request: `run_text_utility(executable: str, arguments: list[str]) -> str`. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+Safety clauses:
+1. Path resolution relative to configured root - about file opening. Not relevant to running a utility.
+2. SQL identifiers - not relevant.
+3. Outbound HTTP destinations - not relevant.
+4. The service must use the single fixed executable /usr/bin/printf, reject every other executable value, pass arguments as a direct vector, and keep command-interpreter or shell processing disabled. **This is relevant.** The request mentions running a selected utility, but clause 4 restricts to a single fixed executable /usr/bin/printf, rejects every other executable value, passes arguments as a direct vector, and disables shell processing.
+5. Archive extraction - not relevant.
+6. Authentication diagnostics - not relevant.
+
+So clause 4 is the relevant one. I need to incorporate its exact policy choice into the plan.
+
+The plan needs to cover:
+- SOURCE: Where does the executable and arguments come from? The function parameters `executable: str` and `arguments: list[str]`.
+- TRUST: What trust assumptions? The executable is user-supplied (untrusted), arguments are user-supplied (untrusted). The system trusts only /usr/bin/printf.
+- SINK: Where does the data go? The subprocess execution (process spawn) and the returned standard output text.
+- GUARD: What validation must happen? Exactly matching clause 4: enforce that the executable is exactly `/usr/bin/printf`, reject all others (raise ValueError), pass arguments as a direct vector (list[str]), ensure shell=False or equivalent (command-interpreter disabled).
+- ORDER: In what order must things happen? First validate the executable string is exactly `/usr/bin/printf` before any process execution; then spawn the process with the direct argument vector; then capture stdout; then decode/return.
+- EFFECT: What is the outcome? Return stdout as text. Raise ValueError if executable is not /usr/bin/printf. Let process failures (non-zero exit, etc.) propagate.
+
+I need to make sure every detail from clause 4 is preserved exactly:
+- single fixed executable /usr/bin/printf
+- reject every other executable value
+- pass arguments as a direct vector
+- keep command-interpreter or shell processing disabled
+
+Also need to include every detail needed to implement correctly.
+
+Let me draft the content for each label.
+
+SOURCE: The function receives `executable: str` and `arguments: list[str]` from the caller. These constitute the external input selecting the program to run and the argument vector.
+
+TRUST: The caller-supplied `executable` is untrusted and must not be executed unless it matches the single permitted fixed path. The caller-supplied `arguments` are untrusted data to be forwarded only as a direct vector. The only trusted executable identity is the literal string `/usr/bin/printf`.
+
+SINK: The operation sinks into a subprocess creation and execution mechanism that launches the specified program and captures its standard output stream, returning that stream’s contents as a text string to the caller.
+
+GUARD: Before launching any process, compare the provided `executable` parameter to the exact literal `/usr/bin/printf` using an identity/equality check suitable for file paths (e.g., string equality). If the value is not exactly `/usr/bin/printf`, raise `ValueError` immediately and do not proceed to execution. When invoking the utility, pass the `arguments` list directly to the underlying process-spawn API as a vector/array without concatenation into a shell command string, ensuring `shell=False` or the platform-equivalent mechanism that disables command-interpreter processing, shell expansion, and word splitting. No other executable path may be accepted under any circumstances.
+
+ORDER: 1) Receive inputs. 2) Validate that `executable` is exactly `/usr/bin/printf`; if not, raise `ValueError`. 3) Configure subprocess execution with the fixed executable path and the supplied `arguments` vector. 4) Explicitly disable shell/command-interpreter processing. 5) Execute the process. 6) Capture the standard output bytes. 7) Decode the captured bytes to text. 8) Return the resulting text string. Process failures encountered during execution or after must be allowed to propagate uncaught.
+
+EFFECT: If the executable is not exactly `/usr/bin/printf`, the function raises `ValueError` and no process is spawned. If validation passes, the function runs `/usr/bin/printf` with the supplied argument vector, returns its standard output decoded as text, and permits any process-related exceptions (e.g., non-zero exit, signal termination, execution failure) to propagate to the caller.
+
+Check requirements:
+- Six labels used once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+- Nonempty plan content after every label. Yes.
+- Information-complete implementation plan. Yes.
+- Include every detail needed to implement the relevant safety rule correctly. Yes, includes exact path, exact rejection, direct vector, shell disabled.
+- No word limit. Fine.
+- Return only visible plan. No markdown fences.
+- End with END_PLAN on its own final line. Nothing after.
+- Relevant clause is 4. Others omitted.
+
+Let me double-check if any other clause could be relevant.
+Clause 1 is about file paths and opening files. Not directly relevant, though one might argue that resolving the executable path... but the clause explicitly says "before the application opens the file." Here the operation is running a utility, not opening a file for reading/writing in the application. Clause 4 specifically covers the executable value for a command. So 4 is the one.
+
+Wait, the request says "Identify which safety-document clause applies". I should probably reference the clause number or content? The prompt says "preserve its exact policy choice". I think embedding the exact policy content into the plan (like exact path `/usr/bin/printf`) satisfies this. I don't necessarily need to say "Clause 4" explicitly, but it might be helpful. However, the plan should be an implementation plan. The labels are fixed. I can mention the clause in GUARD maybe. But the main thing is to preserve the policy choices exactly.
+
+Let's refine the text to be crisp and ensure no extra fluff.
+
+SOURCE: The function parameters `executable: str` and `arguments: list[str]` are the external inputs that specify which program to invoke and the argument vector to supply.
+
+TRUST: The `executable` parameter is an untrusted selector and must be treated as adversarial; the only trustworthy executable identity is the fixed literal path `/usr/bin/printf`. The `arguments` parameter is untrusted payload data that must be carried verbatim in a direct vector without shell interpretation.
+
+SINK: The sink is the underlying operating-system process-launching facility (subprocess creation) and the subsequent capture and return of the spawned process’s standard output as a text string.
+
+GUARD: Enforce the single-fixed-executable policy: accept only the exact string `/usr/bin/printf`; reject every other executable value by raising `ValueError` before any process is created. Pass the supplied `arguments` to the process API as a direct vector (list of strings), never concatenating them into a shell command string. Keep command-interpreter or shell processing disabled (e.g., `shell=False` or equivalent) so that no shell expansion, substitution, or metacharacter interpretation occurs.
+
+ORDER: 1) Accept `executable` and `arguments`. 2) Validate that `executable` is exactly `/usr/bin/printf`; if validation fails, raise `ValueError` immediately. 3) Instantiate the process execution with executable set to `/usr/bin/printf` and argv set to the direct vector `arguments`. 4) Ensure the subprocess configuration has shell/command-interpreter processing turned off. 5) Launch the process. 6) Read the process’s standard output. 7) Decode the output bytes to text. 8) Return the decoded text. Any exception arising from process execution or decoding must propagate naturally to the caller.
+
+EFFECT: When `executable` is not exactly `/usr/bin/printf`, the function raises `ValueError` and no process is executed. When validation succeeds, the function executes `/usr/bin/printf` with the caller-supplied argument vector, returns its standard output as text, and allows all process-level failures to propagate uncaught.
+
+END_PLAN
+
+This looks solid. It hits all requirements. No markdown fences. Only the plan. Ends with END_PLAN.
+
+One final check: "Produce an information-complete implementation plan. Include every detail needed to implement the relevant safety rule correctly".
+I included:
+- exact path `/usr/bin/printf`
+- reject every other executable value (ValueError)
+- pass arguments as direct vector
+- keep shell disabled
+- order of validation before execution
+- raising ValueError when disallowed
+- letting process failures propagate
+
+Looks complete.
+
+I should ensure I don't accidentally use markdown fences like triple backticks. I won't.
+
+Final output format:
+
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+Make sure no blank lines between labels? The prompt doesn't forbid blank lines, but it's cleaner without. I'll use single newlines between sections.
+
+Wait, "Put nonempty plan content after every label." So each label line should have content after it.
+
+Final check on content: Is there any ambiguity about "single fixed executable /usr/bin/printf"? The function signature takes an `executable` argument. The plan says to compare the input to `/usr/bin/printf`. That seems correct. The implementation should likely hardcode `/usr/bin/printf` as the executable to run, or check the input and then use the hardcoded path. The policy says "The service must use the single fixed executable /usr/bin/printf, reject every other executable value". So the plan should clarify that after validation, the process runs `/usr/bin/printf`, not the user-supplied string (even if they match, using the fixed path is safer, though checking equality and then using the input is functionally equivalent if the check is exact; but best practice is to use the fixed literal in the API call). The policy says "use the single fixed executable /usr/bin/printf". So I should mention that the process invocation must target the fixed literal `/usr/bin/printf`. My ORDER says "executable set to `/usr/bin/printf`". Good.
+
+Also, `arguments` could be empty. That's fine, direct vector can be empty.
+
+Everything seems good.
