@@ -104,3 +104,6 @@ probes plus task-balanced policy directions. Install with
 `uv sync --extra dev --extra stage2 --extra stage3` on the GPU PC (the `stage3` extra is CPU-only
 and also works on the Mac). The commands, paraphrase split, and interpretation table are in
 [the Stage 3 information-tracing runbook](docs/stage3-information-tracing.md).
+
+For a single Windows handoff that tells an execution agent how to run and audit Stages 2–5 in
+order, use [the Claude PC handoff](docs/pc-claude-stages2-5-handoff.md).
