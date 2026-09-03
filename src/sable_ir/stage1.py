@@ -67,21 +67,30 @@ class Stage1RetryAuthorization(StrictModel):
     prior_attempt_path: str
     prior_attempt_sha256: Sha256
     prior_attempt_finished_at: str
+    prior_result_path: str | None = None
+    prior_result_sha256: Sha256 | None = None
     earliest_retry_at: str
     additional_attempts: Literal[1] = 1
     automatic_retry: Literal[False] = False
-    reason: Literal["transport_tls_eof"] = "transport_tls_eof"
+    reason: Literal[
+        "transport_tls_eof", "provider_stream_incomplete", "malformed_plan_output"
+    ] = "transport_tls_eof"
 
     @model_validator(mode="after")
     def validate_retry(self) -> Stage1RetryAuthorization:
         _safe_relative(self.source_manifest_path, "source_manifest_path")
         _safe_relative(self.prior_attempt_path, "prior_attempt_path")
+        if self.prior_result_path is not None:
+            _safe_relative(self.prior_result_path, "prior_result_path")
         finished = datetime.fromisoformat(self.prior_attempt_finished_at)
         earliest = datetime.fromisoformat(self.earliest_retry_at)
         if finished.tzinfo is None or earliest.tzinfo is None:
             raise ValueError("retry timestamps must include UTC offsets")
         if earliest != finished:
-            raise ValueError("TLS EOF recovery adds no provider cooldown")
+            raise ValueError("transport/malformed recovery adds no provider cooldown")
+        has_result = self.prior_result_path is not None and self.prior_result_sha256 is not None
+        if (self.reason == "malformed_plan_output") != has_result:
+            raise ValueError("only malformed-output recovery references a prior result")
         return self
 
 
@@ -146,6 +155,7 @@ class PlanManifest(StrictModel):
     carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
     reparsed_source_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
     manual_retry_authorization: Stage1RetryAuthorization | None = None
+    manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = ()
     execution_order: tuple[str, ...] | None = None
     jobs: tuple[PlanJob, ...]
 
@@ -162,13 +172,23 @@ class PlanManifest(StrictModel):
         reparsed = set(self.reparsed_source_result_sha256s)
         if not carried | reparsed <= job_ids or carried & reparsed:
             raise ValueError("invalid carried/reparsed Stage 1 plan result sets")
-        recovery = bool(carried or reparsed or self.manual_retry_authorization)
+        recovery = bool(
+            carried
+            or reparsed
+            or self.manual_retry_authorization
+            or self.manual_retry_authorizations
+        )
         if recovery != bool(self.migrated_from_manifest_sha256):
             raise ValueError("Stage 1 recovery lineage is incomplete")
         if recovery and self.migrated_from_manifest_path is None:
             raise ValueError("Stage 1 recovery requires its source manifest path")
-        authorization = self.manual_retry_authorization
-        if authorization is not None:
+        authorizations = (
+            *((self.manual_retry_authorization,) if self.manual_retry_authorization else ()),
+            *self.manual_retry_authorizations,
+        )
+        if len({item.job_id for item in authorizations}) != len(authorizations):
+            raise ValueError("retry authorizations contain duplicate jobs")
+        for authorization in authorizations:
             if authorization.source_manifest_sha256 != self.migrated_from_manifest_sha256:
                 raise ValueError("retry authorization references the wrong source manifest")
             if authorization.job_id in carried | reparsed or authorization.job_id not in job_ids:
@@ -495,6 +515,7 @@ def prepare_stage1_plans(
     carried_forward_result_sha256s: dict[str, str] | None = None,
     reparsed_source_result_sha256s: dict[str, str] | None = None,
     manual_retry_authorization: Stage1RetryAuthorization | None = None,
+    manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = (),
     execution_order: tuple[str, ...] | None = None,
 ) -> PlanManifest:
     _validate_run_id(run_id)
@@ -580,6 +601,7 @@ def prepare_stage1_plans(
         carried_forward_result_sha256s=carried_forward_result_sha256s or {},
         reparsed_source_result_sha256s=reparsed_source_result_sha256s or {},
         manual_retry_authorization=manual_retry_authorization,
+        manual_retry_authorizations=manual_retry_authorizations,
         execution_order=execution_order,
         jobs=tuple(jobs),
     )
@@ -593,9 +615,9 @@ def prepare_stage1_plan_recovery(
     source_manifest_path: Path,
     run_directory: Path,
     run_id: str,
-    retry_job_id: str,
+    retry_job_ids: tuple[str, ...],
 ) -> PlanManifest:
-    """Carry exact plan results, reparse validator false negatives, and authorize one retry."""
+    """Carry exact results and explicitly authorize one attempt per reviewed failed job."""
     root = repository_root.resolve()
     source_manifest_path = source_manifest_path.resolve()
     source_manifest = load_plan_manifest(source_manifest_path)
@@ -606,8 +628,11 @@ def prepare_stage1_plan_recovery(
     except ValueError as error:
         raise Stage1Error("source plan manifest must be inside the repository") from error
     source_jobs = {job.job_id: job for job in source_manifest.jobs}
-    if retry_job_id not in source_jobs:
-        raise Stage1Error(f"unknown Stage 1 retry job: {retry_job_id}")
+    if not retry_job_ids or len(set(retry_job_ids)) != len(retry_job_ids):
+        raise Stage1Error("recovery requires unique explicitly authorized retry jobs")
+    unknown_retry_ids = set(retry_job_ids) - set(source_jobs)
+    if unknown_retry_ids:
+        raise Stage1Error(f"unknown Stage 1 retry jobs: {sorted(unknown_retry_ids)}")
 
     carried: dict[str, str] = {}
     reparsed: dict[str, str] = {}
@@ -621,6 +646,8 @@ def prepare_stage1_plan_recovery(
         record = _load_model(result_path, PlanRecord, "source plan result")
         _validate_plan_record(record, job, source_manifest)
         if record.status is GenerationStatus.MALFORMED:
+            if job.job_id in retry_job_ids:
+                continue
             response_path = _required_file(
                 source_directory, record.raw_response_path, "malformed raw response"
             )
@@ -635,26 +662,64 @@ def prepare_stage1_plan_recovery(
             carried[job.job_id] = _sha(result_bytes)
         artifact_paths.update(_plan_record_artifact_paths(job, record))
 
-    if retry_job_id in carried or retry_job_id in reparsed:
-        raise Stage1Error("retry job already has a usable result")
-    prior_attempts = sorted(
-        (source_directory / "jobs" / retry_job_id / "attempts").glob("attempt-*.json")
-    )
-    if len(prior_attempts) != 1:
-        raise Stage1Error("TLS recovery requires exactly one preserved failed attempt")
-    prior_bytes = prior_attempts[0].read_bytes()
-    prior = _load_model(prior_attempts[0], AttemptRecord, "failed plan attempt")
-    if prior.succeeded or not prior.retryable or prior.error is None or "SSL:" not in prior.error:
-        raise Stage1Error("manual Stage 1 retry is limited to the preserved TLS EOF failure")
-    authorization = Stage1RetryAuthorization(
-        source_manifest_path=source_manifest_relative,
-        source_manifest_sha256=source_manifest_hash,
-        job_id=retry_job_id,
-        prior_attempt_path=prior_attempts[0].relative_to(source_directory).as_posix(),
-        prior_attempt_sha256=_sha(prior_bytes),
-        prior_attempt_finished_at=prior.finished_at,
-        earliest_retry_at=prior.finished_at,
-    )
+    authorizations: list[Stage1RetryAuthorization] = []
+    for retry_job_id in retry_job_ids:
+        if retry_job_id in carried or retry_job_id in reparsed:
+            raise Stage1Error(f"retry job already has a usable result: {retry_job_id}")
+        prior_attempts = sorted(
+            (source_directory / "jobs" / retry_job_id / "attempts").glob("attempt-*.json")
+        )
+        if len(prior_attempts) != 1:
+            raise Stage1Error(
+                f"manual recovery requires exactly one preserved attempt: {retry_job_id}"
+            )
+        prior_bytes = prior_attempts[0].read_bytes()
+        prior = _load_model(prior_attempts[0], AttemptRecord, "failed plan attempt")
+        result_path = source_directory / source_jobs[retry_job_id].result_path
+        reason: Literal[
+            "transport_tls_eof", "provider_stream_incomplete", "malformed_plan_output"
+        ]
+        prior_result_path: str | None = None
+        prior_result_sha256: str | None = None
+        if result_path.is_file():
+            record = _load_model(result_path, PlanRecord, "failed plan result")
+            if record.status is not GenerationStatus.MALFORMED or not prior.succeeded:
+                raise Stage1Error(
+                    f"retry result is not a preserved malformed output: {retry_job_id}"
+                )
+            reason = "malformed_plan_output"
+            prior_result_path = source_jobs[retry_job_id].result_path
+            prior_result_sha256 = _sha(result_path.read_bytes())
+        elif (
+            not prior.succeeded
+            and prior.retryable
+            and prior.error is not None
+            and "SSE stream ended before" in prior.error
+        ):
+            reason = "provider_stream_incomplete"
+        elif (
+            not prior.succeeded
+            and prior.retryable
+            and prior.error is not None
+            and "SSL:" in prior.error
+        ):
+            reason = "transport_tls_eof"
+        else:
+            raise Stage1Error(f"unsupported manual retry reason: {retry_job_id}")
+        authorizations.append(
+            Stage1RetryAuthorization(
+                source_manifest_path=source_manifest_relative,
+                source_manifest_sha256=source_manifest_hash,
+                job_id=retry_job_id,
+                prior_attempt_path=prior_attempts[0].relative_to(source_directory).as_posix(),
+                prior_attempt_sha256=_sha(prior_bytes),
+                prior_attempt_finished_at=prior.finished_at,
+                earliest_retry_at=prior.finished_at,
+                prior_result_path=prior_result_path,
+                prior_result_sha256=prior_result_sha256,
+                reason=reason,
+            )
+        )
     completed = set(carried) | set(reparsed)
     execution_order = tuple(
         job.job_id for job in source_manifest.jobs if job.job_id not in completed
@@ -668,7 +733,7 @@ def prepare_stage1_plan_recovery(
         migrated_from_manifest_sha256=source_manifest_hash,
         carried_forward_result_sha256s=carried,
         reparsed_source_result_sha256s=reparsed,
-        manual_retry_authorization=authorization,
+        manual_retry_authorizations=tuple(authorizations),
         execution_order=execution_order,
     )
     new_jobs = {job.job_id: job for job in manifest.jobs}
@@ -737,9 +802,20 @@ def run_stage1_plans(
                 "before preparing any lineage-linked recovery"
             )
         _wait_for_request_interval(run_directory, manifest.provider)
-        authorization = manifest.manual_retry_authorization
+        authorizations = {
+            item.job_id: item
+            for item in (
+                *(
+                    (manifest.manual_retry_authorization,)
+                    if manifest.manual_retry_authorization
+                    else ()
+                ),
+                *manifest.manual_retry_authorizations,
+            )
+        }
+        authorization = authorizations.get(job.job_id)
         retry_hash = None
-        if authorization is not None and authorization.job_id == job.job_id:
+        if authorization is not None:
             if datetime.now(UTC) < datetime.fromisoformat(authorization.earliest_retry_at):
                 raise Stage1Error("manual retry cooldown has not elapsed")
             retry_hash = authorization.prior_attempt_sha256

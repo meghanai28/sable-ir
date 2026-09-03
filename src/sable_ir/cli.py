@@ -90,11 +90,13 @@ from sable_ir.stage1_controls import (
     run_surface_baseline,
     validate_control_plan_audit,
 )
-from sable_ir.stage1_report import build_stage1_report
+from sable_ir.stage1_report import Stage1Recommendation, build_stage1_report
 from sable_ir.stage2 import Stage2Error
 from sable_ir.stage2_cli import add_stage2_parsers, handle_stage2_command
 from sable_ir.stage3 import Stage3Error
 from sable_ir.stage3_cli import add_stage3_parsers, handle_stage3_command
+from sable_ir.stage4 import Stage4Error
+from sable_ir.stage4_cli import add_stage4_parsers, handle_stage4_command
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -274,10 +276,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     recover_plans_parser = subparsers.add_parser(
         "recover-stage1-plans",
-        help="create a lineage-linked continuation after one inspected TLS EOF",
+        help="create a lineage-linked continuation after inspected transport/malformed failures",
     )
     recover_plans_parser.add_argument("source_manifest", type=Path)
-    recover_plans_parser.add_argument("--retry-job-id", required=True)
+    recover_plans_parser.add_argument(
+        "--retry-job-id",
+        action="append",
+        required=True,
+        help="explicitly authorize one new attempt; repeat once per reviewed failed job",
+    )
     recover_plans_parser.add_argument("--run-id", required=True)
     recover_plans_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
     recover_plans_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
@@ -463,17 +470,14 @@ def build_parser() -> argparse.ArgumentParser:
     stage1_report_parser.add_argument("--wrong-clause-behavior", type=Path, required=True)
     stage1_report_parser.add_argument("--length-report", type=Path, required=True)
     stage1_report_parser.add_argument("--plan-audit", type=Path, required=True)
-    stage1_report_parser.add_argument(
-        "--wrong-clause-control-audit", type=Path, required=True
-    )
-    stage1_report_parser.add_argument(
-        "--clause-order-control-audit", type=Path, required=True
-    )
+    stage1_report_parser.add_argument("--wrong-clause-control-audit", type=Path, required=True)
+    stage1_report_parser.add_argument("--clause-order-control-audit", type=Path, required=True)
     stage1_report_parser.add_argument("--control-plan-manifest", type=Path, required=True)
     stage1_report_parser.add_argument("--output", type=Path, required=True)
     stage1_report_parser.add_argument("--final-manual-review-passed", action="store_true")
     add_stage2_parsers(subparsers)
     add_stage3_parsers(subparsers)
+    add_stage4_parsers(subparsers)
     return parser
 
 
@@ -486,6 +490,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage3_exit = handle_stage3_command(args)
         if stage3_exit is not None:
             return stage3_exit
+        stage4_exit = handle_stage4_command(args)
+        if stage4_exit is not None:
+            return stage4_exit
         if args.command == "validate-config":
             config = load_stage0_config(args.path)
             print(
@@ -718,7 +725,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.source_manifest,
                 stage1_run_directory,
                 args.run_id,
-                args.retry_job_id,
+                tuple(args.retry_job_id),
             )
             print(
                 f"prepared Stage 1 planner recovery with "
@@ -815,18 +822,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             digest = fetch_kimi_tokenizer(args.output)
             print(f"verified Kimi-K2.6 tokenizer: {digest}")
         elif args.command == "analyze-stage1-lengths":
-            length_report = build_length_report(
-                args.plan_manifest, args.tokenizer, args.output
-            )
+            length_report = build_length_report(args.plan_manifest, args.tokenizer, args.output)
             print(
                 f"wrote {len(length_report.rows)} exact plan lengths and "
                 f"{len(length_report.nearest_length_matches)} within-task matches: "
                 f"{args.output}"
             )
         elif args.command == "prepare-stage1-plan-audit":
-            audit = prepare_plan_audit(
-                args.plan_manifest, args.repository_root, args.output
-            )
+            audit = prepare_plan_audit(args.plan_manifest, args.repository_root, args.output)
             print(f"wrote {len(audit.rows)} behavior-blinded plan-audit rows: {args.output}")
         elif args.command == "summarize-stage1-plan-audit":
             summary = summarize_plan_audit(args.audit, args.plan_manifest)
@@ -967,11 +970,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.output,
                 final_manual_review_passed=args.final_manual_review_passed,
             )
-            print(
-                f"wrote Stage 1 report: {args.output} "
-                f"({stage1_report.recommendation.value})"
-            )
-            if not status.complete:
+            print(f"wrote Stage 1 report: {args.output} ({stage1_report.recommendation.value})")
+            if stage1_report.recommendation is not Stage1Recommendation.CONTINUE_TO_STAGE2:
                 return 1
     except (
         ConfigLoadError,
@@ -981,6 +981,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         Stage1Error,
         Stage2Error,
         Stage3Error,
+        Stage4Error,
     ) as error:
         print(error, file=sys.stderr)
         return 2

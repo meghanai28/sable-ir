@@ -1,4 +1,4 @@
-"""Stage 3: fact-specific information tracing (proposal VIII) — data track.
+"""Stage 3: policy-orientation information tracing (proposal VIII) — data track.
 
 Builds the activation dataset with the dev-selected Stage 2 planner adapter and the frozen base
 renderer: for every task, policy, policy-paraphrase set, phrasing, format, and concision level the
@@ -165,6 +165,7 @@ class ProbeSpec(StrictModel):
     max_iterations: int = Field(default=5000, ge=100)
     decodable_auroc_min: float = Field(default=0.75, ge=0.5, le=1.0)
     activation_over_text_min_gain: float = Field(default=0.05, ge=0.0, le=0.5)
+    quadrant_min_rows: int = Field(default=10, ge=2)
     r_probe_min_train_tasks: int = Field(default=6, ge=2)
     shuffle_seed: int = Field(default=777, ge=0)
 

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "created_before_stage4_results": true,
+  "tasks": {
+    "ssrf_redirect": {
+      "common_code_prefix": "import ipaddress\nfrom urllib.parse import urljoin, urlsplit\n\ndef fetch_text(url, transport, resolve_host) -> str:\n    current = url\n    _validate_url(current, resolve_host)\n    status, headers, body = transport(current)\n    ",
+      "policy_a_continuation": "if status in {301, 302, 303, 307, 308}:\n        raise ValueError(\"redirects are not permitted\")\n",
+      "policy_b_continuation": "if status in {301, 302, 303, 307, 308}:\n        location = next(value for key, value in headers.items() if key.casefold() == \"location\")\n        current = urljoin(current, location)\n",
+      "policy_relevant_tokens": ["raise", "redirect", "Location", "urljoin", "five"]
+    },
+    "path_symlink_archive": {
+      "common_code_prefix": "import tarfile\nfrom pathlib import Path\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    destination = Path(dest_path).resolve()\n    try:\n        with tarfile.open(tar_path, \"r\") as archive:\n            members = archive.getmembers()\n            for member in members:\n                ",
+      "policy_a_continuation": "if member.issym() or member.islnk():\n                    return False\n",
+      "policy_b_continuation": "if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):\n                    return False\n",
+      "policy_relevant_tokens": ["issym", "islnk", "return", "False", "extractall"]
+    }
+  }
+}

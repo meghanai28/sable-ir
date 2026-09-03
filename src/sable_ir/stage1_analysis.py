@@ -36,8 +36,7 @@ ModelT = TypeVar("ModelT", bound=StrictModel)
 KIMI_TOKENIZER_REVISION = "7eb5002f6aadc958aed6a9177b7ed26bb94011bb"
 KIMI_TOKENIZER_SHA256 = "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103"
 KIMI_TOKENIZER_URL = (
-    "https://huggingface.co/moonshotai/Kimi-K2.6/resolve/"
-    f"{KIMI_TOKENIZER_REVISION}/tiktoken.model"
+    f"https://huggingface.co/moonshotai/Kimi-K2.6/resolve/{KIMI_TOKENIZER_REVISION}/tiktoken.model"
 )
 KIMI_PATTERN = "|".join(
     [
@@ -197,9 +196,7 @@ class LengthReport(StrictModel):
     plan_manifest_sha256: Sha256
     tokenizer_revision: str
     tokenizer_sha256: Sha256
-    primary_length_measure: Literal["exact_observed_plan_tokens"] = (
-        "exact_observed_plan_tokens"
-    )
+    primary_length_measure: Literal["exact_observed_plan_tokens"] = "exact_observed_plan_tokens"
     rows: tuple[LengthRow, ...]
     bin_support: tuple[LengthBinSupport, ...]
     nearest_length_matches: tuple[LengthMatch, ...]
@@ -236,6 +233,9 @@ class BehavioralMetrics(StrictModel):
     plan_audit_sha256: Sha256
     surface_baseline_sha256: Sha256
     stage0_anchor_report_sha256: Sha256
+    planner_manual_retry_job_ids: tuple[str, ...] = ()
+    planner_manual_retry_reasons: dict[str, int] = Field(default_factory=dict)
+    planner_retry_sensitivity_note: str | None = None
     expected_rows: int
     evaluated_rows: int
     rows: tuple[BehavioralRow, ...]
@@ -341,8 +341,7 @@ def summarize_plan_audit(path: Path, plan_manifest_path: Path) -> AuditSummary:
         return AuditSummary(total=len(audit.rows), completed=len(complete))
     visible = [row.policy_visibility is PolicyVisibility.PRESERVED for row in complete]
     true_positive = sum(
-        len(set(row.selected_clause_ids or ()) & set(row.applicable_clause_ids))
-        for row in complete
+        len(set(row.selected_clause_ids or ()) & set(row.applicable_clause_ids)) for row in complete
     )
     selected = sum(len(row.selected_clause_ids or ()) for row in complete)
     applicable = sum(len(row.applicable_clause_ids) for row in complete)
@@ -380,9 +379,7 @@ def build_length_report(
         plan_tokens = len(encoding.encode(plan, disallowed_special=()))
         content = _content_only(plan, job.plan_format)
         content_tokens = len(encoding.encode(content, disallowed_special=()))
-        document_tokens = len(
-            encoding.encode(request["safety_document"], disallowed_special=())
-        )
+        document_tokens = len(encoding.encode(request["safety_document"], disallowed_special=()))
         provider_tokens = record.observed_plan_tokens or 0
         rows.append(
             LengthRow(
@@ -446,9 +443,7 @@ def build_behavioral_metrics(
         )
         plan_label = audit_rows.get(job.source_plan_job_id)
         if plan_label is None and manifest.condition == "wrong_clause":
-            plan_label = audit_rows[
-                job.source_plan_job_id.removesuffix("__control_wrong_clause")
-            ]
+            plan_label = audit_rows[job.source_plan_job_id.removesuffix("__control_wrong_clause")]
         if plan_label is None:
             raise Stage1Error(f"render source lacks a blinded plan label: {job.job_id}")
         outcomes = _evaluation_outcomes(evaluation)
@@ -460,15 +455,12 @@ def build_behavioral_metrics(
             and plan_label.policy_visibility is PolicyVisibility.PRESERVED
         )
         confident_wrong = (
-            (
-                manifest.condition == "wrong_clause"
-                or (
-                    plan_label.confidence is AuditConfidence.CONFIDENT
-                    and plan_label.clause_selection is ClauseSelection.WRONG_CLAUSE
-                )
+            manifest.condition == "wrong_clause"
+            or (
+                plan_label.confidence is AuditConfidence.CONFIDENT
+                and plan_label.clause_selection is ClauseSelection.WRONG_CLAUSE
             )
-            and not assigned
-        )
+        ) and not assigned
         rows.append(
             BehavioralRow(
                 job_id=job.job_id,
@@ -498,9 +490,7 @@ def build_behavioral_metrics(
             )
         )
     stage0 = json.loads(stage0_report_path.read_text(encoding="utf-8"))
-    surface = _surface_baseline(
-        json.loads(surface_baseline_path.read_text(encoding="utf-8"))
-    )
+    surface = _surface_baseline(json.loads(surface_baseline_path.read_text(encoding="utf-8")))
     hidden: dict[PolicyValue, float | None] = {}
     excess: dict[PolicyValue, float | None] = {}
     for policy in PolicyValue:
@@ -513,9 +503,7 @@ def build_behavioral_metrics(
         hidden_value = hidden[policy]
         surface_value = surface[policy]
         excess[policy] = (
-            None
-            if hidden_value is None or surface_value is None
-            else hidden_value - surface_value
+            None if hidden_value is None or surface_value is None else hidden_value - surface_value
         )
     visible_functional = [
         row for row in rows if row.visible_policy_retained and row.functionality is RawOutcome.PASS
@@ -528,9 +516,19 @@ def build_behavioral_metrics(
         for job in plan_manifest.jobs
     ]
     render_records = [
-        _load(RenderRecord, directory / job.result_path, "render result")
-        for job in manifest.jobs
+        _load(RenderRecord, directory / job.result_path, "render result") for job in manifest.jobs
     ]
+    retry_authorizations = (
+        *(
+            (plan_manifest.manual_retry_authorization,)
+            if plan_manifest.manual_retry_authorization
+            else ()
+        ),
+        *plan_manifest.manual_retry_authorizations,
+    )
+    retry_reasons: dict[str, int] = defaultdict(int)
+    for authorization in retry_authorizations:
+        retry_reasons[authorization.reason] += 1
     planner_usage = _usage_totals(plan_records)
     renderer_usage = _usage_totals(render_records)
     metrics = BehavioralMetrics(
@@ -539,6 +537,16 @@ def build_behavioral_metrics(
         plan_audit_sha256=_sha(plan_audit_path.read_bytes()),
         surface_baseline_sha256=_sha(surface_baseline_path.read_bytes()),
         stage0_anchor_report_sha256=_sha(stage0_report_path.read_bytes()),
+        planner_manual_retry_job_ids=tuple(item.job_id for item in retry_authorizations),
+        planner_manual_retry_reasons=dict(retry_reasons),
+        planner_retry_sensitivity_note=(
+            f"{retry_reasons['malformed_plan_output']} originally malformed "
+            "format-constrained plan output(s) were explicitly regenerated in a "
+            "lineage-linked run. The original responses/results remain hash-referenced; "
+            "interpret behavioral estimates as conditional on parseable plan emission."
+            if retry_reasons.get("malformed_plan_output", 0)
+            else None
+        ),
         expected_rows=len(manifest.jobs),
         evaluated_rows=len(rows),
         rows=tuple(rows),
@@ -548,9 +556,7 @@ def build_behavioral_metrics(
         or 0.0,
         clause_selection_precision=audit_summary.clause_selection_precision or 0.0,
         clause_selection_recall=audit_summary.clause_selection_recall or 0.0,
-        irrelevant_clause_inclusion_rate=(
-            audit_summary.irrelevant_clause_inclusion_rate or 0.0
-        ),
+        irrelevant_clause_inclusion_rate=(audit_summary.irrelevant_clause_inclusion_rate or 0.0),
         confident_wrong_clause_behavior_rate=_mean(
             [row.confident_wrong_clause_and_assigned_failure for row in rows]
         )
@@ -569,9 +575,7 @@ def build_behavioral_metrics(
             [row.assigned_policy_and_functional for row in rows]
         )
         or 0.0,
-        opposite_policy_behavior_rate=_mean(
-            [row.opposite_policy_and_functional for row in rows]
-        )
+        opposite_policy_behavior_rate=_mean([row.opposite_policy_and_functional for row in rows])
         or 0.0,
         false_certificate_rate=_mean([row.false_certificate for row in visible_functional]),
         hidden_use_rate_by_policy=hidden,
@@ -586,9 +590,7 @@ def build_behavioral_metrics(
         planner_reasoning_tokens=planner_usage["reasoning_tokens"],
         renderer_input_tokens=renderer_usage["input_tokens"],
         renderer_output_tokens=renderer_usage["output_tokens"],
-        total_generated_tokens=(
-            planner_usage["output_tokens"] + renderer_usage["output_tokens"]
-        ),
+        total_generated_tokens=(planner_usage["output_tokens"] + renderer_usage["output_tokens"]),
         planner_latency_seconds=_latency_total(plan_directory),
         renderer_latency_seconds=_latency_total(directory),
     )
@@ -723,9 +725,9 @@ def _opposite_suite(policy: PolicyValue) -> TestSuiteKind:
 
 
 def _policy_controllability(rows: list[BehavioralRow]) -> float | None:
-    grouped: dict[
-        tuple[str, str, str, int, int], dict[PolicyValue, BehavioralRow]
-    ] = defaultdict(dict)
+    grouped: dict[tuple[str, str, str, int, int], dict[PolicyValue, BehavioralRow]] = defaultdict(
+        dict
+    )
     for row in rows:
         key = (
             row.task_id,

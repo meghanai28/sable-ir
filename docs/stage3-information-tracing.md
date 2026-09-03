@@ -1,9 +1,12 @@
-# Stage 3: fact-specific information tracing on the Windows RTX 5080 PC
+# Stage 3: policy-orientation information tracing on the Windows RTX 5080 PC
 
 Stage 3 records three aligned boundary states on the local Qwen3.5 planner and frozen renderer,
 labels naturally generated plans for clause selection and visible policy retention, then uses
 those labels plus the activations as a localization tool: an L2 logistic probe for the assigned
 policy G, task-balanced difference-in-means directions, and the proposal's interpretation table.
+Across unrelated vulnerability families these are **policy-orientation directions**. The only
+fact-specific transfer claim available in this corpus is the symlink-policy transfer from
+`path_symlink_report` to `path_symlink_archive`.
 Nothing here is a causal claim. Held-out causal interchange is Stage 4 and is authorized only
 when this report says `causal_evaluation_authorized`.
 
@@ -129,12 +132,18 @@ uv run sable-ir evaluate-stage3-heldout --selection artifacts\stage3\analysis\fi
 uv run sable-ir report-stage3 --selection artifacts\stage3\analysis\fit-01\selection.json --heldout artifacts\stage3\analysis\fit-01\heldout.json --output artifacts\stage3\analysis\fit-01\report.json
 ```
 
-`fit-stage3-probes` trains on training tasks / paraphrase set 1, selects C and layers on
-development tasks, estimates one paired A/B difference vector per training task, averages those
-vectors with equal weight, and freezes `selection.json` plus every direction file. If task-level
-directions do not align, the report claims no shared policy direction and does not authorize
-Stage 4 (VIII.E.7). The multiclass clause-position probe is skipped in the five-task pilot
-(needs six training tasks).
+`fit-stage3-probes` fits each probe from **all activation rows** in the training tasks / paraphrase
+set 1. Sample weights give every base task equal total weight. The three task-level A/B difference
+vectors are used only for direction estimation and alignment—not as the probe's three training
+examples. C and layers are selected on development tasks. Reported uncertainty is clustered at
+the base-task level; activation rows are never treated as independent evidence. The held-out
+one-task result remains a case study, so its task-cluster interval is unavailable rather than a
+spurious row-level interval.
+
+The direction estimator averages task-level vectors with equal weight and freezes `selection.json`
+plus every direction file. If renderer-ingestion task directions do not align, the report claims no
+shared policy-orientation direction and does not authorize Stage 4 (VIII.E.7). The multiclass
+clause-position probe is skipped in the five-task pilot (needs six training tasks).
 
 Every activation, text, and metadata model uses the same C grid (VIII.F.12): TF-IDF, plan
 length, TF-IDF plus length, applicable-clause position, clause length and position, irrelevant
@@ -145,13 +154,20 @@ surface-only renderer control, and framing-transfer directions.
 A policy direction that works only on set 1 is a phrasing direction. Transfer to set 2 is
 required before treating wG as the policy distinction.
 
+The primary analysis is renderer ingestion restricted to plans labeled omitted or ambiguous
+(reported as **blurred**), compared with surface-only and visible-text/length controls. Hidden-use
+and false-certificate quadrants are reported separately. Each subset requires at least 10 rows and
+both policy labels; otherwise its status is `insufficient_quadrant_support`. Pooled probe accuracy
+is retained only as a localization diagnostic and is never substituted as the headline.
+
 The report fills the interpretation table (VIII.G), records `stage1_gate` / `stage2_status` /
 `stage3_status` by re-reading the Stage 1 report (provisional until Stage 1 passes; exploratory
 if it fails), and sets:
 
-- `probe_generalizes` if some boundary is held-out-decodable and transfers to set 2
-- `causal_evaluation_authorized` only if that holds, renderer-ingestion directions aligned, and
-  the dataset is complete
+- `probe_generalizes` only if renderer ingestion is held-out-decodable and transfers to set 2
+- `causal_evaluation_authorized` only if renderer ingestion is decodable, transfers to set 2,
+  renderer-ingestion task-level directions align, and the dataset is complete; planner-input and
+  planner-output decoding localize loss but cannot unlock Stage 4
 - `stop_or_pivot` quoting XIII.8 / VIII.H.4 / VIII.E.7 when those fail
 
 Probe accuracy is a localization heuristic, not evidence that G is causally represented.

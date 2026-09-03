@@ -224,14 +224,55 @@ def balanced_accuracy(y: Ints, scores: Floats) -> float | None:
 
 class Metric(StrictModel):
     rows: int
+    independent_task_clusters: int
+    aggregation: Literal["row_pooled_selection_only", "equal_task_macro"]
     auroc: float | None
     balanced_accuracy: float | None
+    task_clustered_95_ci_low: float | None = None
+    task_clustered_95_ci_high: float | None = None
 
 
-def metric(y: Ints, scores: Floats) -> Metric:
+def metric(y: Ints, scores: Floats, tasks: NDArray[Any] | None = None) -> Metric:
+    if tasks is None:
+        return Metric(
+            rows=int(len(y)),
+            independent_task_clusters=0,
+            aggregation="row_pooled_selection_only",
+            auroc=auroc(y, scores),
+            balanced_accuracy=balanced_accuracy(y, scores),
+        )
+    names = sorted(str(item) for item in np.unique(tasks))
+    task_aurocs = [
+        value
+        for name in names
+        if (value := auroc(y[tasks == name], scores[tasks == name])) is not None
+    ]
+    task_balanced = [
+        value
+        for name in names
+        if (value := balanced_accuracy(y[tasks == name], scores[tasks == name])) is not None
+    ]
+    low, high = _cluster_mean_interval(task_aurocs)
     return Metric(
-        rows=int(len(y)), auroc=auroc(y, scores), balanced_accuracy=balanced_accuracy(y, scores)
+        rows=int(len(y)),
+        independent_task_clusters=len(names),
+        aggregation="equal_task_macro",
+        auroc=round(float(np.mean(task_aurocs)), 4) if task_aurocs else None,
+        balanced_accuracy=(round(float(np.mean(task_balanced)), 4) if task_balanced else None),
+        task_clustered_95_ci_low=low,
+        task_clustered_95_ci_high=high,
     )
+
+
+def _cluster_mean_interval(values: list[float]) -> tuple[float | None, float | None]:
+    """Bootstrap base-task summaries; individual activation rows are never uncertainty units."""
+    if len(values) < 2:
+        return None, None
+    rng = np.random.default_rng(20260911)
+    observed = np.asarray(values, dtype=np.float32)
+    sampled = rng.choice(observed, size=(10_000, len(observed)), replace=True).mean(axis=1)
+    low, high = np.quantile(sampled, (0.025, 0.975))
+    return round(float(low), 4), round(float(high), 4)
 
 
 def select_c(
@@ -435,7 +476,10 @@ class StateFit(StrictModel):
     direction_selection_rule: Literal["max_dev_set2_projection_auroc_among_aligned"] = (
         "max_dev_set2_projection_auroc_among_aligned"
     )
-    direction_claim: Literal["shared_direction_candidate", "no_shared_direction"]
+    direction_claim: Literal[
+        "policy_orientation_direction_candidate",
+        "no_shared_policy_orientation_direction",
+    ]
     baselines: tuple[BaselineFit, ...]
 
 
@@ -447,6 +491,14 @@ class Stage3ProbeFit(StrictModel):
     train_tasks: tuple[str, ...]
     dev_tasks: tuple[str, ...]
     fit_paraphrase_set: Literal["set1"] = "set1"
+    probe_training_unit: Literal["activation_row"] = "activation_row"
+    probe_task_weighting: Literal["equal_total_weight_per_base_task"] = (
+        "equal_total_weight_per_base_task"
+    )
+    direction_estimation_unit: Literal["task_level_ab_difference_only"] = (
+        "task_level_ab_difference_only"
+    )
+    uncertainty_unit: Literal["base_task_cluster"] = "base_task_cluster"
     c_grid: tuple[float, ...]
     states: tuple[StateFit, ...]
     r_probe: str
@@ -602,9 +654,9 @@ def fit_stage3_probes(
                 probe_selected_layer=best_probe.layer,
                 direction_selected_layer=None if best_direction is None else best_direction.layer,
                 direction_claim=(
-                    "no_shared_direction"
+                    "no_shared_policy_orientation_direction"
                     if best_direction is None
-                    else "shared_direction_candidate"
+                    else "policy_orientation_direction_candidate"
                 ),
                 baselines=tuple(baselines),
             )
@@ -620,48 +672,70 @@ def fit_stage3_probes(
             if best_direction is None
             else (best_direction.direction.centroid_a, best_direction.direction.centroid_b)
         )
-        # Control directions at the probe-selected layer (Stage 4 controls VIII.F.6-8 / IX.F).
-        layer = best_probe.layer
-        features = table.activations[layer]
+        # Controls are frozen at every layer Stage 4 may use. A control estimated at the probe
+        # layer is not a matched control when the causal direction was selected at another layer.
+        # Keep layer-qualified keys so that this mismatch is mechanically impossible.
+        control_layers = {best_probe.layer}
+        if best_direction is not None:
+            control_layers.add(best_direction.layer)
+        if state is BoundaryState.RENDERER_INGESTION:
+            control_layers.add(config.activations.candidate_region_start)
         train_all_sets = table.mask(split=SplitName.TRAIN)
-        for name, labels in (
-            ("paraphrase_set_identity", (table.sets == ParaphraseSet.SET2.value).astype(np.int64)),
-            ("lexical_framing", (table.framings == "prohibition").astype(np.int64)),
-            (
-                "unrelated_fact_plan_format",
-                (table.formats == Stage1PlanFormat.FREEFORM.value).astype(np.int64),
-            ),
-        ):
-            try:
-                control, _ = difference_in_means(
-                    features[train_all_sets], labels[train_all_sets], table.tasks[train_all_sets]
+        for layer in sorted(control_layers):
+            features = table.activations[layer]
+            for name, labels in (
+                (
+                    "paraphrase_set_identity",
+                    (table.sets == ParaphraseSet.SET2.value).astype(np.int64),
+                ),
+                ("lexical_framing", (table.framings == "prohibition").astype(np.int64)),
+                (
+                    "plan_format",
+                    (table.formats == Stage1PlanFormat.FREEFORM.value).astype(np.int64),
+                ),
+            ):
+                try:
+                    control, _ = difference_in_means(
+                        features[train_all_sets],
+                        labels[train_all_sets],
+                        table.tasks[train_all_sets],
+                    )
+                except Stage3Error:
+                    continue
+                path = output_dir / "directions" / f"{state.value}__L{layer:02d}__{name}.npy"
+                _save_array(path, control)
+                control_directions[f"{state.value}:L{layer}:{name}"] = _relative(path, root)
+            for framing, other in (
+                ("prohibition", "permission"),
+                ("permission", "prohibition"),
+            ):
+                framed = table.mask(
+                    split=SplitName.TRAIN,
+                    paraphrase_set=ParaphraseSet.SET1,
+                    framing=framing,
                 )
-            except Stage3Error:
-                continue
-            path = output_dir / "directions" / f"{state.value}__L{layer:02d}__{name}.npy"
-            _save_array(path, control)
-            control_directions[f"{state.value}:{name}"] = _relative(path, root)
-        for framing, other in (("prohibition", "permission"), ("permission", "prohibition")):
-            framed = table.mask(
-                split=SplitName.TRAIN, paraphrase_set=ParaphraseSet.SET1, framing=framing
-            )
-            try:
-                framed_direction, _ = difference_in_means(
-                    features[framed], table.y[framed], table.tasks[framed]
+                try:
+                    framed_direction, _ = difference_in_means(
+                        features[framed], table.y[framed], table.tasks[framed]
+                    )
+                except Stage3Error:
+                    continue
+                path = (
+                    output_dir / "directions" / f"{state.value}__L{layer:02d}__from_{framing}.npy"
                 )
-            except Stage3Error:
-                continue
-            path = output_dir / "directions" / f"{state.value}__L{layer:02d}__from_{framing}.npy"
-            _save_array(path, framed_direction)
-            control_directions[f"{state.value}:from_{framing}_to_{other}"] = _relative(path, root)
-        rng = np.random.default_rng(config.directions.random_direction_seed)
-        random_direction = rng.standard_normal(dataset.hidden_size).astype(np.float32)
-        random_direction /= float(np.linalg.norm(random_direction))
-        path = output_dir / "directions" / f"{state.value}__L{layer:02d}__random.npy"
-        _save_array(path, random_direction)
-        control_directions[
-            f"{state.value}:random_seed_{config.directions.random_direction_seed}"
-        ] = _relative(path, root)
+                _save_array(path, framed_direction)
+                control_directions[f"{state.value}:L{layer}:from_{framing}_to_{other}"] = _relative(
+                    path, root
+                )
+            rng = np.random.default_rng(config.directions.random_direction_seed + layer)
+            random_direction = rng.standard_normal(dataset.hidden_size).astype(np.float32)
+            random_direction /= float(np.linalg.norm(random_direction))
+            path = output_dir / "directions" / f"{state.value}__L{layer:02d}__random.npy"
+            _save_array(path, random_direction)
+            control_directions[
+                f"{state.value}:L{layer}:random_seed_"
+                f"{config.directions.random_direction_seed + layer}"
+            ] = _relative(path, root)
     r_probe = (
         "skipped: the multiclass applicable-clause-position probe requires "
         f"{config.probes.r_probe_min_train_tasks} training tasks; {len(train_tasks)} available"
@@ -731,6 +805,8 @@ class HeldoutStateResult(StrictModel):
     decodable: bool
     transfers_to_set2: bool
     activations_beat_text: bool
+    row_probe_scores: dict[str, float]
+    row_text_baseline_scores: dict[TextBaseline, dict[str, float]]
     row_projections: dict[str, float]
 
 
@@ -774,13 +850,21 @@ def evaluate_stage3_heldout(
         test2 = table.mask(split=SplitName.TEST, paraphrase_set=ParaphraseSet.SET2)
         weights = task_balanced_weights(table.tasks[train], table.y[train])
         probe = fit_probe(features[train], table.y[train], weights, c, config.probes.max_iterations)
-        test_metric = metric(table.y[test], probe.scores(features[test]))
-        set2_metric = metric(table.y[test2], probe.scores(features[test2]))
+        probe_scores = probe.scores(features)
+        test_metric = metric(table.y[test], probe_scores[test], table.tasks[test])
+        set2_metric = metric(table.y[test2], probe_scores[test2], table.tasks[test2])
         per_task = {
             task: metric(
-                table.y[table.mask(task=task)], probe.scores(features[table.mask(task=task)])
+                table.y[table.mask(task=task)],
+                probe_scores[table.mask(task=task)],
+                table.tasks[table.mask(task=task)],
             )
             for task in test_tasks
+        }
+        row_probe_scores = {
+            job_id: round(float(value), 6)
+            for job_id, value, keep in zip(table.job_ids, probe_scores, test, strict=True)
+            if keep
         }
         # Direction projections.
         direction_layer = selection.direction_layer[state]
@@ -794,9 +878,9 @@ def evaluate_stage3_heldout(
                 raise Stage3Error("direction file changed after selection")
             dir_features = table.activations[direction_layer]
             projections = dir_features @ direction
-            projection_test = metric(table.y[test], projections[test])
-            projection_test2 = metric(table.y[test2], projections[test2])
-            projection_train2 = metric(table.y[train2], projections[train2])
+            projection_test = metric(table.y[test], projections[test], table.tasks[test])
+            projection_test2 = metric(table.y[test2], projections[test2], table.tasks[test2])
+            projection_train2 = metric(table.y[train2], projections[train2], table.tasks[train2])
             row_projections = {
                 job_id: round(float(value), 4)
                 for job_id, value in zip(table.job_ids, projections, strict=True)
@@ -812,11 +896,14 @@ def evaluate_stage3_heldout(
                 table.mask(split=SplitName.TEST) | table.mask(split=SplitName.DEV)
             )
             framing_transfer[f"from_{framing}_to_{other}"] = metric(
-                table.y[heldout_other], (probe_layer_features @ framed)[heldout_other]
+                table.y[heldout_other],
+                (probe_layer_features @ framed)[heldout_other],
+                table.tasks[heldout_other],
             )
         # Text and metadata baselines with the identical protocol (C chosen on dev, scored on test).
         dev = table.mask(split=SplitName.DEV)
         baselines_test: dict[TextBaseline, Metric] = {}
+        row_text_scores: dict[TextBaseline, dict[str, float]] = {}
         for baseline in TEXT_BASELINES:
             featurizer = TextFeaturizer(baseline, table, train)
             chosen_c, fitted, _dev = select_c(
@@ -829,9 +916,16 @@ def evaluate_stage3_heldout(
                 config.probes.max_iterations,
             )
             del chosen_c
-            baselines_test[baseline] = metric(
-                table.y[test], fitted.scores(featurizer.features(test))
-            )
+            scores = fitted.scores(featurizer.features(test))
+            baselines_test[baseline] = metric(table.y[test], scores, table.tasks[test])
+            row_text_scores[baseline] = {
+                job_id: round(float(value), 6)
+                for job_id, value in zip(
+                    (job_id for job_id, keep in zip(table.job_ids, test, strict=True) if keep),
+                    scores,
+                    strict=True,
+                )
+            }
         text_aurocs = [m.auroc for m in baselines_test.values() if m.auroc is not None]
         best_text = max(text_aurocs) if text_aurocs else None
         # Controls at the probe layer.
@@ -843,7 +937,9 @@ def evaluate_stage3_heldout(
         shuffled_probe = fit_probe(
             features[train], shuffled, weights, c, config.probes.max_iterations
         )
-        shuffled_metric = metric(table.y[test], shuffled_probe.scores(features[test]))
+        shuffled_metric = metric(
+            table.y[test], shuffled_probe.scores(features[test]), table.tasks[test]
+        )
         train_all = table.mask(split=SplitName.TRAIN)
         set_labels = (table.sets == ParaphraseSet.SET2.value).astype(np.int64)
         set_probe = fit_probe(
@@ -853,7 +949,7 @@ def evaluate_stage3_heldout(
             c,
             config.probes.max_iterations,
         )
-        set_metric = metric(set_labels[test], set_probe.scores(features[test]))
+        set_metric = metric(set_labels[test], set_probe.scores(features[test]), table.tasks[test])
         framing_labels = (table.framings == "prohibition").astype(np.int64)
         framing_probe = fit_probe(
             features[train_all],
@@ -862,11 +958,13 @@ def evaluate_stage3_heldout(
             c,
             config.probes.max_iterations,
         )
-        framing_metric = metric(framing_labels[test], framing_probe.scores(features[test]))
+        framing_metric = metric(
+            framing_labels[test], framing_probe.scores(features[test]), table.tasks[test]
+        )
         surface_control = None
         if state is BoundaryState.RENDERER_INGESTION and dataset.control_rows:
-            control_features, control_y = _control_features(dataset, root, layer)
-            surface_control = metric(control_y, probe.scores(control_features))
+            control_features, control_y, control_tasks = _control_features(dataset, root, layer)
+            surface_control = metric(control_y, probe.scores(control_features), control_tasks)
         threshold = selection.decodable_auroc_min
         decodable = test_metric.auroc is not None and test_metric.auroc >= threshold
         transfers = set2_metric.auroc is not None and set2_metric.auroc >= threshold
@@ -881,9 +979,11 @@ def evaluate_stage3_heldout(
                 probe_layer=layer,
                 probe_c=c,
                 test=test_metric,
-                test_set1=metric(table.y[test1], probe.scores(features[test1])),
+                test_set1=metric(table.y[test1], probe_scores[test1], table.tasks[test1]),
                 test_set2=set2_metric,
-                train_set2_transfer=metric(table.y[train2], probe.scores(features[train2])),
+                train_set2_transfer=metric(
+                    table.y[train2], probe_scores[train2], table.tasks[train2]
+                ),
                 per_test_task=per_task,
                 direction_layer=direction_layer,
                 projection_test=projection_test,
@@ -899,6 +999,8 @@ def evaluate_stage3_heldout(
                 decodable=decodable,
                 transfers_to_set2=transfers,
                 activations_beat_text=beats_text,
+                row_probe_scores=row_probe_scores,
+                row_text_baseline_scores=row_text_scores,
                 row_projections=row_projections,
             )
         )
@@ -913,18 +1015,26 @@ def evaluate_stage3_heldout(
     return heldout
 
 
-def _control_features(dataset: Stage3Dataset, root: Path, layer: int) -> tuple[Floats, Ints]:
+def _control_features(
+    dataset: Stage3Dataset, root: Path, layer: int
+) -> tuple[Floats, Ints, NDArray[Any]]:
     run_directory = (root / dataset.activation_manifest_path).parent
     index = dataset.layers.index(layer)
     features = []
     labels = []
+    tasks = []
     for row in dataset.control_rows:
         path = run_directory / row.state.path
         if _sha(path.read_bytes()) != row.state.sha256:
             raise Stage3Error(f"control activation changed: {row.state.path}")
         features.append(np.load(path).astype(np.float32)[index])
         labels.append(int(row.label_policy is POSITIVE_POLICY))
-    return np.stack(features), np.array(labels, dtype=np.int64)
+        tasks.append(row.task_id)
+    return (
+        np.stack(features),
+        np.array(labels, dtype=np.int64),
+        np.array(tasks),
+    )
 
 
 def _direction_path(analysis_dir: Path, state: BoundaryState, layer: int) -> Path:
@@ -949,6 +1059,34 @@ class QuadrantProjection(StrictModel):
     by_split: dict[SplitName, int]
 
 
+class PrimarySubsetProbeResult(StrictModel):
+    subset: Literal["omitted_or_blurred", "hidden_use", "false_certificate"]
+    support_status: Literal["supported", "insufficient_quadrant_support"]
+    rows: int
+    base_tasks: tuple[str, ...]
+    policy_values_present: tuple[PolicyValue, ...]
+    renderer_ingestion: Metric | None
+    best_text_baseline: TextBaseline | None
+    best_text: Metric | None
+    activation_minus_text_auroc: float | None
+
+
+class RendererIngestionPrimaryAnalysis(StrictModel):
+    headline: Literal["renderer_ingestion_on_omitted_or_blurred_plans"] = (
+        "renderer_ingestion_on_omitted_or_blurred_plans"
+    )
+    pooled_probe_accuracy_is_headline: Literal[False] = False
+    blurred_label_mapping: Literal["ambiguous_visibility_is_reported_as_blurred"] = (
+        "ambiguous_visibility_is_reported_as_blurred"
+    )
+    minimum_rows_per_subset: int
+    omitted_or_blurred: PrimarySubsetProbeResult
+    hidden_use: PrimarySubsetProbeResult
+    false_certificate: PrimarySubsetProbeResult
+    surface_only_control: Metric | None
+    status: Literal["supported", "insufficient_quadrant_support"]
+
+
 class Stage3Status(StrictModel):
     stage1_gate: Stage1GateStatus
     stage2_status: Stage2Status
@@ -964,6 +1102,8 @@ class Stage3Report(StrictModel):
     design_mode: DesignMode
     pilot: bool
     generalization_claim: str
+    policy_orientation_scope: str
+    fact_specific_transfer_scope: str
     dataset_sha256: Sha256
     selection_sha256: Sha256
     heldout_sha256: Sha256
@@ -982,8 +1122,10 @@ class Stage3Report(StrictModel):
     direction_aligned_by_state: dict[BoundaryState, bool]
     availability_differs_across_boundaries: bool
     quadrant_projections: dict[BoundaryState, tuple[QuadrantProjection, ...]]
+    primary_renderer_ingestion_analysis: RendererIngestionPrimaryAnalysis
     interpretation: tuple[InterpretationRow, ...]
     probe_generalizes: bool
+    stage4_authorization_requirements: dict[str, bool]
     causal_evaluation_authorized: bool
     stop_or_pivot: str | None
     r_probe: str
@@ -1028,7 +1170,7 @@ def build_stage3_report(
     transfers = {state: by_state[state].transfers_to_set2 for state in BoundaryState}
     beats = {state: by_state[state].activations_beat_text for state in BoundaryState}
     aligned = {
-        state: fits[state].direction_claim == "shared_direction_candidate"
+        state: fits[state].direction_claim == "policy_orientation_direction_candidate"
         for state in BoundaryState
     }
     availability = decodable[BoundaryState.PLANNER_INPUT] != decodable[
@@ -1039,14 +1181,31 @@ def build_stage3_report(
         for state in BoundaryState
     }
     interpretation = _interpret(dataset, by_state, visible, fit.r_probe)
-    probe_generalizes = any(decodable[s] and transfers[s] for s in BoundaryState)
+    ingestion = BoundaryState.RENDERER_INGESTION
+    probe_generalizes = decodable[ingestion] and transfers[ingestion]
     renderer_aligned = aligned[BoundaryState.RENDERER_INGESTION]
-    authorized = probe_generalizes and renderer_aligned and dataset.complete
+    authorization_requirements = {
+        "renderer_ingestion_decodable": decodable[ingestion],
+        "renderer_ingestion_transfers_to_paraphrase_set2": transfers[ingestion],
+        "renderer_ingestion_task_directions_align": renderer_aligned,
+        "dataset_complete": dataset.complete,
+    }
+    authorized = all(authorization_requirements.values())
+    primary = _primary_renderer_analysis(
+        dataset,
+        by_state[ingestion],
+        stage3_config.probes.quadrant_min_rows,
+    )
     stop_or_pivot = None
-    if not probe_generalizes:
+    if not decodable[ingestion]:
         stop_or_pivot = (
-            "probe does not generalize to held-out tasks and paraphrase set 2: report the "
-            "negative result; do not patch a cherry-picked direction (XIII.8, VIII.H.4)"
+            "policy is not decodable at renderer ingestion; planner-boundary decoding is "
+            "localization evidence only and cannot authorize Stage 4"
+        )
+    elif not transfers[ingestion]:
+        stop_or_pivot = (
+            "renderer-ingestion decoding does not transfer to paraphrase set 2: treat it as a "
+            "phrasing direction and do not authorize Stage 4"
         )
     elif not renderer_aligned:
         stop_or_pivot = (
@@ -1062,6 +1221,14 @@ def build_stage3_report(
             f"none: mechanistic case study on {len(heldout.test_tasks)} held-out base task(s) "
             f"({', '.join(heldout.test_tasks)}); fewer than 12 policy-counterfactual tasks "
             "(XI.I.10)"
+        ),
+        policy_orientation_scope=(
+            "Across unrelated vulnerability families, all A/B directions are described only as "
+            "policy-orientation directions."
+        ),
+        fact_specific_transfer_scope=(
+            "The only fact-specific transfer is the symlink-policy comparison from "
+            "path_symlink_report to path_symlink_archive."
         ),
         dataset_sha256=selection.dataset_sha256,
         selection_sha256=_sha(selection_path.read_bytes()),
@@ -1088,14 +1255,106 @@ def build_stage3_report(
         direction_aligned_by_state=aligned,
         availability_differs_across_boundaries=availability,
         quadrant_projections=quadrant_projections,
+        primary_renderer_ingestion_analysis=primary,
         interpretation=interpretation,
         probe_generalizes=probe_generalizes,
+        stage4_authorization_requirements=authorization_requirements,
         causal_evaluation_authorized=authorized,
         stop_or_pivot=stop_or_pivot,
         r_probe=fit.r_probe,
     )
     _write_model(output, report)
     return report
+
+
+def _primary_renderer_analysis(
+    dataset: Stage3Dataset,
+    ingestion: HeldoutStateResult,
+    minimum_rows: int,
+) -> RendererIngestionPrimaryAnalysis:
+    test_rows = [row for row in dataset.rows if row.split is SplitName.TEST]
+    subsets: dict[str, list[Stage3DatasetRow]] = {
+        "omitted_or_blurred": [
+            row
+            for row in test_rows
+            if row.policy_visibility in (PolicyVisibility.OMITTED, PolicyVisibility.AMBIGUOUS)
+        ],
+        "hidden_use": [row for row in test_rows if row.quadrant == "hidden_use"],
+        "false_certificate": [row for row in test_rows if row.quadrant == "false_certificate"],
+    }
+    results = {
+        name: _primary_subset(name, rows, ingestion, minimum_rows) for name, rows in subsets.items()
+    }
+    supported = all(item.support_status == "supported" for item in results.values())
+    return RendererIngestionPrimaryAnalysis(
+        minimum_rows_per_subset=minimum_rows,
+        omitted_or_blurred=results["omitted_or_blurred"],
+        hidden_use=results["hidden_use"],
+        false_certificate=results["false_certificate"],
+        surface_only_control=ingestion.surface_only_control,
+        status="supported" if supported else "insufficient_quadrant_support",
+    )
+
+
+def _primary_subset(
+    name: str,
+    rows: list[Stage3DatasetRow],
+    ingestion: HeldoutStateResult,
+    minimum_rows: int,
+) -> PrimarySubsetProbeResult:
+    available = [row for row in rows if row.job_id in ingestion.row_probe_scores]
+    policies = tuple(sorted({row.assigned_policy for row in available}, key=lambda p: p.value))
+    tasks = tuple(sorted({row.task_id for row in available}))
+    supported = len(available) >= minimum_rows and set(policies) == set(PolicyValue)
+    subset_name = name
+    if subset_name not in ("omitted_or_blurred", "hidden_use", "false_certificate"):
+        raise Stage3Error(f"unknown primary subset: {subset_name}")
+    if not supported:
+        return PrimarySubsetProbeResult(
+            subset=subset_name,  # type: ignore[arg-type]
+            support_status="insufficient_quadrant_support",
+            rows=len(available),
+            base_tasks=tasks,
+            policy_values_present=policies,
+            renderer_ingestion=None,
+            best_text_baseline=None,
+            best_text=None,
+            activation_minus_text_auroc=None,
+        )
+    y = np.array([int(row.assigned_policy is POSITIVE_POLICY) for row in available], dtype=np.int64)
+    clusters = np.array([row.task_id for row in available])
+    activation = metric(
+        y,
+        np.array([ingestion.row_probe_scores[row.job_id] for row in available]),
+        clusters,
+    )
+    candidates: list[tuple[float, TextBaseline, Metric]] = []
+    for baseline, score_map in ingestion.row_text_baseline_scores.items():
+        if not all(row.job_id in score_map for row in available):
+            continue
+        result = metric(
+            y,
+            np.array([score_map[row.job_id] for row in available]),
+            clusters,
+        )
+        candidates.append((result.auroc or -1.0, baseline, result))
+    _score, best_name, best = max(candidates, default=(-1.0, None, None), key=lambda x: x[0])
+    gain = (
+        None
+        if activation.auroc is None or best is None or best.auroc is None
+        else round(activation.auroc - best.auroc, 4)
+    )
+    return PrimarySubsetProbeResult(
+        subset=subset_name,  # type: ignore[arg-type]
+        support_status="supported",
+        rows=len(available),
+        base_tasks=tasks,
+        policy_values_present=policies,
+        renderer_ingestion=activation,
+        best_text_baseline=best_name,
+        best_text=best,
+        activation_minus_text_auroc=gain,
+    )
 
 
 def _quadrant_projections(

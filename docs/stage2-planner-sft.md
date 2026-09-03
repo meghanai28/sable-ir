@@ -3,7 +3,8 @@
 Stage 2 trains a LoRA adapter so a local planner emits information-complete plans that transfer the
 assigned A/B policy to a frozen renderer, then measures the post-SFT length/format frontiers,
 the model-floor rule, and the bottleneck sanity check from the proposal. Everything below runs on the
-Windows PC with the RTX 5080 (16 GiB). Nothing in this track touches Stage 1 artifacts or code.
+Windows PC with the RTX 5080 (16 GiB). This track reads and hash-binds the Stage 1 report for its
+continuation status but never mutates Stage 1 artifacts or code.
 
 ## What is already frozen in the repository
 

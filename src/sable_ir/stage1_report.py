@@ -83,6 +83,9 @@ class Stage1Report(StrictModel):
     plan_audit_sha256: Sha256
     wrong_clause_control_audit_sha256: Sha256
     clause_order_control_audit_sha256: Sha256
+    planner_manual_retry_job_ids: tuple[str, ...]
+    planner_manual_retry_reasons: dict[str, int]
+    planner_retry_sensitivity_note: str | None
     thresholds: Stage1Thresholds
     gates: tuple[Stage1Gate, ...]
     automatic_gates_passed: bool
@@ -117,6 +120,12 @@ def build_stage1_report(
     opposite = _load(BehavioralMetrics, opposite_behavior_path)
     shuffled = _load(BehavioralMetrics, shuffled_behavior_path)
     wrong = _load(BehavioralMetrics, wrong_clause_behavior_path)
+    for metrics in (opposite, shuffled, wrong):
+        if (
+            metrics.planner_manual_retry_job_ids != natural.planner_manual_retry_job_ids
+            or metrics.planner_manual_retry_reasons != natural.planner_manual_retry_reasons
+        ):
+            raise Stage1Error("behavior reports disagree on planner-recovery lineage")
     lengths = _load(LengthReport, length_report_path)
     audit = _load(PlanAudit, plan_audit_path)
     wrong_control_audit = validate_control_plan_audit(
@@ -143,9 +152,7 @@ def build_stage1_report(
     )
     invalid = any(gate.status is GateStatus.INVALID for gate in gates)
     incomplete = any(gate.status is GateStatus.NOT_EVALUABLE for gate in gates)
-    insufficient = any(
-        gate.status is GateStatus.INSUFFICIENT_CONTROL_SUPPORT for gate in gates
-    )
+    insufficient = any(gate.status is GateStatus.INSUFFICIENT_CONTROL_SUPPORT for gate in gates)
     failed = any(gate.status is GateStatus.FAILED for gate in gates)
     automatic_passed = not (invalid or incomplete or insufficient or failed)
     shared_bins = len(_supported_length_bins(lengths, thresholds))
@@ -181,12 +188,11 @@ def build_stage1_report(
         wrong_clause_behavior_sha256=_sha(wrong_clause_behavior_path.read_bytes()),
         length_report_sha256=_sha(length_report_path.read_bytes()),
         plan_audit_sha256=_sha(plan_audit_path.read_bytes()),
-        wrong_clause_control_audit_sha256=_sha(
-            wrong_clause_control_audit_path.read_bytes()
-        ),
-        clause_order_control_audit_sha256=_sha(
-            clause_order_control_audit_path.read_bytes()
-        ),
+        wrong_clause_control_audit_sha256=_sha(wrong_clause_control_audit_path.read_bytes()),
+        clause_order_control_audit_sha256=_sha(clause_order_control_audit_path.read_bytes()),
+        planner_manual_retry_job_ids=natural.planner_manual_retry_job_ids,
+        planner_manual_retry_reasons=natural.planner_manual_retry_reasons,
+        planner_retry_sensitivity_note=natural.planner_retry_sensitivity_note,
         thresholds=thresholds,
         gates=tuple(gates),
         automatic_gates_passed=automatic_passed,
@@ -222,9 +228,7 @@ def _gates(
                 gate_id="S1-COMPLETE",
                 description="All natural and control renderer outputs evaluated",
                 status=GateStatus.NOT_EVALUABLE,
-                observed=min(
-                    metric.evaluated_rows for metric, _expected in expected_counts
-                ),
+                observed=min(metric.evaluated_rows for metric, _expected in expected_counts),
                 threshold="720 natural and 120 in each stratified control",
                 detail=(
                     "Missing jobs or infrastructure errors make Stage 1 incomplete and retryable."
@@ -273,9 +277,7 @@ def _gates(
         for row in natural.rows
         if row.plan_format.value == "structured" and row.nominal_concision == "full"
     ]
-    structured_functionality = _mean(
-        [row.functionality.value == "pass" for row in full_structured]
-    )
+    structured_functionality = _mean([row.functionality.value == "pass" for row in full_structured])
     functional_structured = [row for row in full_structured if row.functionality.value == "pass"]
     structured_compliance = _mean(
         [row.assigned_policy_and_functional for row in functional_structured]
@@ -289,18 +291,14 @@ def _gates(
         row.clause_selection is not None and row.clause_selection.value == "correct"
         for row in audit.rows
     ) / len(audit.rows)
-    reordered_selection = float(
-        order_control_audit["clause_order_correct_selection_rate"]
-    )
+    reordered_selection = float(order_control_audit["clause_order_correct_selection_rate"])
     valid_wrong = float(wrong_control_audit["wrong_clause_plan_valid_rate"])
     selection_by_bin = _selection_by_bin(audit, lengths)
     compliance_by_bin = _compliance_by_bin(natural, lengths)
     shared_bin_count = len(supported_bins)
     nonsaturated = _has_headroom(selection_by_bin) and _has_headroom(compliance_by_bin)
     wrong_drop, wrong_pairs, wrong_coverage = _conditional_control_drop(natural, wrong)
-    shuffled_drop, shuffled_pairs, shuffled_coverage = _conditional_control_drop(
-        natural, shuffled
-    )
+    shuffled_drop, shuffled_pairs, shuffled_coverage = _conditional_control_drop(natural, shuffled)
     visible_omissions = sum(
         row.policy_visibility is not PolicyVisibility.PRESERVED for row in audit.rows
     )
@@ -365,11 +363,7 @@ def _gates(
         Stage1Gate(
             gate_id="S1.6",
             description="Structured and free-form plans overlap in observed length",
-            status=(
-                GateStatus.PASSED
-                if supported_bins
-                else GateStatus.FAILED
-            ),
+            status=(GateStatus.PASSED if supported_bins else GateStatus.FAILED),
             observed=len(supported_bins),
             threshold=(
                 f">= 1 bin with >= {thresholds.supported_bin_matched_pairs_min} strict matches "
@@ -568,9 +562,7 @@ def _exact_opposite_reversal(
         if natural_by_id[row.job_id].functionality.value == "pass"
         and row.functionality.value == "pass"
     ]
-    reversals = [
-        _follows_assigned_only(a) and _follows_opposite_only(b) for a, b in eligible
-    ]
+    reversals = [_follows_assigned_only(a) and _follows_opposite_only(b) for a, b in eligible]
     return (_mean(reversals) if reversals else None, len(eligible), _pair_coverage(eligible))
 
 
@@ -578,9 +570,7 @@ def _follows_assigned_only(row: BehavioralRow) -> bool:
     policy_a = row.policy_a.value == "pass"
     policy_b = row.policy_b.value == "pass"
     return (
-        policy_a and not policy_b
-        if row.assigned_policy.value == "A"
-        else policy_b and not policy_a
+        policy_a and not policy_b if row.assigned_policy.value == "A" else policy_b and not policy_a
     )
 
 
@@ -588,9 +578,7 @@ def _follows_opposite_only(row: BehavioralRow) -> bool:
     policy_a = row.policy_a.value == "pass"
     policy_b = row.policy_b.value == "pass"
     return (
-        policy_b and not policy_a
-        if row.assigned_policy.value == "A"
-        else policy_a and not policy_b
+        policy_b and not policy_a if row.assigned_policy.value == "A" else policy_a and not policy_b
     )
 
 
@@ -650,9 +638,7 @@ def _selection_by_bin(audit: PlanAudit, lengths: LengthReport) -> dict[str, floa
     return {key: _mean(items) for key, items in sorted(values.items())}
 
 
-def _compliance_by_bin(
-    metrics: BehavioralMetrics, lengths: LengthReport
-) -> dict[str, float]:
+def _compliance_by_bin(metrics: BehavioralMetrics, lengths: LengthReport) -> dict[str, float]:
     bins = {row.job_id: row.observed_length_bin for row in lengths.rows}
     values: dict[str, list[bool]] = defaultdict(list)
     for row in metrics.rows:

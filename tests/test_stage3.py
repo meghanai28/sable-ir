@@ -424,6 +424,15 @@ class TestParaphrases:
 
 
 class TestActivationTrack:
+    def test_probe_weights_use_all_rows_but_equalize_base_tasks(self) -> None:
+        from sable_ir.stage3_analysis import task_balanced_weights
+
+        tasks = np.array(["large"] * 8 + ["small"] * 4)
+        labels = np.array([0] * 4 + [1] * 4 + [0] * 2 + [1] * 2, dtype=np.int64)
+        weights = task_balanced_weights(tasks, labels)
+        assert len(weights) == len(labels)
+        assert weights[tasks == "large"].sum() == pytest.approx(weights[tasks == "small"].sum())
+
     def test_config_summary_and_paraphrase_audit(self, tmp_path: Path) -> None:
         root, _stage2, stage3 = _copy_repo(tmp_path)
         summary = validate_stage3_config(stage3, root)
@@ -482,6 +491,17 @@ class TestActivationTrack:
         analysis_dir = root / "artifacts" / "stage3" / "analysis" / "fit-01"
         selection = fit_stage3_probes(dataset_path, root, analysis_dir)
         assert selection.probe_layer[BoundaryState.PLANNER_INPUT] in manifest.layers
+        renderer_layer = selection.direction_layer[BoundaryState.RENDERER_INGESTION]
+        assert renderer_layer is not None
+        assert (
+            f"renderer_ingestion:L{renderer_layer}:from_prohibition_to_permission"
+            in selection.control_directions
+        )
+        probe_fit = json.loads((analysis_dir / "probes-dev.json").read_text(encoding="utf-8"))
+        assert probe_fit["probe_training_unit"] == "activation_row"
+        assert probe_fit["probe_task_weighting"] == "equal_total_weight_per_base_task"
+        assert probe_fit["direction_estimation_unit"] == "task_level_ab_difference_only"
+        assert probe_fit["uncertainty_unit"] == "base_task_cluster"
         heldout_path = analysis_dir / "heldout.json"
         heldout = evaluate_stage3_heldout(analysis_dir / "selection.json", root, heldout_path)
         by_state = {state.state: state for state in heldout.states}
@@ -504,6 +524,17 @@ class TestActivationTrack:
         assert report.pilot is True
         assert report.status.stage3_status == "provisional_pending_stage1"
         assert report.probe_generalizes
+        requirements = report.stage4_authorization_requirements
+        assert requirements["renderer_ingestion_decodable"]
+        assert requirements["renderer_ingestion_transfers_to_paraphrase_set2"]
+        assert report.causal_evaluation_authorized == all(requirements.values())
+        assert not report.primary_renderer_ingestion_analysis.pooled_probe_accuracy_is_headline
+        assert (
+            report.primary_renderer_ingestion_analysis.headline
+            == "renderer_ingestion_on_omitted_or_blurred_plans"
+        )
+        assert "policy-orientation" in report.policy_orientation_scope
+        assert "path_symlink_report" in report.fact_specific_transfer_scope
         assert "none: mechanistic case study" in report.generalization_claim
 
     def test_dry_run_capturer_is_well_formed(self) -> None:
