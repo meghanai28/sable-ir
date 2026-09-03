@@ -220,7 +220,7 @@ def test_sse_wall_time_limit_closes_a_runaway_stream(monkeypatch) -> None:
     transport = FakeStreamTransport(
         [_event({"id": "completion-123", "model": "kimi-k2.6", "choices": []})]
     )
-    clock = iter((0.0, 601.0))
+    clock = iter((0.0, 901.0))
     monkeypatch.setattr("sable_ir.provider.time.monotonic", lambda: next(clock))
     client = KimiClient(
         KimiConfig(api_key_env="MOONSHOT_API_KEY"), "sk-test-secret", transport

@@ -53,7 +53,7 @@ native-thinking comparisons are three distinct pairs. Every job records
 to Kimi. The provider request does not contain `seed`, `temperature`, or `top_p`. Non-thinking
 requests are capped at 4,096 completion tokens; thinking requests are capped at 32,768 total
 completion/reasoning tokens.
-The client also closes a response after 600 seconds, 8 MiB, or 100,000 SSE events, whichever
+The client also closes a response after 900 seconds, 8 MiB, or 100,000 SSE events, whichever
 limit is reached first; an individual blocked socket read times out after 120 seconds. Batch
 execution spaces provider request starts by at least 25 seconds to remain below the account's
 three-request-per-minute limit. This pacing is not a retry.
@@ -136,6 +136,12 @@ unchanged failed-attempt path and hash, computes the exact earliest retry timest
 one additional attempt for only that failed job. The new manifest retains one attempt per job and
 `automatic_retries: false`. Re-evaluate carried results under the new manifest hash before using
 the normal exact-run-ID full-generation command. Any new provider error stops the recovery batch.
+
+A source run stopped by the former 600-second stream ceiling may use the separately recorded
+`stream_timeout_600` recovery reason with a zero-second cooldown. That transition may increase only
+the total stream ceiling to 900 seconds; it retains the 32,768-token ceiling and does not permit a
+second ceiling increase. Freeze an explicit `--execution-job-id` sequence when slow recovery jobs
+must run after other pending jobs. Run long recovery invocations under macOS `caffeinate`.
 
 ## Evaluation and report
 

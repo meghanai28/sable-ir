@@ -101,7 +101,7 @@ def test_checked_in_config_has_complete_stage0_design() -> None:
     assert config.hosted_kimi.model == "kimi-k2.6"
     assert config.hosted_kimi.base_url == "https://api.moonshot.ai/v1"
     assert config.hosted_kimi.api_key_env == "MOONSHOT_API_KEY"
-    assert config.hosted_kimi.max_stream_seconds == 600.0
+    assert config.hosted_kimi.max_stream_seconds == 900.0
     assert config.hosted_kimi.minimum_request_interval_seconds == 25.0
     assert config.hosted_kimi.thinking_max_completion_tokens == 32_768
     assert config.hosted_kimi.max_attempts == 1

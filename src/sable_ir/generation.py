@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import time
@@ -97,11 +98,11 @@ class ManualRetryAuthorization(StrictModel):
     prior_attempt_path: str
     prior_attempt_sha256: Sha256
     prior_attempt_finished_at: str
-    cooldown_seconds: Literal[65] = 65
+    cooldown_seconds: Literal[0, 65]
     earliest_retry_at: str
     additional_attempts: Literal[1] = 1
     automatic_retry: Literal[False] = False
-    reason: Literal["provider_rate_limit_429"] = "provider_rate_limit_429"
+    reason: Literal["provider_rate_limit_429", "stream_timeout_600"]
 
     @model_validator(mode="after")
     def require_exact_cooldown_and_safe_path(self) -> ManualRetryAuthorization:
@@ -120,19 +121,46 @@ class ManualRetryAuthorization(StrictModel):
         return self
 
 
+class DatasetRevision(StrictModel):
+    source_manifest_sha256: Sha256
+    g7_audit_path: str
+    g7_audit_sha256: Sha256
+    changed_task_ids: tuple[str, ...]
+    invalidated_job_ids: tuple[str, ...]
+    carry_forward_basis: Literal["exact_model_request_and_test_hashes"] = (
+        "exact_model_request_and_test_hashes"
+    )
+
+    @model_validator(mode="after")
+    def require_safe_audit_path_and_unique_ids(self) -> DatasetRevision:
+        path = PurePosixPath(self.g7_audit_path)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("g7_audit_path must be repository-relative")
+        if len(self.changed_task_ids) != len(set(self.changed_task_ids)):
+            raise ValueError("changed_task_ids must be unique")
+        if len(self.invalidated_job_ids) != len(set(self.invalidated_job_ids)):
+            raise ValueError("invalidated_job_ids must be unique")
+        return self
+
+
 class GenerationManifest(StrictModel):
-    schema_version: int = 8
+    schema_version: int = 10
     run_id: str
     created_at: str
     generation_harness_version: Literal[
         "stage0-kimi-generation-v2",
         "stage0-kimi-generation-v3",
         "stage0-kimi-generation-v4",
-    ] = "stage0-kimi-generation-v4"
+        "stage0-kimi-generation-v5",
+        "stage0-kimi-generation-v6",
+    ] = "stage0-kimi-generation-v6"
     evaluation_harness_version: Literal["stage0-evaluation-v2"] = "stage0-evaluation-v2"
     migrated_from_manifest_sha256: Sha256 | None = None
     carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    invalidated_source_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
     manual_retry_authorization: ManualRetryAuthorization | None = None
+    dataset_revision: DatasetRevision | None = None
+    execution_order: tuple[str, ...] | None = None
     config_sha256: str
     provider: KimiConfig
     sandbox: SandboxConfig
@@ -143,9 +171,19 @@ class GenerationManifest(StrictModel):
     def require_consistent_recovery_lineage(self) -> GenerationManifest:
         job_ids = {job.job_id for job in self.jobs}
         carried_ids = set(self.carried_forward_result_sha256s)
+        invalidated_ids = set(self.invalidated_source_result_sha256s)
         if not carried_ids <= job_ids:
             raise ValueError("carried-forward result references an unknown job")
-        recovery_present = bool(carried_ids) or self.manual_retry_authorization is not None
+        if not invalidated_ids <= job_ids:
+            raise ValueError("invalidated source result references an unknown job")
+        if carried_ids & invalidated_ids:
+            raise ValueError("a source result cannot be both carried and invalidated")
+        recovery_present = (
+            bool(carried_ids)
+            or bool(invalidated_ids)
+            or self.manual_retry_authorization is not None
+            or self.dataset_revision is not None
+        )
         if recovery_present and self.migrated_from_manifest_sha256 is None:
             raise ValueError("recovery metadata requires a source manifest hash")
         authorization = self.manual_retry_authorization
@@ -156,6 +194,24 @@ class GenerationManifest(StrictModel):
                 raise ValueError("retry authorization references an unknown job")
             if authorization.job_id in carried_ids:
                 raise ValueError("a retry-authorized job cannot have a carried result")
+        revision = self.dataset_revision
+        if revision is not None:
+            if revision.source_manifest_sha256 != self.migrated_from_manifest_sha256:
+                raise ValueError("dataset revision must reference the source manifest")
+            if set(revision.invalidated_job_ids) != invalidated_ids:
+                raise ValueError("dataset revision must enumerate every invalidated result")
+            if carried_ids | invalidated_ids != job_ids:
+                raise ValueError("dataset revision must classify every source result")
+            if authorization is not None:
+                raise ValueError("dataset revision cannot also authorize a provider retry")
+        elif invalidated_ids:
+            raise ValueError("invalidated results require dataset revision metadata")
+        if self.execution_order is not None:
+            if len(self.execution_order) != len(set(self.execution_order)):
+                raise ValueError("execution_order must not contain duplicate jobs")
+            pending_source_ids = job_ids - carried_ids
+            if set(self.execution_order) != pending_source_ids:
+                raise ValueError("execution_order must enumerate every non-carried job")
         if self.schema_version >= 8 and self.provider.minimum_request_interval_seconds is None:
             raise ValueError("schema v8 manifests require an explicit request interval")
         return self
@@ -293,6 +349,9 @@ def prepare_stage0_run(
     migrated_from_manifest_sha256: str | None = None,
     carried_forward_result_sha256s: dict[str, str] | None = None,
     manual_retry_authorization: ManualRetryAuthorization | None = None,
+    invalidated_source_result_sha256s: dict[str, str] | None = None,
+    dataset_revision: DatasetRevision | None = None,
+    execution_order: tuple[str, ...] | None = None,
 ) -> GenerationManifest:
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", run_id):
         raise GenerationError("run_id must be 1-80 safe filename characters")
@@ -389,7 +448,12 @@ def prepare_stage0_run(
         created_at=_now(),
         migrated_from_manifest_sha256=migrated_from_manifest_sha256,
         carried_forward_result_sha256s=carried_forward_result_sha256s or {},
+        invalidated_source_result_sha256s=(
+            invalidated_source_result_sha256s or {}
+        ),
         manual_retry_authorization=manual_retry_authorization,
+        dataset_revision=dataset_revision,
+        execution_order=execution_order,
         config_sha256=hashlib.sha256(config_json.encode()).hexdigest(),
         provider=config.hosted_kimi,
         sandbox=config.sandbox,
@@ -409,11 +473,20 @@ def prepare_stage0_recovery(
     retry_job_id: str,
     *,
     cooldown_seconds: int = 65,
+    retry_reason: Literal["provider_rate_limit_429", "stream_timeout_600"] = (
+        "provider_rate_limit_429"
+    ),
+    execution_order: tuple[str, ...] | None = None,
 ) -> GenerationManifest:
     """Create a new immutable run that carries valid results across one manual retry."""
-    if cooldown_seconds != 65:
-        raise GenerationError("the approved rate-limit recovery cooldown must be 65 seconds")
-    approved_cooldown: Literal[65] = 65
+    if retry_reason == "provider_rate_limit_429":
+        if cooldown_seconds != 65:
+            raise GenerationError("rate-limit recovery requires a 65-second cooldown")
+        approved_cooldown: Literal[0, 65] = 65
+    else:
+        if cooldown_seconds != 0:
+            raise GenerationError("stream-timeout recovery uses no additional cooldown")
+        approved_cooldown = 0
     source_manifest_path = source_manifest_path.resolve()
     source_manifest = load_manifest(source_manifest_path)
     source_directory = source_manifest_path.parent
@@ -449,6 +522,11 @@ def prepare_stage0_recovery(
         raise GenerationError("recovery would change a frozen provider request setting")
     if config.hosted_kimi.minimum_request_interval_seconds != 25.0:
         raise GenerationError("rate-limit recovery requires a 25-second request interval")
+    if retry_reason == "stream_timeout_600" and (
+        source_manifest.provider.max_stream_seconds != 600.0
+        or config.hosted_kimi.max_stream_seconds != 900.0
+    ):
+        raise GenerationError("timeout recovery may change stream duration only from 600 to 900")
 
     source_jobs = {job.job_id: job for job in source_manifest.jobs}
     if retry_job_id not in source_jobs:
@@ -534,13 +612,17 @@ def prepare_stage0_recovery(
         failed_attempt = AttemptRecord.model_validate_json(failed_attempt_bytes)
     except ValidationError as error:
         raise GenerationError(f"could not validate preserved 429 attempt: {error}") from error
-    if (
-        failed_attempt.succeeded
-        or not failed_attempt.retryable
-        or failed_attempt.error is None
-        or "Kimi HTTP 429:" not in failed_attempt.error
+    if failed_attempt.succeeded or failed_attempt.error is None:
+        raise GenerationError("manual retry authorization requires a failed source attempt")
+    if retry_reason == "provider_rate_limit_429" and (
+        not failed_attempt.retryable or "Kimi HTTP 429:" not in failed_attempt.error
     ):
-        raise GenerationError("manual retry authorization requires a retryable Kimi HTTP 429")
+        raise GenerationError("rate-limit retry authorization requires a retryable Kimi HTTP 429")
+    if retry_reason == "stream_timeout_600" and (
+        failed_attempt.error != "Kimi SSE response exceeded the configured wall-time limit"
+        or failed_attempt.latency_seconds < 600.0
+    ):
+        raise GenerationError("timeout retry authorization requires the preserved 600s timeout")
     try:
         failed_finished_at = datetime.fromisoformat(failed_attempt.finished_at)
     except ValueError as error:
@@ -559,15 +641,17 @@ def prepare_stage0_recovery(
         earliest_retry_at=earliest_retry_at.isoformat(),
         additional_attempts=1,
         automatic_retry=False,
+        reason=retry_reason,
     )
     manifest = prepare_stage0_run(
         config,
         repository_root,
         run_directory,
         run_id,
-        source_manifest_sha256,
-        carried_hashes,
-        authorization,
+        migrated_from_manifest_sha256=source_manifest_sha256,
+        carried_forward_result_sha256s=carried_hashes,
+        manual_retry_authorization=authorization,
+        execution_order=execution_order,
     )
     new_jobs = {job.job_id: job for job in manifest.jobs}
     if set(new_jobs) != set(source_jobs):
@@ -581,6 +665,153 @@ def prepare_stage0_recovery(
             or source_job.pair_id != new_job.pair_id
         ):
             raise GenerationError(f"recovery changed the frozen request for {job_id}")
+    destination_directory = run_directory.resolve()
+    for relative in sorted(carried_paths):
+        source = _checked_required_run_path(source_directory, relative, "carried artifact")
+        _write_bytes_new(destination_directory / relative, source.read_bytes())
+    return manifest
+
+
+def prepare_stage0_dataset_revision(
+    config: Stage0Config,
+    repository_root: Path,
+    source_manifest_path: Path,
+    g7_audit_path: Path,
+    run_directory: Path,
+    run_id: str,
+    changed_task_ids: tuple[str, ...],
+) -> GenerationManifest:
+    """Carry exact-input results while invalidating changed full-document prompts."""
+    changed_tasks = set(changed_task_ids)
+    if not changed_tasks:
+        raise GenerationError("dataset revision requires at least one changed task")
+    root = repository_root.resolve()
+    source_manifest_path = source_manifest_path.resolve()
+    source_manifest = load_manifest(source_manifest_path)
+    source_directory = source_manifest_path.parent
+    source_manifest_sha256 = hashlib.sha256(source_manifest_path.read_bytes()).hexdigest()
+    source_task_ids = {job.task_id for job in source_manifest.jobs}
+    if not changed_tasks <= source_task_ids:
+        raise GenerationError("dataset revision names an unknown changed task")
+
+    audit_path = g7_audit_path.resolve()
+    try:
+        audit_relative = audit_path.relative_to(root).as_posix()
+        audit_bytes = audit_path.read_bytes()
+        audit_data = json.loads(audit_bytes)
+    except (ValueError, OSError, json.JSONDecodeError) as error:
+        raise GenerationError(f"could not load the revised G7 audit: {error}") from error
+    if not isinstance(audit_data, dict):
+        raise GenerationError("revised G7 audit must be a JSON object")
+    if (
+        audit_data.get("gate") != "G7"
+        or audit_data.get("audit_complete") is not True
+        or audit_data.get("g7_passed") is not True
+        or audit_data.get("gate_status") != "passed"
+    ):
+        raise GenerationError("dataset revision requires a completed passing G7 audit")
+    audited_hashes = audit_data.get("task_sha256")
+    current_task_hashes = {
+        load_task(root / relative).id: hashlib.sha256((root / relative).read_bytes()).hexdigest()
+        for relative in config.task_paths
+    }
+    if audited_hashes != current_task_hashes:
+        raise GenerationError("revised G7 audit does not bind the current task files")
+    audited_changes = {
+        change.get("task_id")
+        for change in audit_data.get("changes", [])
+        if isinstance(change, dict)
+    }
+    if audited_changes != changed_tasks:
+        raise GenerationError("revised G7 audit changed-task set does not match the request")
+
+    full_document_conditions = {
+        Stage0Condition.FULL_DOCUMENT_A,
+        Stage0Condition.FULL_DOCUMENT_B,
+        Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_A,
+        Stage0Condition.NATIVE_THINKING_FULL_DOCUMENT_B,
+    }
+    carried_hashes: dict[str, str] = {}
+    invalidated_hashes: dict[str, str] = {}
+    carried_paths: set[str] = set()
+    for job in source_manifest.jobs:
+        generation, result_bytes, artifact_paths = _validated_completed_result(
+            source_directory, job, source_manifest
+        )
+        del generation
+        result_sha256 = hashlib.sha256(result_bytes).hexdigest()
+        if job.task_id in changed_tasks and job.condition in full_document_conditions:
+            invalidated_hashes[job.job_id] = result_sha256
+        else:
+            carried_hashes[job.job_id] = result_sha256
+            carried_paths.update(artifact_paths)
+
+    revision = DatasetRevision(
+        source_manifest_sha256=source_manifest_sha256,
+        g7_audit_path=audit_relative,
+        g7_audit_sha256=hashlib.sha256(audit_bytes).hexdigest(),
+        changed_task_ids=tuple(sorted(changed_tasks)),
+        invalidated_job_ids=tuple(sorted(invalidated_hashes)),
+    )
+    manifest = prepare_stage0_run(
+        config,
+        root,
+        run_directory,
+        run_id,
+        source_manifest_sha256,
+        carried_hashes,
+        None,
+        invalidated_hashes,
+        revision,
+    )
+    source_jobs = {job.job_id: job for job in source_manifest.jobs}
+    new_jobs = {job.job_id: job for job in manifest.jobs}
+    if set(source_jobs) != set(new_jobs):
+        raise GenerationError("dataset revision changed the frozen job matrix")
+    for job_id, source_job in source_jobs.items():
+        new_job = new_jobs[job_id]
+        source_request = _load_request(source_directory / source_job.request_path)
+        new_request = _load_request(run_directory.resolve() / new_job.request_path)
+        stable_job_metadata = (
+            source_job.task_id,
+            source_job.task_path,
+            source_job.upstream_source_revision,
+            source_job.upstream_task_id,
+            source_job.upstream_prompt_sha256,
+            source_job.test_sha256s,
+            source_job.condition,
+            source_job.assigned_policy,
+            source_job.sample_index,
+            source_job.pair_id,
+            source_job.thinking_requested,
+        )
+        new_stable_job_metadata = (
+            new_job.task_id,
+            new_job.task_path,
+            new_job.upstream_source_revision,
+            new_job.upstream_task_id,
+            new_job.upstream_prompt_sha256,
+            new_job.test_sha256s,
+            new_job.condition,
+            new_job.assigned_policy,
+            new_job.sample_index,
+            new_job.pair_id,
+            new_job.thinking_requested,
+        )
+        if stable_job_metadata != new_stable_job_metadata:
+            raise GenerationError(f"dataset revision changed stable inputs for {job_id}")
+        if job_id in carried_hashes:
+            if (
+                source_request.model_request != new_request.model_request
+                or source_request.task_prompt != new_request.task_prompt
+            ):
+                raise GenerationError(f"carried job prompt changed for {job_id}")
+        elif (
+            source_request.model_request.prompt_sha256
+            == new_request.model_request.prompt_sha256
+        ):
+            raise GenerationError(f"invalidated full-document prompt did not change: {job_id}")
+
     destination_directory = run_directory.resolve()
     for relative in sorted(carried_paths):
         source = _checked_required_run_path(source_directory, relative, "carried artifact")
@@ -604,7 +835,9 @@ def run_stage0_generation(
 ) -> RunSummary:
     manifest = load_manifest(manifest_path)
     run_directory = manifest_path.resolve().parent
-    selected = select_manifest_jobs(manifest, limit=limit, job_id=job_id)
+    selected = select_manifest_jobs(
+        manifest, limit=limit, job_id=job_id, use_execution_order=True
+    )
     counters = {status.value: 0 for status in GenerationStatus}
     failed = 0
     skipped = 0
@@ -752,7 +985,10 @@ def run_stage0_generation(
         _write_json_new(result_path, record)
         counters[status.value] += 1
 
-    completed = sum(counters.values()) + failed + skipped
+    completed_results = sum(
+        (run_directory / manifest_job.result_path).is_file()
+        for manifest_job in manifest.jobs
+    )
     return RunSummary(
         run_id=manifest.run_id,
         total_jobs=len(manifest.jobs),
@@ -761,7 +997,7 @@ def run_stage0_generation(
         malformed=counters[GenerationStatus.MALFORMED.value],
         failed=failed,
         skipped_complete=skipped,
-        pending=len(manifest.jobs) - completed,
+        pending=len(manifest.jobs) - completed_results,
     )
 
 
@@ -770,6 +1006,7 @@ def select_manifest_jobs(
     *,
     limit: int | None = None,
     job_id: str | None = None,
+    use_execution_order: bool = False,
 ) -> list[GenerationJob]:
     if limit is not None and job_id is not None:
         raise GenerationError("--limit and --job-id cannot be used together")
@@ -782,6 +1019,9 @@ def select_manifest_jobs(
         if not selected:
             raise GenerationError(f"manifest does not contain job: {job_id}")
         return selected
+    if use_execution_order and manifest.execution_order is not None:
+        jobs_by_id = {job.job_id: job for job in manifest.jobs}
+        return [jobs_by_id[selected_id] for selected_id in manifest.execution_order]
     return list(manifest.jobs)
 
 
@@ -929,6 +1169,119 @@ def _validate_carried_generation(
     )
     if observed != expected:
         raise GenerationError(f"carried generation metadata mismatch for {job.job_id}")
+
+
+def _validated_completed_result(
+    source_directory: Path,
+    job: GenerationJob,
+    manifest: GenerationManifest,
+) -> tuple[GenerationRecord, bytes, set[str]]:
+    request_path = _checked_required_run_path(
+        source_directory, job.request_path, "source request"
+    )
+    request_bytes = request_path.read_bytes()
+    if hashlib.sha256(request_bytes).hexdigest() != job.request_sha256:
+        raise GenerationError(f"source request hash mismatch for {job.job_id}")
+    request = _load_request(request_path)
+    _validate_request_metadata(request, job, manifest)
+
+    result_path = _checked_required_run_path(
+        source_directory, job.result_path, "source result"
+    )
+    result_bytes = result_path.read_bytes()
+    try:
+        generation = GenerationRecord.model_validate_json(result_bytes)
+    except ValidationError as error:
+        raise GenerationError(
+            f"could not validate source result for {job.job_id}: {error}"
+        ) from error
+    _validate_carried_generation(generation, job, manifest)
+    if generation.status is not GenerationStatus.GENERATED:
+        raise GenerationError(f"source result is not a complete generation: {job.job_id}")
+
+    paths = {job.result_path}
+    attempt_relative = (
+        f"jobs/{job.job_id}/attempts/attempt-{generation.successful_attempt:02d}.json"
+    )
+    attempt_path = _checked_required_run_path(
+        source_directory, attempt_relative, "successful attempt"
+    )
+    try:
+        attempt = AttemptRecord.model_validate_json(attempt_path.read_bytes())
+    except ValidationError as error:
+        raise GenerationError(
+            f"could not validate source attempt for {job.job_id}: {error}"
+        ) from error
+    if (
+        not attempt.succeeded
+        or attempt.attempt != generation.successful_attempt
+        or attempt.provider_request_id != generation.provider_request_id
+    ):
+        raise GenerationError(f"source attempt metadata mismatch for {job.job_id}")
+    paths.add(attempt_relative)
+
+    response_path = _checked_required_run_path(
+        source_directory, generation.raw_response_path, "raw response"
+    )
+    response_bytes = response_path.read_bytes()
+    if hashlib.sha256(response_bytes).hexdigest() != generation.raw_response_sha256:
+        raise GenerationError(f"source response hash mismatch for {job.job_id}")
+    try:
+        response = ProviderResponse.model_validate_json(response_bytes)
+    except ValidationError as error:
+        raise GenerationError(
+            f"could not validate source response for {job.job_id}: {error}"
+        ) from error
+    expected_usage = {
+        "input_tokens": response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+        "total_tokens": response.usage.total_tokens,
+        "reasoning_tokens": response.usage.reasoning_tokens,
+    }
+    if (
+        response.request_id != generation.provider_request_id
+        or response.model != generation.model
+        or response.finish_reason != generation.finish_reason
+        or response.finish_reason == "length"
+        or expected_usage != generation.usage
+        or hashlib.sha256(response.content.encode()).hexdigest()
+        != generation.content_sha256
+    ):
+        raise GenerationError(f"source response metadata mismatch for {job.job_id}")
+    paths.add(generation.raw_response_path)
+
+    if generation.candidate_path is None or generation.candidate_sha256 is None:
+        raise GenerationError(f"source candidate metadata is missing for {job.job_id}")
+    candidate_path = _checked_required_run_path(
+        source_directory, generation.candidate_path, "candidate"
+    )
+    if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != generation.candidate_sha256:
+        raise GenerationError(f"source candidate hash mismatch for {job.job_id}")
+    candidate, extraction = extract_python_source(response.content)
+    if (
+        hashlib.sha256(candidate.encode()).hexdigest() != generation.candidate_sha256
+        or extraction != generation.extraction
+    ):
+        raise GenerationError(f"source candidate extraction mismatch for {job.job_id}")
+    paths.add(generation.candidate_path)
+
+    if generation.reasoning_content_present:
+        if generation.reasoning_path is None or generation.reasoning_sha256 is None:
+            raise GenerationError(f"source reasoning metadata is missing for {job.job_id}")
+        reasoning_path = _checked_required_run_path(
+            source_directory, generation.reasoning_path, "reasoning"
+        )
+        reasoning_bytes = reasoning_path.read_bytes()
+        reasoning_sha256 = hashlib.sha256(response.reasoning_content.encode()).hexdigest()
+        if (
+            hashlib.sha256(reasoning_bytes).hexdigest() != reasoning_sha256
+            or generation.reasoning_sha256 != reasoning_sha256
+        ):
+            raise GenerationError(f"source reasoning hash mismatch for {job.job_id}")
+        paths.add(generation.reasoning_path)
+    elif response.reasoning_content or generation.reasoning_path is not None:
+        raise GenerationError(f"unexpected source reasoning artifact for {job.job_id}")
+    return generation, result_bytes, paths
 
 
 def _enforce_retry_cooldown(authorization: ManualRetryAuthorization) -> None:

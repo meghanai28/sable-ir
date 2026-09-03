@@ -21,6 +21,7 @@ from sable_ir.generation import (
     GenerationStatus,
     client_from_environment,
     load_manifest,
+    prepare_stage0_dataset_revision,
     prepare_stage0_recovery,
     prepare_stage0_run,
     provider_preflight,
@@ -119,7 +120,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--retry-cooldown-seconds",
         type=int,
         default=65,
-        help="frozen cooldown after the preserved 429 attempt (must be 65)",
+        help="frozen cooldown: 65 for a 429 recovery, 0 for a stream timeout",
+    )
+    prepare_parser.add_argument(
+        "--retry-reason",
+        choices=("provider_rate_limit_429", "stream_timeout_600"),
+        default="provider_rate_limit_429",
+    )
+    prepare_parser.add_argument(
+        "--execution-job-id",
+        action="append",
+        default=[],
+        help="freeze recovery execution order; repeat once per pending job",
+    )
+    prepare_parser.add_argument(
+        "--revision-from-manifest",
+        type=Path,
+        help="carry exact-input results from a completed pre-revision run",
+    )
+    prepare_parser.add_argument(
+        "--g7-audit",
+        type=Path,
+        help="completed passing G7 audit for the revised task bundle",
+    )
+    prepare_parser.add_argument(
+        "--changed-task-id",
+        action="append",
+        default=[],
+        help="task whose full-document prompts must be invalidated; repeat as needed",
     )
 
     generate_parser = subparsers.add_parser(
@@ -249,11 +277,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "recovery requires both --recovery-from-manifest and "
                     "--authorize-retry-job-id"
                 )
-            if recovery_requested:
-                if args.migrated_from_manifest_sha256 is not None:
-                    raise GenerationError(
-                        "recovery computes its source manifest hash automatically"
-                    )
+            revision_fields = (
+                args.revision_from_manifest is not None,
+                args.g7_audit is not None,
+                bool(args.changed_task_id),
+            )
+            if any(revision_fields) and not all(revision_fields):
+                raise GenerationError(
+                    "dataset revision requires --revision-from-manifest, --g7-audit, "
+                    "and at least one --changed-task-id"
+                )
+            revision_requested = all(revision_fields)
+            if recovery_requested and revision_requested:
+                raise GenerationError("rate-limit recovery and dataset revision are separate runs")
+            if args.execution_job_id and not recovery_requested:
+                raise GenerationError("--execution-job-id is only valid for a recovery run")
+            if (
+                recovery_requested or revision_requested
+            ) and args.migrated_from_manifest_sha256 is not None:
+                raise GenerationError(
+                    "lineage preparation computes its source manifest hash automatically"
+                )
+            if revision_requested:
+                manifest = prepare_stage0_dataset_revision(
+                    config,
+                    args.repository_root,
+                    args.revision_from_manifest,
+                    args.g7_audit,
+                    run_directory,
+                    args.run_id,
+                    tuple(args.changed_task_id),
+                )
+            elif recovery_requested:
                 manifest = prepare_stage0_recovery(
                     config,
                     args.repository_root,
@@ -262,6 +317,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.run_id,
                     args.authorize_retry_job_id,
                     cooldown_seconds=args.retry_cooldown_seconds,
+                    retry_reason=args.retry_reason,
+                    execution_order=(
+                        tuple(args.execution_job_id) if args.execution_job_id else None
+                    ),
                 )
             else:
                 manifest = prepare_stage0_run(
@@ -285,6 +344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 selected = select_manifest_jobs(
                     manifest,
                     job_id=args.job_id,
+                    use_execution_order=True,
                 )
                 print(
                     f"dry run: {manifest.run_id}, {len(manifest.jobs)} total jobs, "

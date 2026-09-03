@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SchemaVersion = Literal[1]
 NonEmpty = Annotated[str, Field(min_length=1)]
-GENERATION_HARNESS_VERSION = "stage0-kimi-generation-v4"
+GENERATION_HARNESS_VERSION = "stage0-kimi-generation-v6"
 EVALUATION_HARNESS_VERSION = "stage0-evaluation-v2"
 
 
@@ -255,7 +255,7 @@ class KimiConfig(StrictModel):
     generation_path: Literal["/chat/completions"] = "/chat/completions"
     api_key_env: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$")]
     request_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
-    max_stream_seconds: Annotated[float, Field(ge=30, le=600)] = 600.0
+    max_stream_seconds: Annotated[float, Field(ge=30, le=1_800)] = 900.0
     minimum_request_interval_seconds: Annotated[
         float, Field(ge=0, le=60)
     ] | None = None
