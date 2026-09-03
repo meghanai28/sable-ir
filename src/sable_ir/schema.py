@@ -301,7 +301,7 @@ class SandboxConfig(StrictModel):
 
     backend: Literal["docker"] = "docker"
     image: NonEmpty = "python:3.12.11-slim-bookworm"
-    platform: Literal["linux/arm64"] = "linux/arm64"
+    platform: Literal["linux/arm64", "linux/amd64"] = "linux/arm64"
     compile_timeout_seconds: Annotated[float, Field(gt=0)] = 5.0
     suite_timeout_seconds: Annotated[float, Field(gt=0)] = 10.0
     memory: Annotated[str, Field(pattern=r"^[1-9][0-9]*[mMgG]$")] = "256m"

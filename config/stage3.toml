@@ -1,0 +1,64 @@
+# Stage 3: fact-specific information tracing on the Windows RTX 5080 (16 GiB) PC.
+#
+# Inputs: the dev-selected Stage 2 planner adapter, the frozen base renderer, and the five audited
+# tasks with the Stage 2 3/1/1 base-task split. With five tasks the probe and direction results are
+# a pilot case study: no cross-task generalization claim is made (proposal XI.I.10, XII.C.5).
+schema_version = 1
+artifacts_dir = "artifacts/stage3"
+stage2_config_path = "config/stage2.toml"
+policy_paraphrases_path = "data/stage3/policy-paraphrases.json"
+paraphrase_audit_path = "data/stage3/paraphrase-audit.json"
+labeling_rubric_path = "data/stage3/labeling-rubric.json"
+# Written by Stage 2; the activation dataset refuses to run without them (proposal II.B.6.1).
+stage2_checkpoint_selection_path = "artifacts/stage2/selection.json"
+stage2_model_floor_report_path = "artifacts/stage2/eval/floor-01/report.json"
+
+[activations]
+# Qwen3.5-4B has 32 decoder blocks (8 full-attention + 24 Gated DeltaNet) with hidden size 2560.
+# Capture block outputs at every fourth layer plus every layer in the candidate intervention region
+# (proposal I.F.1). The capture step verifies both numbers against the loaded model.
+expected_num_layers = 32
+hidden_size = 2560
+evenly_spaced_every = 4
+candidate_region_start = 14
+candidate_region_end = 24
+dtype = "float16"
+# Matrix per task x policy: 2 paraphrase sets x 2 phrasings x 2 formats x 3 concision x plans_per_cell.
+# Pilot: 24 plans per task/policy -> 240 plans, 720 renders, 3 boundary states per plan.
+plans_per_cell = 1
+renders_per_plan = 3
+formats = ["structured", "freeform"]
+concision_levels = ["full", "concise", "minimal"]
+# Renderer activations with the surface request only (probe baseline VIII.F.4): identical inputs for
+# A and B labels, so any decodability here is label leakage in the pipeline.
+surface_only_controls_per_task = 2
+run_seed = 20260910
+
+[labels]
+# Every test-split plan is double-labeled; this fraction of train and dev plans is added (VIII.A.6).
+double_audit_train_fraction = 0.25
+double_audit_seed = 4242
+# Cohen's kappa below this marks label reliability as below threshold in the report.
+min_agreement_kappa = 0.6
+
+[probes]
+# One L2 grid and one dev-selection rule for every activation, text, and metadata model (VIII.F.12).
+c_grid = [0.01, 0.1, 1.0, 10.0]
+max_iterations = 5000
+# Preregistered pilot thresholds: held-out AUROC at or above this counts as decodable, and the
+# activation probe must beat the best visible-text/length baseline by this much AUROC before the
+# report says activations add monitorability beyond reading the plan (VIII.G last row).
+decodable_auroc_min = 0.75
+activation_over_text_min_gain = 0.05
+# The multiclass clause-position probe runs only when this many training tasks exist (VIII.D.2).
+r_probe_min_train_tasks = 6
+shuffle_seed = 777
+
+[directions]
+# Task-level difference vectors must align before one shared policy direction is claimed (VIII.E.7).
+alignment_min_mean_cosine = 0.4
+alignment_min_pairwise_cosine = 0.0
+random_direction_seed = 99
+# Stage 4 intervention scales expressed as multiples of the centroid gap; recorded here so they are
+# preregistered before any held-out causal run.
+strength_multipliers = [0.5, 1.0, 1.5]

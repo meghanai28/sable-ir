@@ -116,7 +116,10 @@ class SandboxBackend(ABC):
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            os.killpg(process.pid, signal.SIGKILL)
+            if hasattr(os, "killpg"):
+                os.killpg(process.pid, signal.SIGKILL)
+            else:  # Windows has no process groups; Docker cleanup below removes the container.
+                process.kill()
             process.wait()
         finally:
             if cleanup_name is not None:

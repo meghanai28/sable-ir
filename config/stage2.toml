@@ -1,0 +1,112 @@
+# Stage 2: planner QLoRA SFT on the Windows RTX 5080 (16 GiB) PC.
+#
+# design_mode = "pilot" runs the complete Stage 2 track on the five audited Stage 0/1 tasks with a
+# 3/1/1 base-task split. Every report produced under this mode is labeled pilot (proposal XI.I.8).
+# Switch to "full" only once 24 audited base tasks exist; the split must then be exactly 12/6/6.
+schema_version = 1
+artifacts_dir = "artifacts/stage2"
+design_mode = "pilot"
+task_paths = [
+  "tasks/path_symlink_report/task.json",
+  "tasks/path_symlink_archive/task.json",
+  "tasks/sql_identifier/task.json",
+  "tasks/command_executable/task.json",
+  "tasks/ssrf_redirect/task.json",
+]
+reference_plans_path = "data/stage2/reference-plans.json"
+split_manifest_path = "data/stage2/split.json"
+reference_corpus_path = "data/stage2/reference-corpus.json"
+reference_audit_path = "data/stage2/reference-audit.json"
+stage1_report_path = "artifacts/stage1/reports/stage1-report.json"
+document_order_variants = 3
+
+[split]
+# Base tasks are the statistical cluster; every paraphrase inherits its base task's split.
+train = ["path_symlink_report", "sql_identifier", "command_executable"]
+dev = ["ssrf_redirect"]
+test = ["path_symlink_archive"]
+
+[model]
+# Pinned from the official Hugging Face repositories on 2026-09-03. Both are
+# Qwen3_5ForConditionalGeneration (natively multimodal), loaded through AutoModelForMultimodalLM.
+model_id = "Qwen/Qwen3.5-4B"
+revision = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+fallback_model_id = "Qwen/Qwen3.5-9B"
+fallback_revision = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+architecture = "Qwen3_5ForConditionalGeneration"
+auto_class = "AutoModelForMultimodalLM"
+thinking = "disabled"
+# Set to "fallback" only after a model_floor report recommends move_to_fallback_model (full-document
+# direct below the floor). A stop_or_pivot verdict (direct passes, full structured plan fails) is a
+# planner/bottleneck finding and does not authorize a model switch. The 9B fallback remains
+# conditional on passing `stage2-model-canary` (NF4 load, one full-length step, generation) in 16 GiB.
+active = "primary"
+
+[hardware]
+expected_gpu_pattern = "RTX 5080"
+min_total_vram_gib = 15.0
+operating_system = "Windows"
+
+[qlora]
+load_in_4bit = true
+quant_type = "nf4"
+double_quant = true
+compute_dtype = "bfloat16"
+lora_rank = 32
+lora_alpha = 64
+lora_dropout = 0.05
+# Language-model linear modules only: full-attention q/k/v/o, Gated DeltaNet qkv/z/out, and MLP.
+# The vision tower (model.visual.*), embeddings, norms, conv1d, and the tiny in_proj_a/in_proj_b
+# gates are never targeted. On Qwen3.5-4B this matches 200 modules (8 x 4 + 24 x 3 + 32 x 3).
+target_modules_regex = '^(?:base_model\.model\.)?model\.language_model\.layers\.\d+\.(?:self_attn\.(?:q_proj|k_proj|v_proj|o_proj)|linear_attn\.(?:in_proj_qkv|in_proj_z|out_proj)|mlp\.(?:gate_proj|up_proj|down_proj))$'
+max_sequence_tokens = 2048
+epochs = 3
+learning_rate = 0.0002
+per_device_train_batch_size = 1
+per_device_eval_batch_size = 1
+gradient_accumulation_steps = 8
+warmup_ratio = 0.03
+weight_decay = 0.0
+seed = 271828
+data_seed = 314159
+gradient_checkpointing = true
+optimizer = "adamw_torch"
+save_strategy = "epoch"
+eval_strategy = "epoch"
+checkpoint_selection_metric = "dev_assigned_policy_and_functional"
+
+[generation]
+# Preregistered sampling settings based on Qwen's recommended non-thinking configuration
+# (temperature 0.7, top-p 0.8, top-k 20). Qwen also lists parameters HF generate does not expose
+# (presence_penalty); run_seed derives per-job fixed, recorded seeds that support auditing, not
+# bit-exact replay across CUDA/package/driver changes.
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+repetition_penalty = 1.0
+planner_max_new_tokens = 768
+renderer_max_new_tokens = 2048
+plans_per_cell = 3
+renders_per_plan = 4
+direct_samples_per_condition = 4
+formats = ["structured", "freeform"]
+concision_levels = ["full", "concise", "minimal"]
+run_seed = 20260903
+
+[thresholds]
+model_floor_assigned_functional_min = 0.30
+bottleneck_functional_max_drop = 0.05
+bottleneck_assigned_policy_max_drop = 0.10
+
+[sandbox]
+backend = "docker"
+# Same multi-arch image index as Stages 0-1; the PC resolves the linux/amd64 member natively.
+image = "python@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7"
+platform = "linux/amd64"
+compile_timeout_seconds = 5.0
+suite_timeout_seconds = 10.0
+memory = "256m"
+cpus = 1.0
+pids_limit = 64
+max_output_bytes = 65536
+max_candidate_bytes = 262144

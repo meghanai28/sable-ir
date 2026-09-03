@@ -91,3 +91,16 @@ token/time ceilings, failure behavior, and commands are documented in
 
 Exact length matching, blinded plan labels, behavioral metrics, renderer-dependence controls, and
 the continuation state machine are documented in [the Stage 1B–E runbook](docs/stage1-bcde.md).
+
+Stage 2 trains a language-model-only QLoRA planner adapter on pinned Qwen3.5-4B (9B fallback) on
+the Windows RTX 5080 PC, with a frozen base-task split, a behavior-blinded reference audit,
+dev-only checkpoint selection, and local post-SFT frontier reports. Install with
+`uv sync --extra dev --extra stage2` on that machine; the commands and 16 GiB budget are in
+[the Stage 2 planner SFT runbook](docs/stage2-planner-sft.md).
+
+Stage 3 records three aligned boundary states on the local planner and frozen renderer, labels
+naturally generated plans for clause selection and visible policy retention, and fits localization
+probes plus task-balanced policy directions. Install with
+`uv sync --extra dev --extra stage2 --extra stage3` on the GPU PC (the `stage3` extra is CPU-only
+and also works on the Mac). The commands, paraphrase split, and interpretation table are in
+[the Stage 3 information-tracing runbook](docs/stage3-information-tracing.md).

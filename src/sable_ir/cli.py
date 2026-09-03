@@ -91,6 +91,10 @@ from sable_ir.stage1_controls import (
     validate_control_plan_audit,
 )
 from sable_ir.stage1_report import build_stage1_report
+from sable_ir.stage2 import Stage2Error
+from sable_ir.stage2_cli import add_stage2_parsers, handle_stage2_command
+from sable_ir.stage3 import Stage3Error
+from sable_ir.stage3_cli import add_stage3_parsers, handle_stage3_command
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -468,12 +472,20 @@ def build_parser() -> argparse.ArgumentParser:
     stage1_report_parser.add_argument("--control-plan-manifest", type=Path, required=True)
     stage1_report_parser.add_argument("--output", type=Path, required=True)
     stage1_report_parser.add_argument("--final-manual-review-passed", action="store_true")
+    add_stage2_parsers(subparsers)
+    add_stage3_parsers(subparsers)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        stage2_exit = handle_stage2_command(args)
+        if stage2_exit is not None:
+            return stage2_exit
+        stage3_exit = handle_stage3_command(args)
+        if stage3_exit is not None:
+            return stage3_exit
         if args.command == "validate-config":
             config = load_stage0_config(args.path)
             print(
@@ -961,7 +973,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if not status.complete:
                 return 1
-    except (ConfigLoadError, GenerationError, HarnessError, ScoringError, Stage1Error) as error:
+    except (
+        ConfigLoadError,
+        GenerationError,
+        HarnessError,
+        ScoringError,
+        Stage1Error,
+        Stage2Error,
+        Stage3Error,
+    ) as error:
         print(error, file=sys.stderr)
         return 2
     return 0
