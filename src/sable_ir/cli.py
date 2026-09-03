@@ -56,6 +56,7 @@ from sable_ir.stage1 import (
     evaluate_stage1_renders,
     load_plan_manifest,
     load_render_manifest,
+    prepare_stage1_plan_recovery,
     prepare_stage1_plans,
     prepare_stage1_renders,
     require_plan_canary,
@@ -66,6 +67,30 @@ from sable_ir.stage1 import (
 from sable_ir.stage1 import (
     client_from_environment as stage1_client_from_environment,
 )
+from sable_ir.stage1_analysis import (
+    build_behavioral_metrics,
+    build_length_report,
+    fetch_kimi_tokenizer,
+    prepare_plan_audit,
+    summarize_plan_audit,
+)
+from sable_ir.stage1_controls import (
+    ControlPlanKind,
+    RendererControlKind,
+    SurfaceBaselineManifest,
+    evaluate_surface_baseline,
+    prepare_control_plan_audit,
+    prepare_control_plans,
+    prepare_renderer_control,
+    prepare_surface_baseline,
+    report_surface_baseline,
+    require_control_plan_canary,
+    require_surface_baseline_canary,
+    run_control_plans,
+    run_surface_baseline,
+    validate_control_plan_audit,
+)
+from sable_ir.stage1_report import build_stage1_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -243,6 +268,17 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_plans_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
     prepare_plans_parser.add_argument("--run-directory", type=Path)
 
+    recover_plans_parser = subparsers.add_parser(
+        "recover-stage1-plans",
+        help="create a lineage-linked continuation after one inspected TLS EOF",
+    )
+    recover_plans_parser.add_argument("source_manifest", type=Path)
+    recover_plans_parser.add_argument("--retry-job-id", required=True)
+    recover_plans_parser.add_argument("--run-id", required=True)
+    recover_plans_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    recover_plans_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    recover_plans_parser.add_argument("--run-directory", type=Path)
+
     generate_plans_parser = subparsers.add_parser(
         "generate-stage1-plans", help="run or inspect immutable Stage 1A planner jobs"
     )
@@ -286,6 +322,152 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("plan_manifest", type=Path)
     status_parser.add_argument("--render-manifest", type=Path)
     status_parser.add_argument("--output", type=Path)
+
+    tokenizer_parser = subparsers.add_parser(
+        "fetch-stage1-tokenizer", help="fetch and verify the pinned Kimi-K2.6 tokenizer"
+    )
+    tokenizer_parser.add_argument("output", type=Path)
+
+    length_parser = subparsers.add_parser(
+        "analyze-stage1-lengths", help="compute exact Stage 1B lengths and format matches"
+    )
+    length_parser.add_argument("plan_manifest", type=Path)
+    length_parser.add_argument("--tokenizer", type=Path, required=True)
+    length_parser.add_argument("--output", type=Path, required=True)
+
+    plan_audit_parser = subparsers.add_parser(
+        "prepare-stage1-plan-audit",
+        help="write the behavior-blinded Stage 1C plan audit packet",
+    )
+    plan_audit_parser.add_argument("plan_manifest", type=Path)
+    plan_audit_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    plan_audit_parser.add_argument("--output", type=Path, required=True)
+
+    audit_summary_parser = subparsers.add_parser(
+        "summarize-stage1-plan-audit", help="validate and summarize a completed plan audit"
+    )
+    audit_summary_parser.add_argument("audit", type=Path)
+    audit_summary_parser.add_argument("plan_manifest", type=Path)
+
+    metrics_parser = subparsers.add_parser(
+        "report-stage1-behavior", help="join Stage 1C audit labels with renderer outcomes"
+    )
+    metrics_parser.add_argument("render_manifest", type=Path)
+    metrics_parser.add_argument("plan_manifest", type=Path)
+    metrics_parser.add_argument("plan_audit", type=Path)
+    metrics_parser.add_argument("surface_baseline", type=Path)
+    metrics_parser.add_argument("stage0_report", type=Path)
+    metrics_parser.add_argument("--output", type=Path, required=True)
+
+    control_plans_parser = subparsers.add_parser(
+        "prepare-stage1-control-plans",
+        help="freeze wrong-clause and reversed-clause-order planner controls",
+    )
+    control_plans_parser.add_argument("plan_manifest", type=Path)
+    control_plans_parser.add_argument("--run-id", required=True)
+    control_plans_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    control_plans_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    control_plans_parser.add_argument("--run-directory", type=Path, required=True)
+    control_plans_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    surface_prepare_parser = subparsers.add_parser(
+        "prepare-stage1-surface-baseline",
+        help="freeze four policy-neutral Stage 1 renders per task for HU+",
+    )
+    surface_prepare_parser.add_argument("--run-id", required=True)
+    surface_prepare_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    surface_prepare_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    surface_prepare_parser.add_argument("--run-directory", type=Path, required=True)
+
+    surface_run_parser = subparsers.add_parser(
+        "generate-stage1-surface-baseline",
+        help="execute the repeated Stage 1 surface-only baseline",
+    )
+    surface_run_parser.add_argument("manifest", type=Path)
+    surface_run_selection = surface_run_parser.add_mutually_exclusive_group(required=True)
+    surface_run_selection.add_argument("--job-id")
+    surface_run_selection.add_argument("--all", action="store_true")
+    surface_run_parser.add_argument("--confirm-full-run")
+
+    surface_eval_parser = subparsers.add_parser(
+        "evaluate-stage1-surface-baseline", help="evaluate repeated surface-only renders"
+    )
+    surface_eval_parser.add_argument("manifest", type=Path)
+    surface_eval_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    surface_eval_parser.add_argument("--job-id")
+    surface_eval_parser.add_argument("--unsafe-local", action="store_true")
+
+    surface_report_parser = subparsers.add_parser(
+        "report-stage1-surface-baseline", help="aggregate repeated A/B HU+ baselines"
+    )
+    surface_report_parser.add_argument("manifest", type=Path)
+    surface_report_parser.add_argument("--output", type=Path, required=True)
+
+    generate_controls_parser = subparsers.add_parser(
+        "generate-stage1-control-plans", help="execute frozen Stage 1D control-plan requests"
+    )
+    generate_controls_parser.add_argument("manifest", type=Path)
+    generate_controls_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    control_selection = generate_controls_parser.add_mutually_exclusive_group(required=True)
+    control_selection.add_argument("--job-id")
+    control_selection.add_argument("--all", action="store_true")
+    generate_controls_parser.add_argument(
+        "--kind", choices=tuple(item.value for item in ControlPlanKind), required=True
+    )
+    generate_controls_parser.add_argument("--confirm-full-run")
+
+    control_audit_parser = subparsers.add_parser(
+        "prepare-stage1-control-audit",
+        help="write the behavior-blinded Stage 1D control-plan audit",
+    )
+    control_audit_parser.add_argument("manifest", type=Path)
+    control_audit_parser.add_argument(
+        "--kind", choices=tuple(item.value for item in ControlPlanKind), required=True
+    )
+    control_audit_parser.add_argument("--tokenizer", type=Path, required=True)
+    control_audit_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    control_audit_parser.add_argument("--output", type=Path, required=True)
+
+    validate_control_audit_parser = subparsers.add_parser(
+        "validate-stage1-control-audit", help="validate a completed Stage 1D control audit"
+    )
+    validate_control_audit_parser.add_argument("audit", type=Path)
+    validate_control_audit_parser.add_argument("manifest", type=Path)
+
+    render_control_parser = subparsers.add_parser(
+        "prepare-stage1-render-control",
+        help="freeze one 120-job stratified renderer substitution control",
+    )
+    render_control_parser.add_argument("plan_manifest", type=Path)
+    render_control_parser.add_argument(
+        "--kind", choices=tuple(item.value for item in RendererControlKind), required=True
+    )
+    render_control_parser.add_argument("--control-plan-manifest", type=Path)
+    render_control_parser.add_argument("--control-plan-audit", type=Path)
+    render_control_parser.add_argument("--run-id", required=True)
+    render_control_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    render_control_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    render_control_parser.add_argument("--run-directory", type=Path, required=True)
+
+    stage1_report_parser = subparsers.add_parser(
+        "report-stage1", help="apply Stage 1E gates to natural and control outcomes"
+    )
+    stage1_report_parser.add_argument("--stage0-report", type=Path, required=True)
+    stage1_report_parser.add_argument("--natural-behavior", type=Path, required=True)
+    stage1_report_parser.add_argument("--opposite-behavior", type=Path, required=True)
+    stage1_report_parser.add_argument("--shuffled-behavior", type=Path, required=True)
+    stage1_report_parser.add_argument("--wrong-clause-behavior", type=Path, required=True)
+    stage1_report_parser.add_argument("--length-report", type=Path, required=True)
+    stage1_report_parser.add_argument("--plan-audit", type=Path, required=True)
+    stage1_report_parser.add_argument(
+        "--wrong-clause-control-audit", type=Path, required=True
+    )
+    stage1_report_parser.add_argument(
+        "--clause-order-control-audit", type=Path, required=True
+    )
+    stage1_report_parser.add_argument("--control-plan-manifest", type=Path, required=True)
+    stage1_report_parser.add_argument("--output", type=Path, required=True)
+    stage1_report_parser.add_argument("--final-manual-review-passed", action="store_true")
     return parser
 
 
@@ -513,6 +695,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"prepared {len(plan_manifest.jobs)} immutable planner requests at "
                 f"{stage1_run_directory.resolve()}"
             )
+        elif args.command == "recover-stage1-plans":
+            stage1_config = load_stage1_config(args.config)
+            stage1_run_directory = args.run_directory or (
+                args.repository_root / stage1_config.artifacts_dir / "stage1" / args.run_id
+            )
+            plan_manifest = prepare_stage1_plan_recovery(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                stage1_run_directory,
+                args.run_id,
+                args.retry_job_id,
+            )
+            print(
+                f"prepared Stage 1 planner recovery with "
+                f"{len(plan_manifest.carried_forward_result_sha256s)} carried and "
+                f"{len(plan_manifest.reparsed_source_result_sha256s)} reparsed results at "
+                f"{stage1_run_directory.resolve()}"
+            )
         elif args.command == "generate-stage1-plans":
             plan_manifest = load_plan_manifest(args.manifest)
             if args.dry_run:
@@ -598,6 +799,166 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(f"{serialized}\n", encoding="utf-8")
                 print(f"wrote Stage 1A status: {args.output}")
+        elif args.command == "fetch-stage1-tokenizer":
+            digest = fetch_kimi_tokenizer(args.output)
+            print(f"verified Kimi-K2.6 tokenizer: {digest}")
+        elif args.command == "analyze-stage1-lengths":
+            length_report = build_length_report(
+                args.plan_manifest, args.tokenizer, args.output
+            )
+            print(
+                f"wrote {len(length_report.rows)} exact plan lengths and "
+                f"{len(length_report.nearest_length_matches)} within-task matches: "
+                f"{args.output}"
+            )
+        elif args.command == "prepare-stage1-plan-audit":
+            audit = prepare_plan_audit(
+                args.plan_manifest, args.repository_root, args.output
+            )
+            print(f"wrote {len(audit.rows)} behavior-blinded plan-audit rows: {args.output}")
+        elif args.command == "summarize-stage1-plan-audit":
+            summary = summarize_plan_audit(args.audit, args.plan_manifest)
+            print(summary.model_dump_json(indent=2))
+        elif args.command == "report-stage1-behavior":
+            metrics = build_behavioral_metrics(
+                args.render_manifest,
+                args.plan_manifest,
+                args.plan_audit,
+                args.surface_baseline,
+                args.stage0_report,
+                args.output,
+            )
+            print(
+                f"wrote {metrics.evaluated_rows}/{metrics.expected_rows} Stage 1 outcomes: "
+                f"{args.output}"
+            )
+        elif args.command == "prepare-stage1-control-plans":
+            stage1_config = load_stage1_config(args.config)
+            control_manifest = prepare_control_plans(
+                stage1_config,
+                args.repository_root,
+                args.plan_manifest,
+                args.run_directory,
+                args.run_id,
+                args.tokenizer,
+            )
+            print(f"prepared {len(control_manifest.jobs)} control plans: {args.run_directory}")
+        elif args.command == "prepare-stage1-surface-baseline":
+            stage1_config = load_stage1_config(args.config)
+            baseline_manifest = prepare_surface_baseline(
+                stage1_config, args.repository_root, args.run_directory, args.run_id
+            )
+            print(f"prepared {len(baseline_manifest.jobs)} surface baseline jobs")
+        elif args.command == "generate-stage1-surface-baseline":
+            baseline_run_id = args.manifest.resolve().parent.name
+            if args.all and args.confirm_full_run != baseline_run_id:
+                raise Stage1Error("--confirm-full-run must equal the baseline run directory name")
+            if args.all:
+                require_surface_baseline_canary(args.manifest)
+            baseline_manifest = SurfaceBaselineManifest.model_validate_json(
+                args.manifest.read_text(encoding="utf-8")
+            )
+            baseline_client = stage1_client_from_environment(baseline_manifest.provider)
+            baseline_summary = run_surface_baseline(
+                args.manifest,
+                baseline_client,
+                job_id=None if args.all else args.job_id,
+            )
+            print(json.dumps(baseline_summary, indent=2, sort_keys=True))
+        elif args.command == "evaluate-stage1-surface-baseline":
+            baseline_manifest = SurfaceBaselineManifest.model_validate_json(
+                args.manifest.read_text(encoding="utf-8")
+            )
+            baseline_backend = (
+                UnsafeLocalSandbox(baseline_manifest.sandbox)
+                if args.unsafe_local
+                else DockerSandbox(baseline_manifest.sandbox)
+            )
+            print(
+                json.dumps(
+                    evaluate_surface_baseline(
+                        args.manifest,
+                        args.repository_root,
+                        baseline_backend,
+                        job_id=args.job_id,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "report-stage1-surface-baseline":
+            baseline_report = report_surface_baseline(args.manifest, args.output)
+            print(
+                f"wrote {baseline_report.evaluated}/{baseline_report.expected} surface outcomes: "
+                f"{args.output}"
+            )
+        elif args.command == "generate-stage1-control-plans":
+            if args.all and args.confirm_full_run != args.manifest.resolve().parent.name:
+                raise Stage1Error("--confirm-full-run must equal the control run directory name")
+            if args.all:
+                require_control_plan_canary(args.manifest, ControlPlanKind(args.kind))
+            stage1_config = load_stage1_config(args.config)
+            control_client = stage1_client_from_environment(stage1_config.hosted_kimi)
+            control_summary = run_control_plans(
+                args.manifest,
+                control_client,
+                args.config,
+                job_id=None if args.all else args.job_id,
+                kind=ControlPlanKind(args.kind),
+            )
+            print(json.dumps(control_summary, indent=2, sort_keys=True))
+        elif args.command == "prepare-stage1-control-audit":
+            control_audit = prepare_control_plan_audit(
+                args.manifest,
+                args.repository_root,
+                args.output,
+                ControlPlanKind(args.kind),
+                args.tokenizer,
+            )
+            print(f"wrote {len(control_audit.rows)} control audit rows: {args.output}")
+        elif args.command == "validate-stage1-control-audit":
+            print(
+                json.dumps(
+                    validate_control_plan_audit(args.audit, args.manifest),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "prepare-stage1-render-control":
+            stage1_config = load_stage1_config(args.config)
+            control_render_manifest = prepare_renderer_control(
+                stage1_config,
+                args.repository_root,
+                args.plan_manifest,
+                args.run_directory,
+                args.run_id,
+                RendererControlKind(args.kind),
+                control_plan_manifest_path=args.control_plan_manifest,
+                control_plan_audit_path=args.control_plan_audit,
+            )
+            print(
+                f"prepared {len(control_render_manifest.jobs)} {args.kind} renders: "
+                f"{args.run_directory}"
+            )
+        elif args.command == "report-stage1":
+            stage1_report = build_stage1_report(
+                args.stage0_report,
+                args.natural_behavior,
+                args.opposite_behavior,
+                args.shuffled_behavior,
+                args.wrong_clause_behavior,
+                args.length_report,
+                args.plan_audit,
+                args.wrong_clause_control_audit,
+                args.clause_order_control_audit,
+                args.control_plan_manifest,
+                args.output,
+                final_manual_review_passed=args.final_manual_review_passed,
+            )
+            print(
+                f"wrote Stage 1 report: {args.output} "
+                f"({stage1_report.recommendation.value})"
+            )
             if not status.complete:
                 return 1
     except (ConfigLoadError, GenerationError, HarnessError, ScoringError, Stage1Error) as error:

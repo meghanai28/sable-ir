@@ -60,6 +60,31 @@ class Stage1Lineage(StrictModel):
     stage0_g7_audit_sha256: Sha256
 
 
+class Stage1RetryAuthorization(StrictModel):
+    source_manifest_path: str
+    source_manifest_sha256: Sha256
+    job_id: str
+    prior_attempt_path: str
+    prior_attempt_sha256: Sha256
+    prior_attempt_finished_at: str
+    earliest_retry_at: str
+    additional_attempts: Literal[1] = 1
+    automatic_retry: Literal[False] = False
+    reason: Literal["transport_tls_eof"] = "transport_tls_eof"
+
+    @model_validator(mode="after")
+    def validate_retry(self) -> Stage1RetryAuthorization:
+        _safe_relative(self.source_manifest_path, "source_manifest_path")
+        _safe_relative(self.prior_attempt_path, "prior_attempt_path")
+        finished = datetime.fromisoformat(self.prior_attempt_finished_at)
+        earliest = datetime.fromisoformat(self.earliest_retry_at)
+        if finished.tzinfo is None or earliest.tzinfo is None:
+            raise ValueError("retry timestamps must include UTC offsets")
+        if earliest != finished:
+            raise ValueError("TLS EOF recovery adds no provider cooldown")
+        return self
+
+
 class PlanJob(StrictModel):
     job_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,199}$")
     task_id: str
@@ -116,6 +141,12 @@ class PlanManifest(StrictModel):
     provider: KimiConfig
     sandbox: SandboxConfig
     plans_per_cell: Literal[3]
+    migrated_from_manifest_path: str | None = None
+    migrated_from_manifest_sha256: Sha256 | None = None
+    carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    reparsed_source_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    manual_retry_authorization: Stage1RetryAuthorization | None = None
+    execution_order: tuple[str, ...] | None = None
     jobs: tuple[PlanJob, ...]
 
     @model_validator(mode="after")
@@ -126,6 +157,28 @@ class PlanManifest(StrictModel):
             raise ValueError("plan manifest contains duplicate job IDs")
         if self.provider.thinking_max_completion_tokens != 32_768:
             raise ValueError("Stage 1A planners require the 32K thinking ceiling")
+        job_ids = {job.job_id for job in self.jobs}
+        carried = set(self.carried_forward_result_sha256s)
+        reparsed = set(self.reparsed_source_result_sha256s)
+        if not carried | reparsed <= job_ids or carried & reparsed:
+            raise ValueError("invalid carried/reparsed Stage 1 plan result sets")
+        recovery = bool(carried or reparsed or self.manual_retry_authorization)
+        if recovery != bool(self.migrated_from_manifest_sha256):
+            raise ValueError("Stage 1 recovery lineage is incomplete")
+        if recovery and self.migrated_from_manifest_path is None:
+            raise ValueError("Stage 1 recovery requires its source manifest path")
+        authorization = self.manual_retry_authorization
+        if authorization is not None:
+            if authorization.source_manifest_sha256 != self.migrated_from_manifest_sha256:
+                raise ValueError("retry authorization references the wrong source manifest")
+            if authorization.job_id in carried | reparsed or authorization.job_id not in job_ids:
+                raise ValueError("retry authorization references an invalid job")
+        completed = carried | reparsed
+        if self.execution_order is not None:
+            if len(self.execution_order) != len(set(self.execution_order)):
+                raise ValueError("execution_order contains duplicate jobs")
+            if set(self.execution_order) != job_ids - completed:
+                raise ValueError("execution_order must enumerate every pending recovery job")
         _validate_provider_safety(self.provider)
         return self
 
@@ -162,6 +215,7 @@ class PlanRecord(StrictModel):
     raw_response_sha256: Sha256
     plan_path: str | None
     reasoning_path: str | None
+    reparsed_from_result_sha256: Sha256 | None = None
 
     @model_validator(mode="after")
     def validate_artifacts(self) -> PlanRecord:
@@ -240,21 +294,32 @@ class RenderManifest(StrictModel):
     created_at: str
     harness_version: Literal["stage1a-render-generation-v1"] = RENDER_HARNESS_VERSION
     scope: Literal["five_task_pilot"] = "five_task_pilot"
+    condition: Literal[
+        "natural", "opposite_policy", "shuffled_task", "wrong_clause"
+    ] = "natural"
+    control_mapping_sha256: Sha256 | None = None
     source_plan_manifest_path: str
     source_plan_manifest_sha256: Sha256
     lineage: Stage1Lineage
     config_sha256: Sha256
     provider: KimiConfig
     sandbox: SandboxConfig
-    renders_per_plan: Literal[4]
+    renders_per_plan: Literal[2, 4]
     jobs: tuple[RenderJob, ...]
 
     @model_validator(mode="after")
     def validate_matrix(self) -> RenderManifest:
-        if len(self.jobs) != 720:
-            raise ValueError("five-task Stage 1A render matrix must contain 720 jobs")
+        expected = 720 if self.condition == "natural" else 120
+        expected_samples = 4 if self.condition == "natural" else 2
+        if len(self.jobs) != expected or self.renders_per_plan != expected_samples:
+            raise ValueError(
+                f"{self.condition} render matrix must contain {expected} jobs with "
+                f"{expected_samples} samples per selected plan"
+            )
         if len({job.job_id for job in self.jobs}) != len(self.jobs):
             raise ValueError("render manifest contains duplicate job IDs")
+        if (self.condition == "natural") != (self.control_mapping_sha256 is None):
+            raise ValueError("only renderer controls require a frozen mapping hash")
         _validate_provider_safety(self.provider)
         return self
 
@@ -424,6 +489,13 @@ def prepare_stage1_plans(
     repository_root: Path,
     run_directory: Path,
     run_id: str,
+    *,
+    migrated_from_manifest_path: str | None = None,
+    migrated_from_manifest_sha256: str | None = None,
+    carried_forward_result_sha256s: dict[str, str] | None = None,
+    reparsed_source_result_sha256s: dict[str, str] | None = None,
+    manual_retry_authorization: Stage1RetryAuthorization | None = None,
+    execution_order: tuple[str, ...] | None = None,
 ) -> PlanManifest:
     _validate_run_id(run_id)
     root = repository_root.resolve()
@@ -503,9 +575,134 @@ def prepare_stage1_plans(
         provider=config.hosted_kimi,
         sandbox=config.sandbox,
         plans_per_cell=config.plans_per_cell,
+        migrated_from_manifest_path=migrated_from_manifest_path,
+        migrated_from_manifest_sha256=migrated_from_manifest_sha256,
+        carried_forward_result_sha256s=carried_forward_result_sha256s or {},
+        reparsed_source_result_sha256s=reparsed_source_result_sha256s or {},
+        manual_retry_authorization=manual_retry_authorization,
+        execution_order=execution_order,
         jobs=tuple(jobs),
     )
     _write_model_new(destination / "manifest.json", manifest)
+    return manifest
+
+
+def prepare_stage1_plan_recovery(
+    config: Stage1Config,
+    repository_root: Path,
+    source_manifest_path: Path,
+    run_directory: Path,
+    run_id: str,
+    retry_job_id: str,
+) -> PlanManifest:
+    """Carry exact plan results, reparse validator false negatives, and authorize one retry."""
+    root = repository_root.resolve()
+    source_manifest_path = source_manifest_path.resolve()
+    source_manifest = load_plan_manifest(source_manifest_path)
+    source_directory = source_manifest_path.parent
+    source_manifest_hash = _sha(source_manifest_path.read_bytes())
+    try:
+        source_manifest_relative = source_manifest_path.relative_to(root).as_posix()
+    except ValueError as error:
+        raise Stage1Error("source plan manifest must be inside the repository") from error
+    source_jobs = {job.job_id: job for job in source_manifest.jobs}
+    if retry_job_id not in source_jobs:
+        raise Stage1Error(f"unknown Stage 1 retry job: {retry_job_id}")
+
+    carried: dict[str, str] = {}
+    reparsed: dict[str, str] = {}
+    artifact_paths: set[str] = set()
+    reparsed_records: dict[str, tuple[PlanRecord, str, str]] = {}
+    for job in source_manifest.jobs:
+        result_path = source_directory / job.result_path
+        if not result_path.is_file():
+            continue
+        result_bytes = result_path.read_bytes()
+        record = _load_model(result_path, PlanRecord, "source plan result")
+        _validate_plan_record(record, job, source_manifest)
+        if record.status is GenerationStatus.MALFORMED:
+            response_path = _required_file(
+                source_directory, record.raw_response_path, "malformed raw response"
+            )
+            response = _load_model(response_path, ProviderResponse, "malformed raw response")
+            plan, extraction = extract_plan(response.content, job.plan_format)
+            reparsed[job.job_id] = _sha(result_bytes)
+            reparsed_records[job.job_id] = (record, plan, extraction)
+        else:
+            _validate_plan_artifacts(source_directory, job, source_manifest, record)
+            if record.status is not GenerationStatus.GENERATED:
+                raise Stage1Error(f"cannot carry non-final plan result: {job.job_id}")
+            carried[job.job_id] = _sha(result_bytes)
+        artifact_paths.update(_plan_record_artifact_paths(job, record))
+
+    if retry_job_id in carried or retry_job_id in reparsed:
+        raise Stage1Error("retry job already has a usable result")
+    prior_attempts = sorted(
+        (source_directory / "jobs" / retry_job_id / "attempts").glob("attempt-*.json")
+    )
+    if len(prior_attempts) != 1:
+        raise Stage1Error("TLS recovery requires exactly one preserved failed attempt")
+    prior_bytes = prior_attempts[0].read_bytes()
+    prior = _load_model(prior_attempts[0], AttemptRecord, "failed plan attempt")
+    if prior.succeeded or not prior.retryable or prior.error is None or "SSL:" not in prior.error:
+        raise Stage1Error("manual Stage 1 retry is limited to the preserved TLS EOF failure")
+    authorization = Stage1RetryAuthorization(
+        source_manifest_path=source_manifest_relative,
+        source_manifest_sha256=source_manifest_hash,
+        job_id=retry_job_id,
+        prior_attempt_path=prior_attempts[0].relative_to(source_directory).as_posix(),
+        prior_attempt_sha256=_sha(prior_bytes),
+        prior_attempt_finished_at=prior.finished_at,
+        earliest_retry_at=prior.finished_at,
+    )
+    completed = set(carried) | set(reparsed)
+    execution_order = tuple(
+        job.job_id for job in source_manifest.jobs if job.job_id not in completed
+    )
+    manifest = prepare_stage1_plans(
+        config,
+        root,
+        run_directory,
+        run_id,
+        migrated_from_manifest_path=source_manifest_relative,
+        migrated_from_manifest_sha256=source_manifest_hash,
+        carried_forward_result_sha256s=carried,
+        reparsed_source_result_sha256s=reparsed,
+        manual_retry_authorization=authorization,
+        execution_order=execution_order,
+    )
+    new_jobs = {job.job_id: job for job in manifest.jobs}
+    if set(new_jobs) != set(source_jobs):
+        raise Stage1Error("Stage 1 recovery changed the job matrix")
+    for job_id, source_job in source_jobs.items():
+        new_job = new_jobs[job_id]
+        if source_job.model_dump() != new_job.model_dump():
+            raise Stage1Error(f"Stage 1 recovery changed a frozen job: {job_id}")
+
+    destination = run_directory.resolve()
+    for relative in sorted(artifact_paths):
+        source = _required_file(source_directory, relative, "carried plan artifact")
+        _write_bytes_new(destination / relative, source.read_bytes())
+    for job_id, (source_record, plan, extraction) in reparsed_records.items():
+        plan_relative = f"jobs/{job_id}/plans/plan-reparsed.txt"
+        _write_text_new(destination / plan_relative, plan)
+        reparsed_record = source_record.model_copy(
+            update={
+                "status": GenerationStatus.GENERATED,
+                "extraction": extraction,
+                "plan_sha256": _sha_text(plan),
+                "plan_characters": len(plan),
+                "observed_plan_tokens": max(
+                    0,
+                    source_record.usage.get("output_tokens", 0)
+                    - source_record.usage.get("reasoning_tokens", 0),
+                ),
+                "observed_plan_tokens_source": "provider_output_minus_reasoning",
+                "plan_path": plan_relative,
+                "reparsed_from_result_sha256": reparsed[job_id],
+            }
+        )
+        _write_model_new(destination / new_jobs[job_id].result_path, reparsed_record)
     return manifest
 
 
@@ -517,7 +714,11 @@ def run_stage1_plans(
 ) -> RunSummary:
     manifest = load_plan_manifest(manifest_path)
     run_directory = manifest_path.resolve().parent
-    selected = _select_jobs(manifest.jobs, job_id)
+    if job_id is None and manifest.execution_order is not None:
+        by_id = {job.job_id: job for job in manifest.jobs}
+        selected = tuple(by_id[item] for item in manifest.execution_order)
+    else:
+        selected = tuple(_select_jobs(manifest.jobs, job_id))
     counts = {status: 0 for status in GenerationStatus}
     failed = 0
     skipped = 0
@@ -536,7 +737,20 @@ def run_stage1_plans(
                 "before preparing any lineage-linked recovery"
             )
         _wait_for_request_interval(run_directory, manifest.provider)
-        response = _request_once(run_directory, job.job_id, attempt, request.model_request, client)
+        authorization = manifest.manual_retry_authorization
+        retry_hash = None
+        if authorization is not None and authorization.job_id == job.job_id:
+            if datetime.now(UTC) < datetime.fromisoformat(authorization.earliest_retry_at):
+                raise Stage1Error("manual retry cooldown has not elapsed")
+            retry_hash = authorization.prior_attempt_sha256
+        response = _request_once(
+            run_directory,
+            job.job_id,
+            attempt,
+            request.model_request,
+            client,
+            authorized_lineage_retry_of_attempt_sha256=retry_hash,
+        )
         if response is None:
             failed = 1
             break
@@ -1078,14 +1292,27 @@ def extract_plan(content: str, plan_format: Stage1PlanFormat) -> tuple[str, str]
         raise Stage1Error("plan body is empty")
     if plan_format is Stage1PlanFormat.STRUCTURED:
         labels = ("SOURCE", "TRUST", "SINK", "GUARD", "ORDER", "EFFECT")
-        positions: list[int] = []
+        matches_by_label: list[re.Match[str]] = []
         for label in labels:
-            matches = list(re.finditer(rf"(?m)^{label}:\s*\S.*$", body))
+            matches = list(re.finditer(rf"(?m)^{label}(?::[^\n]*)?[ \t]*$", body))
             if len(matches) != 1:
                 raise Stage1Error(f"structured plan must contain one nonempty {label} field")
-            positions.append(matches[0].start())
+            matches_by_label.append(matches[0])
+        positions = [match.start() for match in matches_by_label]
         if positions != sorted(positions):
             raise Stage1Error("structured plan fields are out of order")
+        for index, match in enumerate(matches_by_label):
+            inline = match.group(0).partition(":")[2].strip()
+            end = (
+                matches_by_label[index + 1].start()
+                if index + 1 < len(matches_by_label)
+                else len(body)
+            )
+            following = body[match.end() : end].strip()
+            if not inline and not following:
+                raise Stage1Error(
+                    f"structured plan must contain one nonempty {labels[index]} field"
+                )
         extraction = "structured_end_plan"
     else:
         extraction = "freeform_end_plan"
@@ -1441,6 +1668,8 @@ def _request_once(
     attempt: int,
     request: ModelRequest,
     client: GenerationClient,
+    *,
+    authorized_lineage_retry_of_attempt_sha256: str | None = None,
 ) -> ProviderResponse | None:
     started_at = _now()
     started = time.monotonic()
@@ -1458,6 +1687,9 @@ def _request_once(
                 retryable=error.retryable,
                 error=str(error),
                 automatic_retry=False,
+                authorized_lineage_retry_of_attempt_sha256=(
+                    authorized_lineage_retry_of_attempt_sha256
+                ),
             ),
         )
         return None
@@ -1475,6 +1707,9 @@ def _request_once(
             succeeded=True,
             provider_request_id=response.request_id,
             automatic_retry=False,
+            authorized_lineage_retry_of_attempt_sha256=(
+                authorized_lineage_retry_of_attempt_sha256
+            ),
         ),
     )
     return response
@@ -1641,6 +1876,20 @@ def _next_attempt(run_directory: Path, job_id: str) -> int:
     return max(numbers, default=0) + 1
 
 
+def _plan_record_artifact_paths(job: PlanJob, record: PlanRecord) -> set[str]:
+    paths = {
+        f"jobs/{job.job_id}/attempts/attempt-{record.successful_attempt:02d}.json",
+        record.raw_response_path,
+    }
+    if record.status is not GenerationStatus.MALFORMED:
+        paths.add(job.result_path)
+    if record.plan_path is not None:
+        paths.add(record.plan_path)
+    if record.reasoning_path is not None:
+        paths.add(record.reasoning_path)
+    return paths
+
+
 def _attempt_path(run_directory: Path, job_id: str, attempt: int) -> Path:
     return run_directory / f"jobs/{job_id}/attempts/attempt-{attempt:02d}.json"
 
@@ -1702,6 +1951,17 @@ def _write_text_new(path: Path, value: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("x", encoding="utf-8") as output:
+            output.write(value)
+            output.flush()
+            os.fsync(output.fileno())
+    except OSError as error:
+        raise Stage1Error(f"could not create immutable artifact {path}: {error}") from error
+
+
+def _write_bytes_new(path: Path, value: bytes) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as output:
             output.write(value)
             output.flush()
             os.fsync(output.fileno())

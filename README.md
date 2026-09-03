@@ -88,3 +88,6 @@ Stage 1A freezes 180 thinking-enabled plan requests and, after those plans finis
 non-thinking renderer requests. The exact five-task pilot matrix, Stage 0 lineage checks, learned
 token/time ceilings, failure behavior, and commands are documented in
 [the hosted Kimi Stage 1A runbook](docs/hosted-kimi-stage1a.md).
+
+Exact length matching, blinded plan labels, behavioral metrics, renderer-dependence controls, and
+the continuation state machine are documented in [the Stage 1B–E runbook](docs/stage1-bcde.md).
