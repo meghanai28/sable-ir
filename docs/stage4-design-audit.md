@@ -17,31 +17,38 @@ until Stage 2/3 complete and Stage 3 passes all renderer-ingestion authorization
 
 ## Intervention integrity
 
-- The primary edit is registered on the selected decoder block and is applied exactly once at the
-  renderer `END_PLAN` token.
+- The primary edit is a single-position causal subspace intervention, not complete-activation
+  replacement. The manifest freezes the exact module/layer, post-block location, `END_PLAN` token
+  index, prompt-prefill phase, and downstream-layer count.
+- Runtime requires an exact module/index match, at least one downstream layer, exactly one edit,
+  and bit-identical next-token logits for strength-zero hooked versus unhooked forwards.
 - Its update changes only the selected unit direction; projection before/after, L2 norm, edit count,
   and maximum orthogonal residual are persisted. A primary orthogonal residual over `1e-5` aborts.
 - The planner adapter is disabled during every renderer capture, logit calculation, teacher-forced
   pass, and generation.
 - The random vector is deterministically projected orthogonal to the target and validated by dot
   product. Stage 3 auxiliary controls use layer-qualified paths.
-- The unrelated-fact control is an actual paired authentication-session capture, not a relabeled
-  plan-format vector. The full-vector control is the held-out explicit B-minus-A source state.
+- The unrelated-fact null is a paired authentication-session capture on the development recipient.
+- Only random orthogonal, unrelated authentication, paraphrase identity, and lexical framing are
+  matched null controls. Development scalar values and the early layer are diagnostics; the held-out
+  A/B vector is a positive oracle. None can affect selection or the transfer-success calculation.
 - Direction materialization binds every vector, centroid/value source, model, adapter, and activation
   to the experiment manifest by SHA-256.
 
 ## Analysis integrity
 
 - Full code sampling cannot be prepared until the development-only distribution check passes.
-- The check requires exactly target, random-orthogonal, and lexical-framing A/B pairs at all frozen
-  strengths. Raw logits, divergence specification, prompt, direction set, and result files are
+- The check requires exactly the target and four development-only matched null controls at every
+  frozen strength; the held-out oracle is forbidden. Raw logits, divergence specification, prompt,
+  direction set, and result files are
   hash-bound.
 - It records patched/unpatched KL, A/B Jensen-Shannon divergence, relevant-token logit changes, and
   teacher-forced A-vs-B continuation log-odds at the preregistered first divergence.
 - The report measures bidirectionality as opposite movement of one A-minus-B executable-behavior
   contrast, not as two unrelated rate increases.
-- Causal success additionally requires the weaker target direction to beat every control, set-2
-  inputs, and functionality within five points of unpatched.
+- Causal success additionally requires the weaker target direction to beat all four matched nulls,
+  set-2 inputs, and each target to lose at most one functional output versus unpatched.
+- All 17 conditions share the same 16 seeds by sample index; the manifest rejects a mismatch.
 - Functional code passing both mutually exclusive suites yields `invalid_task_or_tests`.
 - Malformed/length outputs remain model failures; missing jobs remain incomplete.
 
@@ -56,8 +63,8 @@ interchange succeeds.
 ## Verification performed
 
 - Repository-wide Ruff: passed.
-- Repository-wide mypy: passed for 26 source files.
-- Repository-wide pytest: 85 tests passed.
+- Repository-wide mypy: passed for 29 source files.
+- Repository-wide pytest: 91 tests passed.
 - `validate-stage2-config`, `validate-stage3-config`, and `validate-stage4-config`: passed.
 - Stage 3 correctly reports its paraphrase meaning audit as pending; Stage 4 does not bypass it.
 

@@ -31,6 +31,7 @@ from sable_ir.stage4 import (
     DivergenceSpec,
     DivergenceTask,
     FullRunJob,
+    HookSpecification,
     SanityPairResult,
     Stage4DirectionSet,
     Stage4Error,
@@ -40,6 +41,7 @@ from sable_ir.stage4 import (
     _load,
     _sha,
     _write_model,
+    direction_role,
     load_stage4_config,
 )
 
@@ -52,6 +54,11 @@ class PatchTelemetry:
     projection_after: float | None = None
     edit_l2_norm: float | None = None
     orthogonal_component_changed_max_abs: float | None = None
+    hook: HookSpecification | None = None
+    observed_end_plan_token_index: int | None = None
+    intervention_phase: str | None = None
+    downstream_layers_receiving_edit: int | None = None
+    zero_strength_logits_identical: bool | None = None
 
 
 def materialize_stage4_directions(
@@ -72,6 +79,7 @@ def materialize_stage4_directions(
     activation_manifest_path = root / experiment.stage3_activation_manifest_path
     if _sha(activation_manifest_path.read_bytes()) != experiment.stage3_activation_manifest_sha256:
         raise Stage4Error("Stage 3 activation manifest changed after Stage 4 preparation")
+    activation_manifest = _load_activation_manifest(experiment, root)
     activation_run = activation_manifest_path.parent
     selected = experiment.selected_layer
     target = _artifact(experiment.direction_artifacts, DirectionKind.POLICY_ORIENTATION)
@@ -95,6 +103,7 @@ def materialize_stage4_directions(
         artifacts,
         DirectionArtifact(
             kind=DirectionKind.FULL_VECTOR_SAME_TASK,
+            role=direction_role(DirectionKind.FULL_VECTOR_SAME_TASK),
             layer=selected,
             path=_relative(full_path, root),
             sha256=_sha(full_path.read_bytes()),
@@ -108,6 +117,7 @@ def materialize_stage4_directions(
     dev_b = _row_state(dataset, activation_run, dev.explicit_b.job_id, selected)
     unrelated_value = DirectionArtifact(
         kind=DirectionKind.UNRELATED_TASK_VALUE,
+        role=direction_role(DirectionKind.UNRELATED_TASK_VALUE),
         layer=selected,
         path=target.path,
         sha256=target.sha256,
@@ -116,19 +126,19 @@ def materialize_stage4_directions(
     )
     artifacts = _replace_artifact(artifacts, unrelated_value)
 
-    # The unrelated-security direction is a fresh paired capture using the identical held-out
-    # omitted plan and two frozen authentication-session statements inserted before END_PLAN.
+    # The unrelated-security null is estimated on the development recipient. No held-out
+    # activation, scalar, or vector may influence strength selection.
     stage2_path = root / experiment.stage2_config_path
     if _sha(stage2_path.read_bytes()) != experiment.stage2_config_sha256:
         raise Stage4Error("Stage 2 config changed after Stage 4 preparation")
     capturer = _renderer_capturer(experiment, root, (selected,))
     prompt_a = build_renderer_prompt(
-        _surface_request(experiment, root, test.task_id),
-        _insert_before_end_plan(test.omitted.plan, experiment.unrelated_security_fact_a),
+        _surface_request(experiment, root, dev.task_id),
+        _insert_before_end_plan(dev.omitted.plan, experiment.unrelated_security_fact_a),
     )
     prompt_b = build_renderer_prompt(
-        _surface_request(experiment, root, test.task_id),
-        _insert_before_end_plan(test.omitted.plan, experiment.unrelated_security_fact_b),
+        _surface_request(experiment, root, dev.task_id),
+        _insert_before_end_plan(dev.omitted.plan, experiment.unrelated_security_fact_b),
     )
     state_a = capturer.capture_renderer_ingestion(prompt_a)
     state_b = capturer.capture_renderer_ingestion(prompt_b)
@@ -144,11 +154,12 @@ def materialize_stage4_directions(
         artifacts,
         DirectionArtifact(
             kind=DirectionKind.UNRELATED_SECURITY_FACT,
+            role=direction_role(DirectionKind.UNRELATED_SECURITY_FACT),
             layer=selected,
             path=_relative(unrelated_path, root),
             sha256=_sha(unrelated_path.read_bytes()),
             derivation=(
-                "normalized paired authentication-session fact capture on identical omitted plan"
+                "normalized paired authentication-session fact capture on development omitted plan"
             ),
         ),
     )
@@ -159,6 +170,8 @@ def materialize_stage4_directions(
         experiment_manifest_sha256=_sha(experiment_manifest_path.read_bytes()),
         artifacts=tuple(artifacts),
         target_random_absolute_dot=round(abs(float(target_vector @ random)), 10),
+        decoder_block_container_module=_decoder_block_container_module(capturer._model),
+        expected_num_layers=activation_manifest.expected_num_layers,
     )
     _write_model(output, result)
     return result
@@ -197,6 +210,8 @@ def run_stage4_sanity(
     required = (
         DirectionKind.POLICY_ORIENTATION,
         DirectionKind.RANDOM_ORTHOGONAL,
+        DirectionKind.UNRELATED_SECURITY_FACT,
+        DirectionKind.PARAPHRASE_IDENTITY,
         DirectionKind.LEXICAL_FRAMING,
     )
     for strength in experiment.strength_multipliers:
@@ -273,7 +288,7 @@ def run_stage4_full(
     directions = _load(Stage4DirectionSet, direction_path)
     if directions.artifacts != manifest.resolved_direction_artifacts:
         raise Stage4Error("full-run directions differ from its frozen manifest")
-    engine = InterventionEngine(experiment, directions, root)
+    engine = InterventionEngine(experiment, directions, root, manifest.hook_by_direction)
     directory = manifest_path.resolve().parent
     completed = 0
     for job in manifest.jobs:
@@ -321,6 +336,13 @@ def run_stage4_full(
             projection_before=telemetry.projection_before,
             projection_after=telemetry.projection_after,
             edit_l2_norm=telemetry.edit_l2_norm,
+            hook=telemetry.hook,
+            observed_end_plan_token_index=telemetry.observed_end_plan_token_index,
+            intervention_phase=(
+                "prompt_prefill" if telemetry.intervention_phase == "prompt_prefill" else None
+            ),
+            downstream_layers_receiving_edit=telemetry.downstream_layers_receiving_edit,
+            zero_strength_logits_identical=telemetry.zero_strength_logits_identical,
         )
         _write_model(result_path, record)
         completed += 1
@@ -335,6 +357,7 @@ class InterventionEngine:
         experiment: Stage4ExperimentManifest,
         directions: Stage4DirectionSet,
         root: Path,
+        hook_by_direction: dict[DirectionKind, HookSpecification] | None = None,
     ) -> None:
         import numpy as np
 
@@ -359,6 +382,8 @@ class InterventionEngine:
             kind: np.asarray(_load_vector(root, artifact), dtype=np.float32)
             for kind, artifact in self.artifacts.items()
         }
+        self.hook_by_direction = hook_by_direction or {}
+        self._zero_identity_prompts: set[str] = set()
 
     def generate(self, job: FullRunJob) -> tuple[LocalGeneration, PatchTelemetry, str | None]:
         if job.direction_kind is None:
@@ -373,6 +398,7 @@ class InterventionEngine:
             return generation, PatchTelemetry(applied=False, edited_positions=0), None
         if job.target_policy is None:
             raise Stage4Error("patched full-run job lacks a target policy")
+        zero_identity = self._assert_zero_strength_identity(job.prompt)
         artifact = self.artifacts[job.direction_kind]
         telemetry = PatchTelemetry(applied=False, edited_positions=0)
         with self._patch(
@@ -395,6 +421,7 @@ class InterventionEngine:
             and (telemetry.orthogonal_component_changed_max_abs or 0.0) > 1e-5
         ):
             raise Stage4Error(f"primary edit changed an orthogonal component: {job.job_id}")
+        telemetry.zero_strength_logits_identical = zero_identity
         return generation, telemetry, artifact.sha256
 
     def next_logits(
@@ -407,6 +434,8 @@ class InterventionEngine:
         import numpy as np
 
         encoded, _text = self._encode(prompt)
+        if kind is not None:
+            self._assert_zero_strength_identity(prompt)
         telemetry = PatchTelemetry(applied=False, edited_positions=0)
         patch = (
             contextlib.nullcontext()
@@ -498,6 +527,18 @@ class InterventionEngine:
         position = self._end_plan_position(full_text or templated, templated)
         block = self.blocks[artifact.layer]
         torch = self.torch
+        hook_spec = self.hook_by_direction.get(kind)
+        if hook_spec is not None:
+            if position != hook_spec.token_index:
+                raise Stage4Error(
+                    "END_PLAN token index changed: "
+                    f"frozen {hook_spec.token_index}, observed {position}"
+                )
+            modules = dict(self.model.named_modules())
+            if modules.get(hook_spec.module) is not block:
+                raise Stage4Error(
+                    f"frozen hook module does not resolve exactly: {hook_spec.module}"
+                )
 
         def hook(_module: Any, _inputs: Any, output: Any) -> Any:
             hidden = output[0] if isinstance(output, tuple) else output
@@ -539,6 +580,12 @@ class InterventionEngine:
             telemetry.projection_after = round(float(after), 6)
             telemetry.edit_l2_norm = round(float(torch.linalg.vector_norm(delta)), 6)
             telemetry.orthogonal_component_changed_max_abs = round(float(residual.abs().max()), 10)
+            telemetry.hook = hook_spec
+            telemetry.observed_end_plan_token_index = position
+            telemetry.intervention_phase = "prompt_prefill"
+            telemetry.downstream_layers_receiving_edit = len(self.blocks) - artifact.layer - 1
+            if telemetry.downstream_layers_receiving_edit < 1:
+                raise Stage4Error("intervention has no downstream layer to receive the edit")
             if isinstance(output, tuple):
                 return (changed, *output[1:])
             return changed
@@ -553,6 +600,39 @@ class InterventionEngine:
                 handle.remove()
 
         return registered()
+
+    def _assert_zero_strength_identity(self, prompt: str) -> bool:
+        """A no-op post-block hook must preserve deterministic next-token logits exactly."""
+        prompt_sha = _sha(prompt.encode())
+        if prompt_sha in self._zero_identity_prompts:
+            return True
+        encoded, _text = self._encode(prompt)
+        primary = DirectionKind.POLICY_ORIENTATION
+        telemetry = PatchTelemetry()
+
+        def forward() -> Any:
+            try:
+                return self.model(**encoded, use_cache=False, logits_to_keep=1).logits
+            except TypeError:
+                return self.model(**encoded, use_cache=False).logits[:, -1:, :]
+
+        with self.torch.inference_mode(), self.model.disable_adapter():
+            unhooked = forward().detach().clone()
+        with (
+            self.torch.inference_mode(),
+            self.model.disable_adapter(),
+            self._patch(prompt, primary, PolicyValue.A, 0.0, telemetry),
+        ):
+            hooked = forward().detach()
+        if not telemetry.applied or telemetry.edited_positions != 1:
+            raise Stage4Error("zero-strength implementation assertion did not apply exactly once")
+        if not bool(self.torch.equal(unhooked, hooked)):
+            difference = float((unhooked.to(self.torch.float32) - hooked).abs().max().cpu())
+            raise Stage4Error(
+                f"zero-strength hook changed deterministic next-token logits (max abs {difference})"
+            )
+        self._zero_identity_prompts.add(prompt_sha)
+        return True
 
     def _templated(self, prompt: str) -> str:
         return str(
@@ -603,6 +683,17 @@ def _load_activation_manifest(experiment: Stage4ExperimentManifest, root: Path) 
 
     path = root / experiment.stage3_activation_manifest_path
     return load_activation_manifest(path)
+
+
+def _decoder_block_container_module(model: Any) -> str:
+    candidates = [
+        name
+        for name, module in model.named_modules()
+        if name.endswith("language_model.layers") and hasattr(module, "__len__")
+    ]
+    if len(candidates) != 1:
+        raise Stage4Error(f"could not freeze exact decoder module path: {candidates}")
+    return str(candidates[0])
 
 
 def _row_state(dataset: Stage3Dataset, run_directory: Path, job_id: str, layer: int) -> Any:

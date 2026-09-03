@@ -1,4 +1,4 @@
-"""Stage 4 policy-orientation causal interchange: frozen design and analysis contracts."""
+"""Stage 4 single-position policy-subspace intervention contracts."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from sable_ir.stage3_analysis import (
 
 Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 ModelT = TypeVar("ModelT", bound=StrictModel)
-STAGE4_HARNESS_VERSION: Literal["stage4-causal-interchange-v1"] = "stage4-causal-interchange-v1"
+STAGE4_HARNESS_VERSION: Literal["stage4-causal-subspace-v2"] = "stage4-causal-subspace-v2"
 
 
 class Stage4Error(RuntimeError):
@@ -55,8 +55,38 @@ class DirectionKind(StrEnum):
     FULL_VECTOR_SAME_TASK = "full_vector_same_task"
 
 
+class DirectionRole(StrEnum):
+    TARGET = "target"
+    MATCHED_NULL_CONTROL = "matched_null_control"
+    VALUE_TRANSFER_DIAGNOSTIC = "value_transfer_diagnostic"
+    LOCALIZATION_DIAGNOSTIC = "localization_diagnostic"
+    POSITIVE_ORACLE = "positive_oracle"
+
+
+MATCHED_NULL_CONTROLS = frozenset(
+    {
+        DirectionKind.RANDOM_ORTHOGONAL,
+        DirectionKind.UNRELATED_SECURITY_FACT,
+        DirectionKind.PARAPHRASE_IDENTITY,
+        DirectionKind.LEXICAL_FRAMING,
+    }
+)
+
+
+def direction_role(kind: DirectionKind) -> DirectionRole:
+    if kind is DirectionKind.POLICY_ORIENTATION:
+        return DirectionRole.TARGET
+    if kind in MATCHED_NULL_CONTROLS:
+        return DirectionRole.MATCHED_NULL_CONTROL
+    if kind is DirectionKind.UNRELATED_TASK_VALUE:
+        return DirectionRole.VALUE_TRANSFER_DIAGNOSTIC
+    if kind is DirectionKind.PREREGISTERED_EARLY_LAYER:
+        return DirectionRole.LOCALIZATION_DIAGNOSTIC
+    return DirectionRole.POSITIVE_ORACLE
+
+
 class InterventionMode(StrEnum):
-    SINGLE_END_PLAN = "single_end_plan"
+    SINGLE_POSITION_SUBSPACE = "single_position_causal_subspace"
     RECURRENT_STEERING = "recurrent_steering"
     CONTRADICTORY_TEXT = "contradictory_text"
 
@@ -64,7 +94,7 @@ class InterventionMode(StrEnum):
 class Stage4Thresholds(StrictModel):
     sanity_min_ab_js_divergence: float = Field(default=0.001, gt=0)
     sanity_min_teacher_forced_log_odds_gap: float = Field(default=0.05, gt=0)
-    functionality_max_drop: float = Field(default=0.05, ge=0, le=1)
+    target_functionality_max_lost_outputs: Literal[1] = 1
     full_samples_per_condition: int = Field(default=16, ge=8, le=32)
 
 
@@ -204,16 +234,23 @@ class SelectedRecipient(StrictModel):
 
 class DirectionArtifact(StrictModel):
     kind: DirectionKind
+    role: DirectionRole
     layer: int
     path: str | None
     sha256: Sha256 | None
     derivation: str
     centroids: tuple[float, float] | None = None
 
+    @model_validator(mode="after")
+    def validate_role(self) -> DirectionArtifact:
+        if self.role is not direction_role(self.kind):
+            raise ValueError(f"{self.kind.value} must have role {direction_role(self.kind).value}")
+        return self
+
 
 class Stage4ExperimentManifest(StrictModel):
     schema_version: Literal[1] = 1
-    harness_version: Literal["stage4-causal-interchange-v1"] = STAGE4_HARNESS_VERSION
+    harness_version: Literal["stage4-causal-subspace-v2"] = STAGE4_HARNESS_VERSION
     run_id: str
     created_at: str
     design_mode: DesignMode
@@ -264,6 +301,9 @@ class Stage4DirectionSet(StrictModel):
     experiment_manifest_sha256: Sha256
     artifacts: tuple[DirectionArtifact, ...]
     target_random_absolute_dot: float = Field(ge=0)
+    decoder_block_container_module: str
+    expected_num_layers: int = Field(gt=1)
+    hook_location: Literal["post_block_output"] = "post_block_output"
     equivalent_strength_rule: Literal["target_centroid_gap"] = "target_centroid_gap"
     renderer_adapter_enabled: Literal[False] = False
 
@@ -332,9 +372,19 @@ class FullRunJob(StrictModel):
     result_path: str
 
 
+class HookSpecification(StrictModel):
+    module: str
+    layer: int = Field(ge=0)
+    location: Literal["post_block_output"] = "post_block_output"
+    token_marker: Literal["END_PLAN"] = "END_PLAN"
+    token_index: int = Field(ge=0)
+    phase: Literal["prompt_prefill"] = "prompt_prefill"
+    downstream_layers_receiving_edit: int = Field(ge=1)
+
+
 class Stage4FullRunManifest(StrictModel):
     schema_version: Literal[1] = 1
-    harness_version: Literal["stage4-causal-interchange-v1"] = STAGE4_HARNESS_VERSION
+    harness_version: Literal["stage4-causal-subspace-v2"] = STAGE4_HARNESS_VERSION
     run_id: str
     created_at: str
     experiment_manifest_path: str
@@ -347,7 +397,11 @@ class Stage4FullRunManifest(StrictModel):
     samples_per_condition: int
     sandbox: SandboxConfig
     jobs: tuple[FullRunJob, ...]
-    primary_mode: Literal[InterventionMode.SINGLE_END_PLAN] = InterventionMode.SINGLE_END_PLAN
+    hook_by_direction: dict[DirectionKind, HookSpecification]
+    paired_seed_by_sample_index: dict[int, int]
+    primary_mode: Literal[InterventionMode.SINGLE_POSITION_SUBSPACE] = (
+        InterventionMode.SINGLE_POSITION_SUBSPACE
+    )
     recurrent_steering_requires_primary_washout: Literal[True] = True
     contradictory_text_requires_primary_completion: Literal[True] = True
 
@@ -367,6 +421,18 @@ class Stage4FullRunManifest(StrictModel):
             count != self.samples_per_condition for count in counts.values()
         ):
             raise ValueError("full-run matrix must cover all 17 conditions equally")
+        if set(self.hook_by_direction) != set(DirectionKind):
+            raise ValueError("full run must freeze one exact hook for every direction")
+        if set(self.paired_seed_by_sample_index) != set(range(self.samples_per_condition)):
+            raise ValueError("paired seed map must cover every sample index")
+        for sample in range(self.samples_per_condition):
+            seeds = {job.seed for job in self.jobs if job.sample_index == sample}
+            if seeds != {self.paired_seed_by_sample_index[sample]}:
+                raise ValueError("all conditions must share the fixed seed for each sample index")
+        by_kind = {row.kind: row for row in self.resolved_direction_artifacts}
+        for kind, hook in self.hook_by_direction.items():
+            if hook.layer != by_kind[kind].layer:
+                raise ValueError("hook layer must equal its frozen direction layer")
         return self
 
 
@@ -387,6 +453,11 @@ class Stage4GenerationRecord(StrictModel):
     projection_before: float | None
     projection_after: float | None
     edit_l2_norm: float | None
+    hook: HookSpecification | None
+    observed_end_plan_token_index: int | None
+    intervention_phase: Literal["prompt_prefill"] | None
+    downstream_layers_receiving_edit: int | None
+    zero_strength_logits_identical: bool | None
 
 
 class Stage4EvaluationArtifact(StrictModel):
@@ -402,6 +473,7 @@ class ConditionOutcome(StrictModel):
     direction_kind: DirectionKind | None
     target_policy: PolicyValue | None
     samples: int
+    functional_count: int
     functional_rate: float
     policy_a_and_functional_rate: float
     policy_b_and_functional_rate: float
@@ -421,15 +493,22 @@ class Stage4Report(StrictModel):
     a_injection_shift: float | None
     b_injection_shift: float | None
     strongest_matched_control_shift: float | None
+    matched_null_control_kinds: tuple[DirectionKind, ...]
+    diagnostic_kinds_excluded_from_success: tuple[DirectionKind, ...]
     bidirectional: bool
     exceeds_every_matched_control: bool
-    functionality_within_five_points: bool
+    target_a_functional_outputs_lost: int | None
+    target_b_functional_outputs_lost: int | None
+    functionality_within_one_paired_sample: bool
     survives_paraphrase_set2: bool
     functional_outputs_passing_both_suites: int
     causal_success: bool
     evidence_scope: Literal["heldout_task_case_study"] = "heldout_task_case_study"
     cross_task_generalization_claim: Literal[False] = False
     recurrent_steering_result_must_be_reported_separately: Literal[True] = True
+    intervention_name: Literal["single-position causal subspace intervention"] = (
+        "single-position causal subspace intervention"
+    )
 
 
 def load_stage4_config(path: Path) -> Stage4Config:
@@ -580,6 +659,7 @@ def prepare_stage4_experiment(
             [
                 DirectionArtifact(
                     kind=DirectionKind.POLICY_ORIENTATION,
+                    role=direction_role(DirectionKind.POLICY_ORIENTATION),
                     layer=layer,
                     path=_relative(direction_path, root),
                     sha256=direction_sha,
@@ -626,16 +706,13 @@ def select_stage4_sanity(
     keys = {(row.direction_kind, row.strength_multiplier) for row in records}
     expected = {
         (kind, strength)
-        for kind in (
-            DirectionKind.POLICY_ORIENTATION,
-            DirectionKind.RANDOM_ORTHOGONAL,
-            DirectionKind.LEXICAL_FRAMING,
-        )
+        for kind in (DirectionKind.POLICY_ORIENTATION, *sorted(MATCHED_NULL_CONTROLS))
         for strength in manifest.strength_multipliers
     }
     if keys != expected or len(records) != len(expected):
         raise Stage4Error(
-            "sanity selection requires exactly target/random/lexical at every strength"
+            "sanity selection requires exactly the target and four matched null controls at "
+            "every strength; diagnostics and the held-out oracle are forbidden"
         )
     for field in ("direction_set_sha256", "divergence_spec_sha256", "prompt_sha256"):
         if len({getattr(row, field) for row in records}) != 1:
@@ -656,9 +733,7 @@ def select_stage4_sanity(
             None,
         )
         controls = [
-            row.a_vs_b_js_divergence
-            for row in rows
-            if row.direction_kind is not DirectionKind.POLICY_ORIENTATION
+            row.a_vs_b_js_divergence for row in rows if row.direction_kind in MATCHED_NULL_CONTROLS
         ]
         if target is None or not controls:
             continue
@@ -724,6 +799,27 @@ def prepare_stage4_full_run(
     recipient = next(row for row in experiment.recipients if row.split is SplitName.TEST)
     task = load_task(root / _task_path_for(experiment, root, recipient.task_id))
     prompt = build_renderer_prompt(task.surface_request, recipient.omitted.plan)
+    stage3_dataset = load_stage3_dataset(root / config.stage3_dataset_path)
+    recipient_row = next(
+        row for row in stage3_dataset.rows if row.job_id == recipient.omitted.job_id
+    )
+    state = recipient_row.states.get(BoundaryState.RENDERER_INGESTION)
+    if state is None:
+        raise Stage4Error("selected recipient lacks a renderer-ingestion END_PLAN state")
+    by_kind = {row.kind: row for row in directions.artifacts}
+    hook_by_direction = {
+        kind: HookSpecification(
+            module=f"{directions.decoder_block_container_module}.{artifact.layer}",
+            layer=artifact.layer,
+            token_index=state.token_index,
+            downstream_layers_receiving_edit=(directions.expected_num_layers - artifact.layer - 1),
+        )
+        for kind, artifact in by_kind.items()
+    }
+    paired_seeds = {
+        sample: _seed(experiment.run_id, f"{recipient.task_id}:paired:{sample}")
+        for sample in range(config.thresholds.full_samples_per_condition)
+    }
     conditions: list[tuple[DirectionKind | None, PolicyValue | None]] = [(None, None)]
     for kind in DirectionKind:
         conditions.extend((kind, policy) for policy in PolicyValue)
@@ -744,10 +840,10 @@ def prepare_stage4_full_run(
                     task_id=recipient.task_id,
                     direction_kind=direction_kind,
                     target_policy=policy,
-                    mode=InterventionMode.SINGLE_END_PLAN,
+                    mode=InterventionMode.SINGLE_POSITION_SUBSPACE,
                     strength_multiplier=selection.selected_strength_multiplier,
                     sample_index=sample,
-                    seed=_seed(experiment.run_id, job_id),
+                    seed=paired_seeds[sample],
                     prompt=prompt,
                     prompt_sha256=_sha(prompt.encode()),
                     candidate_path=f"jobs/{job_id}/candidate.py",
@@ -770,6 +866,8 @@ def prepare_stage4_full_run(
         samples_per_condition=config.thresholds.full_samples_per_condition,
         sandbox=experiment.sandbox,
         jobs=tuple(jobs),
+        hook_by_direction=hook_by_direction,
+        paired_seed_by_sample_index=paired_seeds,
     )
     _write_model(run_directory / "manifest.json", manifest)
     return manifest
@@ -844,6 +942,23 @@ def build_stage4_report(manifest_path: Path, repository_root: Path, output: Path
             or artifact.result_sha256 != _sha(result_path.read_bytes())
         ):
             raise Stage4Error(f"evaluation provenance mismatch: {job.job_id}")
+        if artifact.evaluation is None:
+            complete = False
+            continue
+        generation = _load(Stage4GenerationRecord, result_path)
+        if generation.candidate_sha256 != artifact.candidate_sha256:
+            raise Stage4Error(f"evaluation candidate mismatch: {job.job_id}")
+        if job.direction_kind is not None:
+            hook = manifest.hook_by_direction[job.direction_kind]
+            if (
+                generation.hook != hook
+                or generation.observed_end_plan_token_index != hook.token_index
+                or generation.intervention_phase != "prompt_prefill"
+                or generation.downstream_layers_receiving_edit
+                != hook.downstream_layers_receiving_edit
+                or generation.zero_strength_logits_identical is not True
+            ):
+                raise Stage4Error(f"intervention telemetry is incomplete: {job.job_id}")
         outcome_flags = _outcomes(artifact.evaluation)
         grouped[(job.direction_kind, job.target_policy)].append(outcome_flags)
         evaluated_jobs += 1
@@ -875,7 +990,7 @@ def build_stage4_report(manifest_path: Path, repository_root: Path, output: Path
     if unpatched is not None:
         assert base_contrast is not None
         for outcome in outcomes:
-            if outcome.direction_kind in (None, DirectionKind.POLICY_ORIENTATION):
+            if outcome.direction_kind not in MATCHED_NULL_CONTROLS:
                 continue
             observed_contrast = _policy_contrast(outcome)
             shift = (
@@ -888,15 +1003,20 @@ def build_stage4_report(manifest_path: Path, repository_root: Path, output: Path
     bidirectional = a_shift is not None and b_shift is not None and a_shift > 0 and b_shift > 0
     target_min = min(a_shift, b_shift) if a_shift is not None and b_shift is not None else None
     exceeds = target_min is not None and (strongest is None or target_min > strongest)
-    functionality_ok = bool(
-        unpatched
-        and target_a
-        and target_b
-        and unpatched.functional_rate - min(target_a.functional_rate, target_b.functional_rate)
-        <= load_stage4_config(
-            repository_root.resolve() / experiment.config_path
-        ).thresholds.functionality_max_drop
+    lost_a = (
+        None
+        if unpatched is None or target_a is None
+        else max(0, unpatched.functional_count - target_a.functional_count)
     )
+    lost_b = (
+        None
+        if unpatched is None or target_b is None
+        else max(0, unpatched.functional_count - target_b.functional_count)
+    )
+    max_lost = load_stage4_config(
+        repository_root.resolve() / experiment.config_path
+    ).thresholds.target_functionality_max_lost_outputs
+    functionality_ok = lost_a is not None and lost_b is not None and max(lost_a, lost_b) <= max_lost
     expected_jobs = len(manifest.jobs)
     is_complete = complete and evaluated_jobs == expected_jobs and len(outcomes) == 17
     invalid_tests = functional_both > 0
@@ -926,9 +1046,17 @@ def build_stage4_report(manifest_path: Path, repository_root: Path, output: Path
         a_injection_shift=a_shift,
         b_injection_shift=b_shift,
         strongest_matched_control_shift=strongest,
+        matched_null_control_kinds=tuple(sorted(MATCHED_NULL_CONTROLS)),
+        diagnostic_kinds_excluded_from_success=(
+            DirectionKind.UNRELATED_TASK_VALUE,
+            DirectionKind.PREREGISTERED_EARLY_LAYER,
+            DirectionKind.FULL_VECTOR_SAME_TASK,
+        ),
         bidirectional=bidirectional,
         exceeds_every_matched_control=exceeds,
-        functionality_within_five_points=functionality_ok,
+        target_a_functional_outputs_lost=lost_a,
+        target_b_functional_outputs_lost=lost_b,
+        functionality_within_one_paired_sample=functionality_ok,
         survives_paraphrase_set2=set2_verified,
         functional_outputs_passing_both_suites=functional_both,
         causal_success=(
@@ -951,7 +1079,9 @@ def _require_stage3_authorization(
         raise Stage4Error("Stage 3 report references another activation dataset")
     required = report.stage4_authorization_requirements
     exact = (
-        required.get("renderer_ingestion_decodable") is True
+        report.renderer_ingestion_decodability_scope
+        == "heldout_supported_omitted_or_blurred_plans"
+        and required.get("renderer_ingestion_decodable") is True
         and required.get("renderer_ingestion_transfers_to_paraphrase_set2") is True
         and required.get("renderer_ingestion_task_directions_align") is True
     )
@@ -1052,6 +1182,7 @@ def _direction_artifacts(
         artifacts.append(
             DirectionArtifact(
                 kind=kind,
+                role=direction_role(kind),
                 layer=selected_layer,
                 path=relative,
                 sha256=_sha(absolute.read_bytes()),
@@ -1073,6 +1204,7 @@ def _direction_artifacts(
     artifacts.append(
         DirectionArtifact(
             kind=DirectionKind.RANDOM_ORTHOGONAL,
+            role=direction_role(DirectionKind.RANDOM_ORTHOGONAL),
             layer=selected_layer,
             path=_relative(random_path, root),
             sha256=_sha(random_path.read_bytes()),
@@ -1102,6 +1234,7 @@ def _direction_artifacts(
         (
             DirectionArtifact(
                 kind=DirectionKind.UNRELATED_SECURITY_FACT,
+                role=direction_role(DirectionKind.UNRELATED_SECURITY_FACT),
                 layer=selected_layer,
                 path=None,
                 sha256=None,
@@ -1109,6 +1242,7 @@ def _direction_artifacts(
             ),
             DirectionArtifact(
                 kind=DirectionKind.UNRELATED_TASK_VALUE,
+                role=direction_role(DirectionKind.UNRELATED_TASK_VALUE),
                 layer=selected_layer,
                 path=_relative(target_path, root),
                 sha256=_sha(target_path.read_bytes()),
@@ -1117,6 +1251,7 @@ def _direction_artifacts(
             ),
             DirectionArtifact(
                 kind=DirectionKind.PREREGISTERED_EARLY_LAYER,
+                role=direction_role(DirectionKind.PREREGISTERED_EARLY_LAYER),
                 layer=early_layer,
                 path=_relative(early_path, root),
                 sha256=_sha(early_path.read_bytes()),
@@ -1128,6 +1263,7 @@ def _direction_artifacts(
             ),
             DirectionArtifact(
                 kind=DirectionKind.FULL_VECTOR_SAME_TASK,
+                role=direction_role(DirectionKind.FULL_VECTOR_SAME_TASK),
                 layer=selected_layer,
                 path=None,
                 sha256=None,
@@ -1184,9 +1320,7 @@ def _task_path_for(experiment: Stage4ExperimentManifest, root: Path, task_id: st
     raise Stage4Error(f"unknown Stage 4 task: {task_id}")
 
 
-def _outcomes(evaluation: EvaluationResult | None) -> dict[str, bool]:
-    if evaluation is None:
-        return {"functional": False, "A": False, "B": False}
+def _outcomes(evaluation: EvaluationResult) -> dict[str, bool]:
     return {
         "functional": _suite_passed(evaluation, TestSuiteKind.FUNCTIONALITY),
         "A": _suite_passed(evaluation, TestSuiteKind.POLICY_A),
@@ -1207,6 +1341,7 @@ def _condition_outcome(
         direction_kind=kind,
         target_policy=policy,
         samples=denominator,
+        functional_count=sum(row["functional"] for row in rows),
         functional_rate=sum(row["functional"] for row in rows) / denominator,
         policy_a_and_functional_rate=sum(row["functional"] and row["A"] for row in rows)
         / denominator,

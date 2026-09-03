@@ -22,7 +22,7 @@ from typing import Annotated, Any, Literal, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from sable_ir.schema import PolicyValue, Stage1PlanFormat, StrictModel
 from sable_ir.stage1_analysis import ClauseSelection, PolicyVisibility
@@ -492,8 +492,8 @@ class Stage3ProbeFit(StrictModel):
     dev_tasks: tuple[str, ...]
     fit_paraphrase_set: Literal["set1"] = "set1"
     probe_training_unit: Literal["activation_row"] = "activation_row"
-    probe_task_weighting: Literal["equal_total_weight_per_base_task"] = (
-        "equal_total_weight_per_base_task"
+    probe_task_weighting: Literal["equal_total_weight_per_base_task_policy"] = (
+        "equal_total_weight_per_base_task_policy"
     )
     direction_estimation_unit: Literal["task_level_ab_difference_only"] = (
         "task_level_ab_difference_only"
@@ -1084,6 +1084,9 @@ class RendererIngestionPrimaryAnalysis(StrictModel):
     hidden_use: PrimarySubsetProbeResult
     false_certificate: PrimarySubsetProbeResult
     surface_only_control: Metric | None
+    surface_only_control_role: Literal[
+        "negative_control_balanced_counterfactual_labels_without_policy_input"
+    ]
     status: Literal["supported", "insufficient_quadrant_support"]
 
 
@@ -1125,10 +1128,38 @@ class Stage3Report(StrictModel):
     primary_renderer_ingestion_analysis: RendererIngestionPrimaryAnalysis
     interpretation: tuple[InterpretationRow, ...]
     probe_generalizes: bool
+    renderer_ingestion_decodability_scope: Literal[
+        "heldout_supported_omitted_or_blurred_plans"
+    ]
+    renderer_ingestion_decodable_auroc_min: Annotated[float, Field(ge=0.0, le=1.0)]
     stage4_authorization_requirements: dict[str, bool]
     causal_evaluation_authorized: bool
     stop_or_pivot: str | None
     r_probe: str
+
+    @model_validator(mode="after")
+    def validate_stage4_authorization(self) -> Stage3Report:
+        primary = self.primary_renderer_ingestion_analysis.omitted_or_blurred
+        observed = primary.renderer_ingestion
+        subset_decodable = (
+            primary.support_status == "supported"
+            and len(primary.policy_values_present) == 2
+            and observed is not None
+            and observed.auroc is not None
+            and observed.auroc >= self.renderer_ingestion_decodable_auroc_min
+        )
+        if self.stage4_authorization_requirements.get(
+            "renderer_ingestion_decodable"
+        ) is not subset_decodable:
+            raise ValueError(
+                "renderer_ingestion_decodable must describe the supported held-out "
+                "omitted/blurred subset"
+            )
+        if self.causal_evaluation_authorized != all(
+            self.stage4_authorization_requirements.values()
+        ):
+            raise ValueError("causal authorization must equal all frozen requirements")
+        return self
 
 
 def build_stage3_report(
@@ -1184,23 +1215,32 @@ def build_stage3_report(
     ingestion = BoundaryState.RENDERER_INGESTION
     probe_generalizes = decodable[ingestion] and transfers[ingestion]
     renderer_aligned = aligned[BoundaryState.RENDERER_INGESTION]
-    authorization_requirements = {
-        "renderer_ingestion_decodable": decodable[ingestion],
-        "renderer_ingestion_transfers_to_paraphrase_set2": transfers[ingestion],
-        "renderer_ingestion_task_directions_align": renderer_aligned,
-        "dataset_complete": dataset.complete,
-    }
-    authorized = all(authorization_requirements.values())
     primary = _primary_renderer_analysis(
         dataset,
         by_state[ingestion],
         stage3_config.probes.quadrant_min_rows,
     )
+    omitted_or_blurred = primary.omitted_or_blurred
+    primary_ingestion_decodable = (
+        omitted_or_blurred.support_status == "supported"
+        and omitted_or_blurred.renderer_ingestion is not None
+        and omitted_or_blurred.renderer_ingestion.auroc is not None
+        and omitted_or_blurred.renderer_ingestion.auroc
+        >= stage3_config.probes.decodable_auroc_min
+    )
+    authorization_requirements = {
+        "renderer_ingestion_decodable": primary_ingestion_decodable,
+        "renderer_ingestion_transfers_to_paraphrase_set2": transfers[ingestion],
+        "renderer_ingestion_task_directions_align": renderer_aligned,
+        "dataset_complete": dataset.complete,
+    }
+    authorized = all(authorization_requirements.values())
     stop_or_pivot = None
-    if not decodable[ingestion]:
+    if not primary_ingestion_decodable:
         stop_or_pivot = (
-            "policy is not decodable at renderer ingestion; planner-boundary decoding is "
-            "localization evidence only and cannot authorize Stage 4"
+            "policy is not decodable at renderer ingestion on at least 10 held-out "
+            "omitted/blurred plans containing both policy labels; pooled and planner-boundary "
+            "decoding are localization evidence only and cannot authorize Stage 4"
         )
     elif not transfers[ingestion]:
         stop_or_pivot = (
@@ -1258,6 +1298,12 @@ def build_stage3_report(
         primary_renderer_ingestion_analysis=primary,
         interpretation=interpretation,
         probe_generalizes=probe_generalizes,
+        renderer_ingestion_decodability_scope=(
+            "heldout_supported_omitted_or_blurred_plans"
+        ),
+        renderer_ingestion_decodable_auroc_min=(
+            stage3_config.probes.decodable_auroc_min
+        ),
         stage4_authorization_requirements=authorization_requirements,
         causal_evaluation_authorized=authorized,
         stop_or_pivot=stop_or_pivot,
@@ -1292,6 +1338,9 @@ def _primary_renderer_analysis(
         hidden_use=results["hidden_use"],
         false_certificate=results["false_certificate"],
         surface_only_control=ingestion.surface_only_control,
+        surface_only_control_role=(
+            "negative_control_balanced_counterfactual_labels_without_policy_input"
+        ),
         status="supported" if supported else "insufficient_quadrant_support",
     )
 

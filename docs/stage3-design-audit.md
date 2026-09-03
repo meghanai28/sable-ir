@@ -14,7 +14,7 @@ the held-out result is explicitly a case study and its task-cluster interval is 
 Machine-auditable report fields:
 
 - `probe_training_unit = activation_row`
-- `probe_task_weighting = equal_total_weight_per_base_task`
+- `probe_task_weighting = equal_total_weight_per_base_task_policy`
 - `direction_estimation_unit = task_level_ab_difference_only`
 - `uncertainty_unit = base_task_cluster`
 - every metric records `independent_task_clusters` and `aggregation`
@@ -23,14 +23,18 @@ Machine-auditable report fields:
 
 Resolved. `causal_evaluation_authorized` is true only when all four exact requirements pass:
 
-1. renderer-ingestion decodability;
+1. held-out renderer-ingestion decodability on at least 10 supported omitted/blurred plans with
+   both policy labels;
 2. renderer-ingestion transfer to paraphrase set 2;
 3. renderer-ingestion task-level direction alignment; and
 4. complete activation/evaluation/label data.
 
 Planner-input and planner-output probes appear only as information-loss localization and cannot
-unlock Stage 4. `probe_generalizes` now refers only to renderer-ingestion decodability plus set-2
-transfer.
+unlock Stage 4. Pooled renderer-ingestion decodability is also only a localization diagnostic and
+cannot unlock Stage 4. `probe_generalizes` remains a pooled diagnostic for renderer-ingestion
+decodability plus set-2 transfer. The report freezes both
+`renderer_ingestion_decodability_scope` and `renderer_ingestion_decodable_auroc_min`, and its schema
+rejects any authorization flag that disagrees with the supported omitted/blurred subset result.
 
 ## Finding 3: pooled probe accuracy as headline
 
@@ -40,6 +44,9 @@ models. Hidden-use and false-certificate quadrants are separate. Each subset req
 rows and both A/B labels; otherwise its exact state is `insufficient_quadrant_support`. Pooled
 accuracy remains a secondary localization diagnostic and is never substituted for an unsupported
 quadrant.
+
+Surface-only examples contain no genuine A/B policy input. Their balanced counterfactual labels
+are recorded only as a negative control, not as another policy-decoding dataset.
 
 ## Terminology and control provenance
 

@@ -150,6 +150,9 @@ length, TF-IDF plus length, applicable-clause position, clause length and positi
 clause identity, lexical framing, paraphrase-set identity, within-task shuffled labels, a
 surface-only renderer control, and framing-transfer directions.
 
+Surface-only examples have no genuine A/B policy input. Their balanced counterfactual labels are a
+negative control for leakage, not a policy-decoding dataset.
+
 `evaluate-stage3-heldout` scores the frozen selection on held-out tasks and on paraphrase set 2.
 A policy direction that works only on set 1 is a phrasing direction. Transfer to set 2 is
 required before treating wG as the policy distinction.
@@ -165,9 +168,10 @@ The report fills the interpretation table (VIII.G), records `stage1_gate` / `sta
 if it fails), and sets:
 
 - `probe_generalizes` only if renderer ingestion is held-out-decodable and transfers to set 2
-- `causal_evaluation_authorized` only if renderer ingestion is decodable, transfers to set 2,
-  renderer-ingestion task-level directions align, and the dataset is complete; planner-input and
-  planner-output decoding localize loss but cannot unlock Stage 4
+- `causal_evaluation_authorized` only if renderer ingestion is held-out-decodable on at least 10
+  supported omitted/blurred plans containing both policies, pooled renderer ingestion transfers to
+  set 2, renderer-ingestion task-level directions align, and the dataset is complete; pooled,
+  planner-input, and planner-output decoding localize loss but cannot independently unlock Stage 4
 - `stop_or_pivot` quoting XIII.8 / VIII.H.4 / VIII.E.7 when those fail
 
 Probe accuracy is a localization heuristic, not evidence that G is causally represented.

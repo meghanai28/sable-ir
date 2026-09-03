@@ -97,11 +97,14 @@ from sable_ir.stage3 import Stage3Error
 from sable_ir.stage3_cli import add_stage3_parsers, handle_stage3_command
 from sable_ir.stage4 import Stage4Error
 from sable_ir.stage4_cli import add_stage4_parsers, handle_stage4_command
+from sable_ir.stage5 import Stage5Error
+from sable_ir.stage5_cli import add_stage5_parsers, handle_stage5_command
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sable-ir")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    add_stage5_parsers(subparsers)
 
     config_parser = subparsers.add_parser("validate-config", help="validate Stage 0 TOML")
     config_parser.add_argument("path", type=Path)
@@ -484,6 +487,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        stage5_exit = handle_stage5_command(args)
+        if stage5_exit is not None:
+            return stage5_exit
         stage2_exit = handle_stage2_command(args)
         if stage2_exit is not None:
             return stage2_exit
@@ -982,6 +988,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         Stage2Error,
         Stage3Error,
         Stage4Error,
+        Stage5Error,
     ) as error:
         print(error, file=sys.stderr)
         return 2

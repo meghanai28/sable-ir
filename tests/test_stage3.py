@@ -499,7 +499,10 @@ class TestActivationTrack:
         )
         probe_fit = json.loads((analysis_dir / "probes-dev.json").read_text(encoding="utf-8"))
         assert probe_fit["probe_training_unit"] == "activation_row"
-        assert probe_fit["probe_task_weighting"] == "equal_total_weight_per_base_task"
+        assert (
+            probe_fit["probe_task_weighting"]
+            == "equal_total_weight_per_base_task_policy"
+        )
         assert probe_fit["direction_estimation_unit"] == "task_level_ab_difference_only"
         assert probe_fit["uncertainty_unit"] == "base_task_cluster"
         heldout_path = analysis_dir / "heldout.json"
@@ -525,9 +528,23 @@ class TestActivationTrack:
         assert report.status.stage3_status == "provisional_pending_stage1"
         assert report.probe_generalizes
         requirements = report.stage4_authorization_requirements
-        assert requirements["renderer_ingestion_decodable"]
+        omitted = report.primary_renderer_ingestion_analysis.omitted_or_blurred
+        assert requirements["renderer_ingestion_decodable"] == (
+            omitted.support_status == "supported"
+            and omitted.renderer_ingestion is not None
+            and omitted.renderer_ingestion.auroc is not None
+            and omitted.renderer_ingestion.auroc >= 0.75
+        )
         assert requirements["renderer_ingestion_transfers_to_paraphrase_set2"]
         assert report.causal_evaluation_authorized == all(requirements.values())
+        assert (
+            report.renderer_ingestion_decodability_scope
+            == "heldout_supported_omitted_or_blurred_plans"
+        )
+        assert (
+            report.primary_renderer_ingestion_analysis.surface_only_control_role
+            == "negative_control_balanced_counterfactual_labels_without_policy_input"
+        )
         assert not report.primary_renderer_ingestion_analysis.pooled_probe_accuracy_is_headline
         assert (
             report.primary_renderer_ingestion_analysis.headline

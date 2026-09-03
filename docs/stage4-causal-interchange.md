@@ -1,7 +1,9 @@
-# Stage 4: renderer-ingestion causal interchange on the Windows RTX 5080 PC
+# Stage 4: single-position causal subspace intervention on the Windows RTX 5080 PC
 
-Stage 4 tests whether changing the local open-weight renderer's internal policy-orientation value
-at one `END_PLAN` position changes executable policy behavior. It cannot be run or interpreted
+Stage 4 tests whether changing one learned scalar projection of the local open-weight renderer's
+policy-orientation subspace at one `END_PLAN` position changes executable policy behavior. This is
+an activation interchange along a learned policy direction, not replacement of a complete source
+activation. It cannot be run or interpreted
 until Stage 3 authorizes it. Hosted Kimi behavior is not mechanistic evidence for Qwen, and these
 results apply only to the pinned local Qwen model and selected adapter/base-renderer pairing.
 
@@ -50,7 +52,7 @@ The experiment manifest hash-binds Stage 2/3 configurations, dataset, activation
 selection, held-out results, report, recipient audit, model revision, adapter files, sandbox,
 directions, centroids, prompts, and strengths. It refuses overwrite.
 
-## Direction materialization and matched controls
+## Direction materialization, null controls, and diagnostics
 
 Run on the PC after the recipient audit:
 
@@ -62,17 +64,16 @@ uv run sable-ir materialize-stage4-directions `
 
 The primary direction and scalar A/B centroids come only from training tasks and paraphrase set 1.
 Every probe was fit on all training activation rows with equal total base-task weight; task-level
-A/B means are used only to estimate and align directions. Materialization supplies all eight
-target/control artifacts:
+A/B means are used only to estimate and align directions. Materialization supplies eight artifacts,
+but only four are matched null controls: random orthogonal, unrelated authentication-session,
+paraphrase-set identity, and lexical framing. The authentication direction is estimated on the
+development recipient.
 
-- primary policy orientation;
-- seeded random direction explicitly projected orthogonal to the target;
-- an unrelated authentication-session fact from a paired renderer-ingestion capture;
-- paraphrase-set identity at the same layer;
-- a set-1 lexical-framing direction evaluated on the opposite framing;
-- target-direction scalar values from the unrelated development task;
-- the preregistered early-layer training direction; and
-- the full held-out explicit-B minus explicit-A activation vector.
+Development-task scalar values are a value-transfer diagnostic, the preregistered early-layer
+direction is a localization diagnostic, and the held-out explicit-B minus explicit-A vector is a
+positive oracle. Those three artifacts cannot enter strength/layer selection, the strongest-null
+calculation, or the transfer-success gate. The target is not required to outperform the oracle,
+and oracle results cannot support a transfer claim.
 
 Layer-qualified hashes prevent a control estimated at one layer from being used at another.
 Direction vectors are normalized. Non-value controls receive the exact target edit norm for that
@@ -102,11 +103,12 @@ $selectArgs += @(
 uv run sable-ir @selectArgs
 ```
 
-For the primary, random-orthogonal, and lexical controls at every preregistered strength, the
+For the primary and all four matched null controls at every preregistered strength, the
 runtime preserves full raw logits by hash and reports patched-vs-unpatched KL, A-vs-B Jensen-Shannon
 divergence, relevant-token logit changes, and teacher-forced A/B log-odds at the frozen first code
 divergence. Selection uses the development task only. Full code is blocked unless the target clears
-both configured floors and exceeds both controls. Failure means the edit is weak or misplaced, not
+both configured floors and exceeds all four nulls. The three diagnostics/oracle are forbidden from
+selection. Failure means the edit is weak or misplaced, not
 that the represented policy has no causal role.
 
 ## Primary single-position run
@@ -124,23 +126,34 @@ uv run sable-ir report-stage4 artifacts\stage4\full\heldout-01\manifest.json `
   --output artifacts\stage4\full\heldout-01\report.json
 ```
 
-The primary hook edits exactly one residual-stream position: renderer `END_PLAN`. For the target
-direction it applies `h' = h + strength * (c_v - w'h)w`. The frozen full-run matrix contains one
+The primary hook edits exactly one residual-stream position during prompt prefill: the final token
+covering renderer `END_PLAN`, at the post-block output of the exact frozen decoder module and layer.
+The manifest records the module, layer, post-block location, exact token index, prefill phase, and
+number of downstream layers. Runtime requires an exact module/index match and at least one
+downstream layer. Before any nonzero edit, a deterministic strength-zero assertion requires hooked
+and unhooked next-token logits to be bit-identical. The exactly-once assertion remains.
+
+For the target direction it applies `h' = h + strength * (c_v - w'h)w`. The matrix contains one
 unpatched condition plus A/B injections for all eight target/control directions, with 16 samples
-each (272 jobs). Each record includes the prompt and direction hashes, exact seed, raw output,
+each (272 jobs). Sample `s00` through `s15` maps to one seed shared by unpatched, target A/B, and
+every control/diagnostic condition. This common-random-number pairing reduces sampling noise but
+does not imply bit-exact CUDA replay. Each record includes the prompt and direction hashes, seed,
+hook telemetry, raw output,
 candidate hash, projection before/after, edit norm, edit count, and maximum orthogonal change.
 The target edit aborts if it is not applied exactly once.
 
 The report uses the A-minus-B executable-behavior contrast, so “bidirectional” means A injection
 moves that contrast toward A and B injection moves the same contrast toward B. Causal success also
-requires the weaker target shift to exceed every matched control, set-2 inputs, and target
-functionality no more than five percentage points below unpatched. A functional output passing both
+requires the weaker target shift to exceed all four matched null controls and set-2 inputs. Each
+target condition may lose at most one functional output relative to paired unpatched (one of 16 is
+6.25 points). Diagnostics and the oracle are reported but excluded. A functional output passing both
 mutually exclusive suites produces `invalid_task_or_tests` immediately. With one held-out task,
 even a passing report remains `heldout_task_case_study` and `cross_task_generalization_claim=false`.
 
 ## Optional branches and stopping rules
 
-The primary run is always single-position. Recurrent steering is authorized only when the cheap
+The primary run is always a single-position causal subspace intervention. Recurrent steering is
+authorized only when the cheap
 distribution check changes but the full-generation effect washes out; it must be labeled
 `activation steering` and reported separately. Contradictory-text intervention is allowed only
 after the omitted-plan result. Planner-side intervention is cut unless renderer interchange first
