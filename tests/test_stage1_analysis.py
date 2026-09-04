@@ -16,6 +16,7 @@ from sable_ir.stage1_controls import (
     ControlPlanKind,
     RendererControlKind,
     prepare_control_plan_audit,
+    prepare_control_plan_length_revision,
     prepare_control_plan_recovery,
     prepare_control_plans,
     prepare_renderer_control,
@@ -29,6 +30,7 @@ class PlannerClient:
         structured = (
             "Use exactly these six labels" in request.prompt
             or "Keep exactly SOURCE" in request.prompt
+            or "Use exactly six field headings" in request.prompt
         )
         content = (
             "SOURCE\ninput\nTRUST\nboundary\nSINK\noperation\nGUARD\npolicy\n"
@@ -330,6 +332,85 @@ def test_control_plan_recovery_carries_results_and_authorizes_named_malformed_jo
             attempt["authorized_lineage_retry_of_attempt_sha256"]
             == prior_attempt_sha256
         )
+
+
+def test_wrong_clause_length_revision_changes_only_failed_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del tmp_path
+    root = Path.cwd()
+    config = load_stage1_config(root / "config/stage1.toml")
+    with tempfile.TemporaryDirectory(dir=root / "artifacts") as temporary:
+        base = Path(temporary)
+        _manifest, natural_path = _complete_plans(root, base, monkeypatch)
+        monkeypatch.setattr(
+            "sable_ir.stage1_controls.fetch_kimi_tokenizer", lambda _path: "b" * 64
+        )
+        monkeypatch.setattr(
+            "sable_ir.stage1_controls.load_kimi_tokenizer", lambda _path: FakeEncoding()
+        )
+        monkeypatch.setattr("sable_ir.stage1_controls._wait", lambda *_args: None)
+        source_directory = base / "length-source"
+        source = prepare_control_plans(
+            config,
+            root,
+            natural_path,
+            source_directory,
+            "length-source",
+            base / "tokenizer.model",
+        )
+        run_control_plans(
+            source_directory / "manifest.json",
+            PlannerClient(),
+            root / "config/stage1.toml",
+        )
+        audit_path = base / "length-audit.json"
+        audit = prepare_control_plan_audit(
+            source_directory / "manifest.json",
+            root,
+            audit_path,
+            ControlPlanKind.WRONG_CLAUSE,
+            base / "tokenizer.model",
+        )
+        rows = list(audit.rows)
+        rows[0] = rows[0].model_copy(update={"length_within_tolerance": False})
+        audit_path.unlink()
+        audit_path.write_text(
+            audit.model_copy(update={"rows": tuple(rows)}).model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        failed = {row.job_id for row in rows if not row.length_within_tolerance}
+
+        revision_directory = base / "length-revision"
+        revision = prepare_control_plan_length_revision(
+            config,
+            root,
+            source_directory / "manifest.json",
+            audit_path,
+            revision_directory,
+            "length-revision",
+            base / "tokenizer.model",
+        )
+
+        assert set(revision.revised_request_source_result_sha256s) == failed
+        assert len(revision.carried_forward_result_sha256s) == 60 - len(failed)
+        assert revision.execution_order is not None
+        assert len(revision.execution_order) == 60 + len(failed)
+        source_jobs = {job.job_id: job for job in source.jobs}
+        revised_jobs = {job.job_id: job for job in revision.jobs}
+        revised_id = next(iter(failed))
+        revised_request = json.loads(
+            (revision_directory / revised_jobs[revised_id].request_path).read_text()
+        )
+        assert "Kimi tokens" in revised_request["prompt"]
+        clause_order_id = next(
+            job.job_id for job in source.jobs if job.kind is ControlPlanKind.CLAUSE_ORDER
+        )
+        assert (
+            revision_directory / revised_jobs[clause_order_id].request_path
+        ).read_bytes() == (
+            source_directory / source_jobs[clause_order_id].request_path
+        ).read_bytes()
 
 
 def test_surface_baseline_freezes_four_stage1_nonthinking_samples_per_task(

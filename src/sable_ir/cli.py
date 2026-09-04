@@ -81,6 +81,7 @@ from sable_ir.stage1_controls import (
     SurfaceBaselineManifest,
     evaluate_surface_baseline,
     prepare_control_plan_audit,
+    prepare_control_plan_length_revision,
     prepare_control_plan_recovery,
     prepare_control_plans,
     prepare_renderer_control,
@@ -422,6 +423,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recover_control_plans_parser.add_argument("--run-directory", type=Path, required=True)
     recover_control_plans_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    revise_control_plans_parser = subparsers.add_parser(
+        "revise-stage1-control-plan-lengths",
+        help="replace only wrong-clause prompts that failed the frozen plan-length gate",
+    )
+    revise_control_plans_parser.add_argument("source_manifest", type=Path)
+    revise_control_plans_parser.add_argument("length_audit", type=Path)
+    revise_control_plans_parser.add_argument("--run-id", required=True)
+    revise_control_plans_parser.add_argument(
+        "--config", type=Path, default=Path("config/stage1.toml")
+    )
+    revise_control_plans_parser.add_argument(
+        "--repository-root", type=Path, default=Path.cwd()
+    )
+    revise_control_plans_parser.add_argument("--run-directory", type=Path, required=True)
+    revise_control_plans_parser.add_argument("--tokenizer", type=Path, required=True)
 
     surface_prepare_parser = subparsers.add_parser(
         "prepare-stage1-surface-baseline",
@@ -938,6 +955,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{len(control_manifest.carried_forward_result_sha256s)} carried results and "
                 f"{len(control_manifest.manual_retry_authorizations)} explicitly authorized "
                 f"attempts at {args.run_directory.resolve()}"
+            )
+        elif args.command == "revise-stage1-control-plan-lengths":
+            stage1_config = load_stage1_config(args.config)
+            control_manifest = prepare_control_plan_length_revision(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                args.length_audit,
+                args.run_directory,
+                args.run_id,
+                args.tokenizer,
+            )
+            print(
+                f"prepared Stage 1 length revision with "
+                f"{len(control_manifest.carried_forward_result_sha256s)} carried and "
+                f"{len(control_manifest.revised_request_source_result_sha256s)} revised "
+                f"wrong-clause plans at {args.run_directory.resolve()}"
             )
         elif args.command == "prepare-stage1-surface-baseline":
             stage1_config = load_stage1_config(args.config)

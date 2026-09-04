@@ -124,6 +124,8 @@ class ControlPlanManifest(StrictModel):
     migrated_from_manifest_path: str | None = None
     migrated_from_manifest_sha256: Sha256 | None = None
     carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    revised_request_source_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    revision_reason: Literal["wrong_clause_length_mismatch"] | None = None
     manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = ()
     execution_order: tuple[str, ...] | None = None
     jobs: tuple[ControlPlanJob, ...]
@@ -136,9 +138,12 @@ class ControlPlanManifest(StrictModel):
             raise ValueError("Stage 1D stratified control plans must use plan sample p00")
         job_ids = {job.job_id for job in self.jobs}
         carried = set(self.carried_forward_result_sha256s)
-        if not carried <= job_ids:
-            raise ValueError("invalid carried Stage 1 control-plan result set")
-        recovery = bool(carried or self.manual_retry_authorizations)
+        revised = set(self.revised_request_source_result_sha256s)
+        if not carried | revised <= job_ids or carried & revised:
+            raise ValueError("invalid carried/revised Stage 1 control-plan result sets")
+        if bool(revised) != bool(self.revision_reason):
+            raise ValueError("control-plan revision reason must match revised requests")
+        recovery = bool(carried or revised or self.manual_retry_authorizations)
         if recovery != bool(self.migrated_from_manifest_sha256):
             raise ValueError("Stage 1 control-plan recovery lineage is incomplete")
         if recovery and self.migrated_from_manifest_path is None:
@@ -150,7 +155,7 @@ class ControlPlanManifest(StrictModel):
         for authorization in self.manual_retry_authorizations:
             if authorization.source_manifest_sha256 != self.migrated_from_manifest_sha256:
                 raise ValueError("control-plan retry authorization references the wrong manifest")
-            if authorization.job_id in carried or authorization.job_id not in job_ids:
+            if authorization.job_id in carried | revised or authorization.job_id not in job_ids:
                 raise ValueError("control-plan retry authorization references an invalid job")
         if self.execution_order is not None:
             if len(self.execution_order) != len(set(self.execution_order)):
@@ -692,6 +697,8 @@ def prepare_control_plans(
     migrated_from_manifest_path: str | None = None,
     migrated_from_manifest_sha256: str | None = None,
     carried_forward_result_sha256s: dict[str, str] | None = None,
+    revised_request_source_result_sha256s: dict[str, str] | None = None,
+    revision_reason: Literal["wrong_clause_length_mismatch"] | None = None,
     manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = (),
     execution_order: tuple[str, ...] | None = None,
 ) -> ControlPlanManifest:
@@ -717,6 +724,8 @@ def prepare_control_plans(
         clauses = {clause.id: clause.text for clause in document.clauses}
         if wrong_id not in clauses or wrong_id in document.applicable_clause_ids:
             raise Stage1Error(f"invalid wrong-clause control selection for {task.id}")
+        natural_tokens = len(tokenizer.encode(original_plan, disallowed_special=()))
+        minimum_tokens, maximum_tokens = _length_match_bounds(natural_tokens)
         prompts = {
             ControlPlanKind.WRONG_CLAUSE: _wrong_clause_prompt(
                 task.surface_request,
@@ -725,6 +734,9 @@ def prepare_control_plans(
                 wrong_id,
                 clauses[wrong_id],
                 document.applicable_clause_ids,
+                natural_tokens,
+                minimum_tokens,
+                maximum_tokens,
             ),
             ControlPlanKind.CLAUSE_ORDER: build_planner_prompt(
                 task.surface_request,
@@ -785,6 +797,10 @@ def prepare_control_plans(
         migrated_from_manifest_path=migrated_from_manifest_path,
         migrated_from_manifest_sha256=migrated_from_manifest_sha256,
         carried_forward_result_sha256s=carried_forward_result_sha256s or {},
+        revised_request_source_result_sha256s=(
+            revised_request_source_result_sha256s or {}
+        ),
+        revision_reason=revision_reason,
         manual_retry_authorizations=manual_retry_authorizations,
         execution_order=execution_order,
         jobs=tuple(
@@ -905,6 +921,137 @@ def prepare_control_plan_recovery(
             _file(source_directory, relative).read_text(encoding="utf-8"),
         )
     return recovered
+
+
+def prepare_control_plan_length_revision(
+    config: Stage1Config,
+    repository_root: Path,
+    source_manifest_path: Path,
+    length_audit_path: Path,
+    run_directory: Path,
+    run_id: str,
+    tokenizer_path: Path,
+) -> ControlPlanManifest:
+    """Revise only wrong-clause requests that failed the frozen complete-plan length gate."""
+    root = repository_root.resolve()
+    source_manifest_path = source_manifest_path.resolve()
+    source = _load_control_manifest(source_manifest_path)
+    source_directory = source_manifest_path.parent
+    source_manifest_sha256 = _sha(source_manifest_path.read_bytes())
+    source_manifest_relative = _relative(source_manifest_path, root)
+    if config.hosted_kimi != source.provider:
+        raise Stage1Error("length revision config differs from the source control manifest")
+    if fetch_kimi_tokenizer(tokenizer_path) != source.tokenizer_sha256:
+        raise Stage1Error("length revision tokenizer differs from the source control manifest")
+    tokenizer = load_kimi_tokenizer(tokenizer_path)
+
+    audit = ControlPlanAudit.model_validate_json(length_audit_path.read_text(encoding="utf-8"))
+    if audit.control_plan_manifest_sha256 != source_manifest_sha256:
+        raise Stage1Error("length audit references another control manifest")
+    if audit.kind is not ControlPlanKind.WRONG_CLAUSE or len(audit.rows) != 60:
+        raise Stage1Error("length revision requires the complete wrong-clause audit packet")
+    rows = {row.job_id: row for row in audit.rows}
+    wrong_jobs = {job.job_id for job in source.jobs if job.kind is ControlPlanKind.WRONG_CLAUSE}
+    if set(rows) != wrong_jobs:
+        raise Stage1Error("length audit does not cover the frozen wrong-clause matrix")
+    revised_ids = {job_id for job_id, row in rows.items() if not row.length_within_tolerance}
+    if not revised_ids:
+        raise Stage1Error("no wrong-clause length failures require revision")
+
+    natural_manifest_path = _file(root, source.source_plan_manifest_path)
+    if _sha(natural_manifest_path.read_bytes()) != source.source_plan_manifest_sha256:
+        raise Stage1Error("source natural-plan manifest hash mismatch")
+    natural_manifest = load_plan_manifest(natural_manifest_path)
+    natural_directory = natural_manifest_path.parent
+    natural_jobs = {job.job_id: job for job in natural_manifest.jobs}
+    destination = _empty(run_directory)
+    carried: dict[str, str] = {}
+    revised_source_results: dict[str, str] = {}
+    artifact_paths: set[str] = set()
+    revised_jobs: list[ControlPlanJob] = []
+
+    for job in source.jobs:
+        source_request_path = _file(source_directory, job.request_path)
+        if _sha(source_request_path.read_bytes()) != job.request_sha256:
+            raise Stage1Error(f"source control request hash mismatch: {job.job_id}")
+        if job.job_id not in revised_ids:
+            _write_new(
+                destination / job.request_path,
+                source_request_path.read_text(encoding="utf-8"),
+            )
+            revised_jobs.append(job)
+            if job.kind is ControlPlanKind.WRONG_CLAUSE:
+                result_path = _file(source_directory, job.result_path)
+                record = _load_plan_result(source_directory, job.result_path)
+                _validate_control_plan_record(source_directory, source, job, record)
+                if record.status is not GenerationStatus.GENERATED:
+                    raise Stage1Error(f"cannot carry failed length-matched plan: {job.job_id}")
+                carried[job.job_id] = _sha(result_path.read_bytes())
+                artifact_paths.update(_control_plan_record_artifact_paths(job, record))
+            continue
+
+        result_path = _file(source_directory, job.result_path)
+        record = _load_plan_result(source_directory, job.result_path)
+        _validate_control_plan_record(source_directory, source, job, record)
+        if record.status is not GenerationStatus.GENERATED:
+            raise Stage1Error(f"length repair requires a generated source plan: {job.job_id}")
+        revised_source_results[job.job_id] = _sha(result_path.read_bytes())
+        natural_job = natural_jobs[job.target_plan_job_id]
+        natural_record = _load_plan_result(natural_directory, natural_job.result_path)
+        if natural_record.plan_path is None:
+            raise Stage1Error(f"length repair lacks natural plan: {job.target_plan_job_id}")
+        natural_plan = _file(natural_directory, natural_record.plan_path).read_text(
+            encoding="utf-8"
+        )
+        natural_tokens = len(tokenizer.encode(natural_plan, disallowed_special=()))
+        minimum_tokens, maximum_tokens = _length_match_bounds(natural_tokens)
+        task = load_task(_file(root, job.task_path))
+        request = ModelRequest.model_validate_json(source_request_path.read_text(encoding="utf-8"))
+        prompt = _wrong_clause_prompt(
+            task.surface_request,
+            natural_plan,
+            job.plan_format,
+            job.selected_wrong_clause_id or "missing",
+            job.selected_wrong_clause_text or "missing",
+            task.documents[job.assigned_policy].applicable_clause_ids,
+            natural_tokens,
+            minimum_tokens,
+            maximum_tokens,
+        )
+        revised_request = request.model_copy(
+            update={"prompt": prompt, "prompt_sha256": _sha_text(prompt)}
+        )
+        _write_model(destination / job.request_path, revised_request)
+        revised_jobs.append(
+            job.model_copy(
+                update={"request_sha256": _sha((destination / job.request_path).read_bytes())}
+            )
+        )
+
+    execution_order = tuple(job.job_id for job in revised_jobs if job.job_id not in carried)
+    manifest = ControlPlanManifest(
+        run_id=run_id,
+        created_at=_now(),
+        source_plan_manifest_path=source.source_plan_manifest_path,
+        source_plan_manifest_sha256=source.source_plan_manifest_sha256,
+        tokenizer_revision=source.tokenizer_revision,
+        tokenizer_sha256=source.tokenizer_sha256,
+        provider=source.provider,
+        migrated_from_manifest_path=source_manifest_relative,
+        migrated_from_manifest_sha256=source_manifest_sha256,
+        carried_forward_result_sha256s=carried,
+        revised_request_source_result_sha256s=revised_source_results,
+        revision_reason="wrong_clause_length_mismatch",
+        execution_order=execution_order,
+        jobs=tuple(revised_jobs),
+    )
+    _write_model(destination / "manifest.json", manifest)
+    for relative in sorted(artifact_paths):
+        _write_new(
+            destination / relative,
+            _file(source_directory, relative).read_text(encoding="utf-8"),
+        )
+    return manifest
 
 
 def require_control_plan_canary(manifest_path: Path, kind: ControlPlanKind) -> None:
@@ -1484,9 +1631,13 @@ def _wrong_clause_prompt(
     wrong_id: str,
     wrong_text: str,
     applicable_ids: tuple[str, ...],
+    natural_plan_tokens: int,
+    minimum_plan_tokens: int,
+    maximum_plan_tokens: int,
 ) -> str:
     format_rule = (
-        "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order."
+        "Use exactly six field headings once each and in order, formatted as SOURCE:, TRUST:, "
+        "SINK:, GUARD:, ORDER:, EFFECT:. Do not add standalone duplicate headings."
         if plan_format is Stage1PlanFormat.STRUCTURED
         else "Keep free-form prose and do not introduce structured field labels."
     )
@@ -1495,10 +1646,19 @@ def _wrong_clause_prompt(
         "Hold the surface task and all non-policy implementation information fixed. Remove every "
         f"instruction derived from applicable clause(s) {', '.join(applicable_ids)} and instead "
         f"foreground and operationalize this intentionally irrelevant clause [{wrong_id}]: "
-        f"{wrong_text}\n{format_rule} Return only the rewritten plan and end with END_PLAN on "
-        f"its own final line. Do not use Markdown fences.\n\nSURFACE TASK\n{surface.strip()}"
+        f"{wrong_text}\n{format_rule} The complete rewritten plan, including END_PLAN, must be "
+        f"between {minimum_plan_tokens} and {maximum_plan_tokens} Kimi tokens; aim for "
+        f"{natural_plan_tokens} tokens to match the source. Return only the rewritten plan and "
+        f"end with END_PLAN on its own final line. Do not use Markdown fences or wrapper "
+        f"headings.\n\nSURFACE TASK\n{surface.strip()}"
         f"\n\nSOURCE PLAN\n{original_plan.strip()}"
     )
+
+
+def _length_match_bounds(natural_tokens: int) -> tuple[int, int]:
+    lower = max(1, math.ceil(min(natural_tokens - 5, natural_tokens / 1.1)))
+    upper = math.floor(natural_tokens + max(5, 0.1 * natural_tokens))
+    return lower, upper
 
 
 def _reordered_document(clauses: tuple[SafetyClause, ...]) -> str:
