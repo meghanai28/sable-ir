@@ -50,6 +50,7 @@ from sable_ir.stage1 import (
     RenderManifest,
     RenderRequestArtifact,
     Stage1Error,
+    Stage1RetryAuthorization,
     build_planner_prompt,
     build_renderer_prompt,
     extract_plan,
@@ -120,6 +121,11 @@ class ControlPlanManifest(StrictModel):
     tokenizer_revision: str
     tokenizer_sha256: Sha256
     provider: KimiConfig
+    migrated_from_manifest_path: str | None = None
+    migrated_from_manifest_sha256: Sha256 | None = None
+    carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
+    manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = ()
+    execution_order: tuple[str, ...] | None = None
     jobs: tuple[ControlPlanJob, ...]
 
     @model_validator(mode="after")
@@ -128,6 +134,31 @@ class ControlPlanManifest(StrictModel):
             raise ValueError("Stage 1D control planner matrix must contain 120 unique jobs")
         if {job.plan_sample_index for job in self.jobs} != {0}:
             raise ValueError("Stage 1D stratified control plans must use plan sample p00")
+        job_ids = {job.job_id for job in self.jobs}
+        carried = set(self.carried_forward_result_sha256s)
+        if not carried <= job_ids:
+            raise ValueError("invalid carried Stage 1 control-plan result set")
+        recovery = bool(carried or self.manual_retry_authorizations)
+        if recovery != bool(self.migrated_from_manifest_sha256):
+            raise ValueError("Stage 1 control-plan recovery lineage is incomplete")
+        if recovery and self.migrated_from_manifest_path is None:
+            raise ValueError("control-plan recovery requires its source manifest path")
+        if len({item.job_id for item in self.manual_retry_authorizations}) != len(
+            self.manual_retry_authorizations
+        ):
+            raise ValueError("control-plan retry authorizations contain duplicate jobs")
+        for authorization in self.manual_retry_authorizations:
+            if authorization.source_manifest_sha256 != self.migrated_from_manifest_sha256:
+                raise ValueError("control-plan retry authorization references the wrong manifest")
+            if authorization.job_id in carried or authorization.job_id not in job_ids:
+                raise ValueError("control-plan retry authorization references an invalid job")
+        if self.execution_order is not None:
+            if len(self.execution_order) != len(set(self.execution_order)):
+                raise ValueError("control-plan execution_order contains duplicate jobs")
+            if set(self.execution_order) != job_ids - carried:
+                raise ValueError(
+                    "control-plan execution_order must enumerate every pending recovery job"
+                )
         return self
 
 
@@ -657,6 +688,12 @@ def prepare_control_plans(
     run_directory: Path,
     run_id: str,
     tokenizer_path: Path,
+    *,
+    migrated_from_manifest_path: str | None = None,
+    migrated_from_manifest_sha256: str | None = None,
+    carried_forward_result_sha256s: dict[str, str] | None = None,
+    manual_retry_authorizations: tuple[Stage1RetryAuthorization, ...] = (),
+    execution_order: tuple[str, ...] | None = None,
 ) -> ControlPlanManifest:
     """Freeze two planner controls for one p00 plan in each of the 60 design cells."""
     root = repository_root.resolve()
@@ -745,6 +782,11 @@ def prepare_control_plans(
         tokenizer_revision=KIMI_TOKENIZER_REVISION,
         tokenizer_sha256=tokenizer_sha256,
         provider=config.hosted_kimi,
+        migrated_from_manifest_path=migrated_from_manifest_path,
+        migrated_from_manifest_sha256=migrated_from_manifest_sha256,
+        carried_forward_result_sha256s=carried_forward_result_sha256s or {},
+        manual_retry_authorizations=manual_retry_authorizations,
+        execution_order=execution_order,
         jobs=tuple(
             sorted(
                 jobs,
@@ -757,6 +799,112 @@ def prepare_control_plans(
     )
     _write_model(destination / "manifest.json", manifest)
     return manifest
+
+
+def prepare_control_plan_recovery(
+    config: Stage1Config,
+    repository_root: Path,
+    source_manifest_path: Path,
+    run_directory: Path,
+    run_id: str,
+    tokenizer_path: Path,
+    retry_job_ids: tuple[str, ...],
+) -> ControlPlanManifest:
+    """Carry exact control-plan results and authorize one named attempt per malformed plan."""
+    root = repository_root.resolve()
+    source_manifest_path = source_manifest_path.resolve()
+    source = _load_control_manifest(source_manifest_path)
+    source_directory = source_manifest_path.parent
+    source_manifest_sha256 = _sha(source_manifest_path.read_bytes())
+    source_manifest_relative = _relative(source_manifest_path, root)
+    source_jobs = {job.job_id: job for job in source.jobs}
+    if not retry_job_ids or len(set(retry_job_ids)) != len(retry_job_ids):
+        raise Stage1Error("control recovery requires unique explicitly authorized retry jobs")
+    unknown = set(retry_job_ids) - set(source_jobs)
+    if unknown:
+        raise Stage1Error(f"unknown Stage 1 control retry jobs: {sorted(unknown)}")
+
+    carried: dict[str, str] = {}
+    artifact_paths: set[str] = set()
+    for job in source.jobs:
+        result_path = source_directory / job.result_path
+        if not result_path.is_file():
+            continue
+        record = _load_plan_result(source_directory, job.result_path)
+        _validate_control_plan_record(source_directory, source, job, record)
+        if job.job_id in retry_job_ids:
+            continue
+        if record.status is not GenerationStatus.GENERATED or record.finish_reason == "length":
+            raise Stage1Error(f"cannot carry non-final control-plan result: {job.job_id}")
+        carried[job.job_id] = _sha(result_path.read_bytes())
+        artifact_paths.update(_control_plan_record_artifact_paths(job, record))
+
+    authorizations: list[Stage1RetryAuthorization] = []
+    for job_id in retry_job_ids:
+        attempts = sorted((source_directory / "jobs" / job_id / "attempts").glob("attempt-*.json"))
+        if len(attempts) != 1:
+            raise Stage1Error(
+                f"manual control recovery requires exactly one preserved attempt: {job_id}"
+            )
+        attempt = AttemptRecord.model_validate_json(attempts[0].read_text(encoding="utf-8"))
+        result_path = source_directory / source_jobs[job_id].result_path
+        if not result_path.is_file():
+            raise Stage1Error(f"control recovery currently requires a malformed result: {job_id}")
+        record = _load_plan_result(source_directory, source_jobs[job_id].result_path)
+        _validate_control_plan_record(source_directory, source, source_jobs[job_id], record)
+        if record.status is not GenerationStatus.MALFORMED or not attempt.succeeded:
+            raise Stage1Error(f"control retry result is not a preserved malformed plan: {job_id}")
+        authorizations.append(
+            Stage1RetryAuthorization(
+                source_manifest_path=source_manifest_relative,
+                source_manifest_sha256=source_manifest_sha256,
+                job_id=job_id,
+                prior_attempt_path=attempts[0].relative_to(source_directory).as_posix(),
+                prior_attempt_sha256=_sha(attempts[0].read_bytes()),
+                prior_attempt_finished_at=attempt.finished_at,
+                earliest_retry_at=attempt.finished_at,
+                prior_result_path=source_jobs[job_id].result_path,
+                prior_result_sha256=_sha(result_path.read_bytes()),
+                reason="malformed_control_plan_output",
+            )
+        )
+
+    execution_order = tuple(job.job_id for job in source.jobs if job.job_id not in carried)
+    natural_manifest_path = _file(root, source.source_plan_manifest_path)
+    recovered = prepare_control_plans(
+        config,
+        root,
+        natural_manifest_path,
+        run_directory,
+        run_id,
+        tokenizer_path,
+        migrated_from_manifest_path=source_manifest_relative,
+        migrated_from_manifest_sha256=source_manifest_sha256,
+        carried_forward_result_sha256s=carried,
+        manual_retry_authorizations=tuple(authorizations),
+        execution_order=execution_order,
+    )
+    recovered_jobs = {job.job_id: job for job in recovered.jobs}
+    if set(recovered_jobs) != set(source_jobs):
+        raise Stage1Error("Stage 1 control recovery changed the job matrix")
+    for job_id, source_job in source_jobs.items():
+        if source_job.model_dump() != recovered_jobs[job_id].model_dump():
+            raise Stage1Error(f"Stage 1 control recovery changed a frozen job: {job_id}")
+    if (
+        recovered.source_plan_manifest_sha256 != source.source_plan_manifest_sha256
+        or recovered.tokenizer_revision != source.tokenizer_revision
+        or recovered.tokenizer_sha256 != source.tokenizer_sha256
+        or recovered.provider != source.provider
+    ):
+        raise Stage1Error("Stage 1 control recovery changed frozen manifest inputs")
+
+    destination = run_directory.resolve()
+    for relative in sorted(artifact_paths):
+        _write_new(
+            destination / relative,
+            _file(source_directory, relative).read_text(encoding="utf-8"),
+        )
+    return recovered
 
 
 def require_control_plan_canary(manifest_path: Path, kind: ControlPlanKind) -> None:
@@ -776,6 +924,94 @@ def require_control_plan_canary(manifest_path: Path, kind: ControlPlanKind) -> N
         raise Stage1Error(f"invalid {kind.value} control-plan canary")
 
 
+def _validate_control_plan_record(
+    directory: Path,
+    manifest: ControlPlanManifest,
+    job: ControlPlanJob,
+    record: PlanRecord,
+) -> None:
+    request_path = _file(directory, job.request_path)
+    if _sha(request_path.read_bytes()) != job.request_sha256:
+        raise Stage1Error(f"control request hash mismatch: {job.job_id}")
+    request = ModelRequest.model_validate_json(request_path.read_text(encoding="utf-8"))
+    if (
+        record.job_id,
+        record.task_id,
+        record.assigned_policy,
+        record.plan_format,
+        record.concision,
+        record.plan_sample_index,
+        record.pair_id,
+        record.model,
+        record.prompt_sha256,
+    ) != (
+        job.job_id,
+        job.task_id,
+        job.assigned_policy,
+        job.plan_format,
+        job.concision,
+        job.plan_sample_index,
+        request.pair_id,
+        manifest.provider.model,
+        request.prompt_sha256,
+    ):
+        raise Stage1Error(f"control result metadata mismatch: {job.job_id}")
+    response_path = _file(directory, record.raw_response_path)
+    if _sha(response_path.read_bytes()) != record.raw_response_sha256:
+        raise Stage1Error(f"control response hash mismatch: {job.job_id}")
+    response = ProviderResponse.model_validate_json(response_path.read_text(encoding="utf-8"))
+    if (
+        response.request_id != record.provider_request_id
+        or response.model != record.model
+        or response.finish_reason != record.finish_reason
+        or _sha_text(response.content) != record.content_sha256
+        or {
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+            "total_tokens": response.usage.total_tokens,
+            "reasoning_tokens": response.usage.reasoning_tokens,
+        }
+        != record.usage
+    ):
+        raise Stage1Error(f"control response metadata mismatch: {job.job_id}")
+    attempt_path = _file(
+        directory,
+        f"jobs/{job.job_id}/attempts/attempt-{record.successful_attempt:02d}.json",
+    )
+    attempt = AttemptRecord.model_validate_json(attempt_path.read_text(encoding="utf-8"))
+    if not attempt.succeeded or attempt.provider_request_id != record.provider_request_id:
+        raise Stage1Error(f"control attempt metadata mismatch: {job.job_id}")
+    if record.plan_path is not None and record.plan_sha256 is not None:
+        plan_path = _file(directory, record.plan_path)
+        plan = plan_path.read_text(encoding="utf-8")
+        extracted, extraction = extract_plan(response.content, job.plan_format)
+        if (
+            _sha_text(plan) != record.plan_sha256
+            or extracted != plan
+            or extraction != record.extraction
+        ):
+            raise Stage1Error(f"control plan extraction mismatch: {job.job_id}")
+    if record.reasoning_path is not None:
+        reasoning = _file(directory, record.reasoning_path).read_text(encoding="utf-8")
+        if _sha_text(reasoning) != record.reasoning_sha256:
+            raise Stage1Error(f"control reasoning hash mismatch: {job.job_id}")
+
+
+def _control_plan_record_artifact_paths(
+    job: ControlPlanJob, record: PlanRecord
+) -> set[str]:
+    paths = {
+        job.result_path,
+        f"jobs/{job.job_id}/attempts/attempt-{record.successful_attempt:02d}.json",
+        record.raw_response_path,
+    }
+    if record.plan_path is not None:
+        paths.add(record.plan_path)
+    if record.reasoning_path is not None:
+        paths.add(record.reasoning_path)
+    return paths
+
+
 def run_control_plans(
     manifest_path: Path,
     client: Client,
@@ -787,10 +1023,17 @@ def run_control_plans(
     """Run control planners once each; stop the stream immediately on any provider error."""
     manifest = _load_control_manifest(manifest_path)
     config = load_stage1_config(config_path)
+    if config.hosted_kimi != manifest.provider:
+        raise Stage1Error("control plan config no longer matches the frozen provider settings")
     directory = manifest_path.resolve().parent
+    if job_id is None and manifest.execution_order is not None:
+        by_id = {job.job_id: job for job in manifest.jobs}
+        candidates = [by_id[item] for item in manifest.execution_order]
+    else:
+        candidates = list(manifest.jobs)
     selected = [
         job
-        for job in manifest.jobs
+        for job in candidates
         if (job_id is None or job.job_id == job_id) and (kind is None or job.kind is kind)
     ]
     if job_id is not None and not selected:
@@ -809,6 +1052,15 @@ def run_control_plans(
         if _sha(request_path.read_bytes()) != job.request_sha256:
             raise Stage1Error(f"control request hash mismatch: {job.job_id}")
         request = ModelRequest.model_validate_json(request_path.read_text(encoding="utf-8"))
+        authorization = next(
+            (item for item in manifest.manual_retry_authorizations if item.job_id == job.job_id),
+            None,
+        )
+        retry_hash = None
+        if authorization is not None:
+            if datetime.now(UTC) < datetime.fromisoformat(authorization.earliest_retry_at):
+                raise Stage1Error("manual control-plan retry cooldown has not elapsed")
+            retry_hash = authorization.prior_attempt_sha256
         started_at = _now()
         started = time.monotonic()
         try:
@@ -824,6 +1076,7 @@ def run_control_plans(
                     succeeded=False,
                     retryable=error.retryable,
                     error=str(error),
+                    authorized_lineage_retry_of_attempt_sha256=retry_hash,
                 ),
             )
             failed = 1
@@ -837,6 +1090,7 @@ def run_control_plans(
                 latency_seconds=time.monotonic() - started,
                 succeeded=True,
                 provider_request_id=response.request_id,
+                authorized_lineage_retry_of_attempt_sha256=retry_hash,
             ),
         )
         response_relative = f"jobs/{job.job_id}/responses/response-01.json"

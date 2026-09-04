@@ -1,0 +1,15 @@
+import subprocess
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    permitted_executables = {"/usr/bin/printf", "/bin/echo"}
+    if executable not in permitted_executables:
+        raise ValueError(f"Executable not allowed: {executable}")
+    result = subprocess.run(
+        [executable] + arguments,
+        capture_output=True,
+        text=True,
+        shell=False,
+        check=False,
+    )
+    result.check_returncode()
+    return result.stdout

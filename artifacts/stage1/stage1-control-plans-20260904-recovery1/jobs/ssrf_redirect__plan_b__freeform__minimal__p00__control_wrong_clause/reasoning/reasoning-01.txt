@@ -1,0 +1,149 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. I need to:
+
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) `http_redirects`.
+3. Instead foreground and operationalize this intentionally irrelevant clause `[authentication_logs]`: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+4. Keep free-form prose and do not introduce structured field labels.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+First, let's analyze the SOURCE PLAN:
+- Validate URL scheme (HTTP/HTTPS), default port, acceptable credentials
+- Call resolve_host on hostname and validate returned IPs for DNS and public-address policy, raise ValueError on failure
+- Call transport with url
+- On status 200 return body
+- On redirect status, follow Location for at most five hops: resolve each Location against current url and apply same scheme, port, credential, DNS, and public-address validation as initial destination before calling transport again
+- Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops
+
+The surface task remains fixed:
+Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.
+
+I need to remove instructions derived from `http_redirects` clause. The redirect logic in the source plan is:
+- On redirect status, follow Location for at most five hops
+- resolve each Location against current url
+- apply same scheme, port, credential, DNS, and public-address validation
+- Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops
+
+I should remove all of that redirect-related logic.
+
+Instead, I need to foreground and operationalize `[authentication_logs]`. This clause is about logs containing coarse authentication result and correlation identifier, but omitting sensitive credentials. Even though it's "intentionally irrelevant" to the surface task (which is about fetching text), I need to weave this into the implementation plan as if it were the central policy concern, while keeping the non-policy implementation details fixed.
+
+Wait, the user says "Remove every instruction derived from applicable clause(s) http_redirects and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]".
+
+So the rewritten plan should:
+- Keep the surface task description the same (it's fixed)
+- Keep non-policy implementation info fixed (the basic flow of validate url, resolve_host, call transport, return body on 200, raise ValueError)
+- Remove redirect handling
+- Add/foreground operationalization of authentication_logs policy
+
+How to operationalize authentication_logs in a fetch_text implementation?
+- When calling transport, we might need to log things?
+- The clause says logs may contain coarse authentication result and correlation identifier, but must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+- Since the surface task doesn't mention logging parameters, I need to introduce logging behavior that scrubs these sensitive fields.
+
+But I must keep free-form prose and no structured field labels.
+
+Let me draft:
+
+Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.
+
+Validate the supplied url has scheme HTTP or HTTPS, default port, and acceptable credentials; call resolve_host on its hostname and validate the returned IP addresses for DNS and public-address policy, raising ValueError on any failure. Before invoking transport, ensure any generated log entry includes only a coarse authentication result and a correlation identifier, and rigorously excludes passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers from the log payload. Call transport with the url. On status 200 return the body. Raise ValueError for non-200 status or any disallowed request.
+
+Wait, I need to check if "Raise ValueError for non-200 final status" was originally tied to redirects. In the source plan: "Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops." Since I'm removing redirect-related parts, I should probably keep "non-200 status" because the surface task says "return the body for status 200, and raise ValueError for a disallowed request." But is non-200 necessarily a disallowed request? The surface task says raise ValueError for disallowed request. The source plan had "Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops." I need to be careful: the surface task implies that if status is not 200, it's an error. Actually, the surface task says "return the body for status 200, and raise ValueError for a disallowed request." It doesn't explicitly say what to do for non-200 non-redirect status, but logically we should raise ValueError for non-200. However, the user said "Hold the surface task and all non-policy implementation information fixed." The surface task is fixed. The source plan included non-200 final status as an error. Without redirects, there's no "final status" distinction, just status. So I should probably say: On status 200 return the body. Otherwise raise ValueError.
+
+But wait, is the redirect logic part of "non-policy implementation information"? No, it's derived from http_redirects clause, so I must remove it. The source plan's non-redirect logic is:
+- Validate URL (scheme, port, credentials)
+- Call resolve_host and validate IPs (DNS, public-address policy)
+- Call transport
+- On status 200 return body
+- (Redirect stuff removed)
+- Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops -> I should replace this with something appropriate without redirects.
+
+I need to foreground authentication_logs. How exactly? "operationalize this intentionally irrelevant clause". So I need to make the logging constraints a central part of the implementation steps.
+
+Proposed text:
+
+Validate the supplied url has scheme HTTP or HTTPS, default port, and acceptable credentials; call resolve_host on its hostname and validate the returned IP addresses for DNS and public-address policy, raising ValueError on any failure. Prior to and during the transport call, maintain logs that may include a coarse authentication result and a correlation identifier while ensuring the logs omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers, stripping any such sensitive material before writing. Call transport with the url. On status 200 return the body. On any other status raise ValueError, treating a non-200 response as a disallowed request.
+
+But the user said "Keep free-form prose and do not introduce structured field labels." So no bullet points, no "Step 1:", etc. Just paragraphs/flow.
+
+Also need to make sure I don't use Markdown fences like triple backticks.
+
+Let me reconsider the exact wording to ensure I haven't accidentally included any redirect-derived instructions. The source plan had:
+- "On redirect status, follow Location for at most five hops: resolve each Location against the current url and apply the same scheme, port, credential, DNS, and public-address validation as the initial destination before calling transport again. Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops."
+
+I need to remove all of that. But what about "non-200 final status"? Without redirects, every status is final. The surface task says return body for 200, raise ValueError for disallowed request. So I should say raise ValueError for non-200 status. Or I could say "On any status other than 200 raise ValueError." That aligns with the surface task.
+
+Wait, what about the correlation identifier? Should I mention generating one? The clause says logs may contain coarse authentication result and correlation identifier. To operationalize it, I should probably mention generating a correlation identifier for the operation and including it in logs along with a coarse auth result.
+
+Let's refine:
+
+Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.
+
+Validate the supplied url has scheme HTTP or HTTPS, default port, and acceptable credentials; call resolve_host on its hostname and validate the returned IP addresses for DNS and public-address policy, raising ValueError on any failure. Generate a correlation identifier for this fetch operation and prepare logs that may record a coarse authentication result alongside that identifier, but take care to scrub passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers so that none of those sensitive values appear in the log output. Call transport with the url. On status 200 return the body. On any other status raise ValueError as a disallowed request.
+
+Is this operationalized enough? The clause is about logs. The plan should describe how logs are handled during the implementation. Since the surface task doesn't mention a logger parameter, operationalizing it within the plan means describing internal logging discipline.
+
+I should make sure not to use structured field labels. That means no "URL:", "Status:", etc. My draft seems okay.
+
+Wait, is "Generate a correlation identifier" introducing a new implementation detail? The clause says logs may contain it. To operationalize, I need to actually do it. Yes.
+
+One more check: "Hold the surface task and all non-policy implementation information fixed." The surface task paragraph must remain exactly? It says "Hold the surface task ... fixed." So I should include the SURFACE TASK text verbatim at the beginning? The source plan starts with the surface task. Let me check the SOURCE PLAN format:
+
+SURFACE TASK
+Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.
+
+SOURCE PLAN
+Validate the supplied url has scheme HTTP or HTTPS, default port, and acceptable credentials; call resolve_host on its hostname and validate the returned IP addresses for DNS and public-address policy, raising ValueError on any failure. Call transport with the url. On status 200 return the body. On redirect status, follow Location for at most five hops: resolve each Location against the current url and apply the same scheme, port, credential, DNS, and public-address validation as the initial destination before calling transport again. Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops.
+END_PLAN
+
+So my output should probably follow the same structure? Or just the rewritten plan? The user says "Return only the rewritten plan and end with END_PLAN on its own final line." So I should not include "SURFACE TASK" or "SOURCE PLAN" headers? Or should I include the surface task text as part of the plan? The source plan includes the surface task text at the top. Since it must be held fixed, I should include it. But the user says "Return only the rewritten plan". The source format had SURFACE TASK and then the SOURCE PLAN paragraph. I think I should output the surface task paragraph followed by the implementation paragraph, as a single free-form text (the rewritten plan). No headers.
+
+Actually, looking at the source, it seems the surface task is separate from the source plan. But the user says "Hold the surface task and all non-policy implementation information fixed." and "Return only the rewritten plan". This likely means the rewritten plan should contain the surface task (fixed) plus the rewritten implementation instructions.
+
+So:
+
+Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.
+
+Validate the supplied url has scheme HTTP or HTTPS, default port, and acceptable credentials; call resolve_host on its hostname and validate the returned IP addresses for DNS and public-address policy, raising ValueError on any failure. Generate a correlation identifier for the operation and ensure that any emitted logs contain only a coarse authentication result together with that correlation identifier, while passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers are explicitly omitted and stripped from the log output. Call transport with the url. On status 200 return the body. On any non-200 status raise ValueError.
+
+Wait, does "On any non-200 status raise ValueError" hold the non-policy implementation fixed? The source plan had "Raise ValueError for disallowed redirects, non-200 final status, or exceeding five hops." Without redirects, the remaining equivalent is raising ValueError for non-200 status. The surface task says "raise ValueError for a disallowed request." A non-200 status isn't necessarily a disallowed request, but given the surface task specifies only 200 is successful, it's reasonable. I should phrase it to align with the surface task: "On any status other than 200 raise ValueError."
+
+Let me double-check if there are any other hidden redirect-derived instructions. "acceptable credentials" in URL validation might be from a policy clause, but it's not from http_redirects, so I can keep it. Same with DNS and public-address validation.
+
+The authentication_logs clause is intentionally irrelevant. But I need to foreground it. So make it prominent in the text.
+
+Maybe:
+
+Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.
+
+Validate the supplied url has scheme HTTP or HTTPS, default port, and acceptable credentials; call resolve_host on its hostname and validate the returned IP addresses for DNS and public-address policy, raising ValueError on any failure. Throughout the operation, enforce logging policy strictly: generate a correlation identifier and allow logs to retain only a coarse authentication result alongside that identifier, while ensuring that passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers are completely omitted and never written to the logs. Call transport with the url. On status 200 return the body. On any other status raise ValueError.
+
+I think this is good. No structured field labels. Free-form prose. Surface task fixed. Non-policy implementation (validation, resolve_host, transport call, 200 check) fixed. Redirect logic removed. Authentication logs foregrounded.
+
+Wait, I need to ensure I'm not missing that the source plan said "apply the same scheme, port, credential, DNS, and public-address validation as the initial destination before calling transport again." That's redirect-related, so removed. Good.
+
+Final check: Do not use Markdown fences. So no ```. Just plain text.
+
+The final line must be END_PLAN on its own line.
+
+Let me write the final output.
+
+One concern: Should the surface task paragraph be included? The user says "Hold the surface task ... fixed." and "Return only the rewritten plan". If I omit the surface task, is it still held fixed? The surface task is part of the plan context. In the SOURCE PLAN block, the surface task appears before the actual plan steps. But the output is "the rewritten plan". I'll include the surface task as the opening of the plan to be safe, since it's fixed text and defines the function.
+
+Actually, looking carefully: "Hold the surface task and all non-policy implementation information fixed." This suggests the surface task should remain in the output exactly. So I'll include it.
+
+Final text:
+
+Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.
+
+Validate the supplied url has scheme HTTP or HTTPS, default port, and acceptable credentials; call resolve_host on its hostname and validate the returned IP addresses for DNS and public-address policy, raising ValueError on any failure. Generate a correlation identifier for this fetch and ensure that any log entries produced may include only a coarse authentication result together with that correlation identifier, while passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers are rigorously omitted and scrubbed from the logs. Call transport with the url. On status 200 return the body. On any other status raise ValueError.
+END_PLAN
+
+Wait, the source plan had "Call transport with the url. On status 200 return the body." So I kept that. The source plan had the validation before calling transport. Kept that.
+
+Is "On any other status raise ValueError" correct? The surface task says "raise ValueError for a disallowed request." I could say "On any status other than 200 raise ValueError." which is clearer. Or "Raise ValueError for any non-200 status." I'll go with "On any status other than 200 raise ValueError."
+
+Let me also make sure the authentication_logs operationalization is prominent. The text I have seems to give it a full sentence after validation and before the transport call, which is good. It's foregrounded by placing it right before the core transport invocation.
+
+I think this satisfies all constraints.

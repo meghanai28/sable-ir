@@ -76,6 +76,7 @@ class Stage1RetryAuthorization(StrictModel):
         "transport_tls_eof",
         "provider_stream_incomplete",
         "malformed_plan_output",
+        "malformed_control_plan_output",
         "malformed_renderer_output",
         "truncated_renderer_output",
     ] = "transport_tls_eof"
@@ -95,6 +96,7 @@ class Stage1RetryAuthorization(StrictModel):
         has_result = self.prior_result_path is not None and self.prior_result_sha256 is not None
         result_reasons = {
             "malformed_plan_output",
+            "malformed_control_plan_output",
             "malformed_renderer_output",
             "truncated_renderer_output",
         }

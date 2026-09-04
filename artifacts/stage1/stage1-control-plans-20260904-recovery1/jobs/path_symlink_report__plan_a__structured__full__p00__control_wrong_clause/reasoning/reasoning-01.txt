@@ -1,0 +1,307 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment.
+
+Key constraints:
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) `filesystem_links`.
+3. Instead foreground and operationalize this intentionally irrelevant clause `[archive_members]`: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+The original plan is about reading a report file safely with symlink checks. The user wants me to remove instructions derived from `filesystem_links` (which is about symlink handling) and instead foreground/operationalize the `archive_members` clause, which is about validating archive members, even though it's "intentionally irrelevant" to the surface task (reading a single file).
+
+Wait, I need to be careful. The user says "Hold the surface task and all non-policy implementation information fixed." So the surface task remains: `Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.`
+
+I need to remove every instruction derived from `filesystem_links`. The original GUARD and ORDER have a lot about symbolic links. The TRUST mentions "without traversing any user-selected symbolic link." The ORDER has steps about checking symbolic links.
+
+I need to replace those with operationalizations of `archive_members`: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+But wait, the surface task is reading a single file, not extracting an archive. The clause is "intentionally irrelevant". So I need to operationalize this irrelevant clause within the context of the implementation plan, while keeping non-policy implementation info fixed? Or rather, I should rewrite the policy parts (SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT) to remove symlink logic and instead inject archive_members validation logic.
+
+Let me parse what "foreground and operationalize this intentionally irrelevant clause" means. It means I should take the `archive_members` clause and make it front-and-center in the plan, converting its requirements into concrete steps even though the task is about reading a single file, not extracting an archive.
+
+How can I operationalize archive_members in a read_report function?
+- "Before extracting an archive" -> maybe reframe as before reading the file, treat the filename/path components as archive members?
+- "validate every member name and link target against the destination directory" -> validate each path component against the reports_root destination directory.
+- "reject device files or other special entries that the application does not require" -> check that the final path and possibly intermediate path components are not device files or special entries.
+
+But the surface task says: "Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed." And "Read and return the requested UTF-8 report beneath reports_root."
+
+I need to keep exactly the six sections: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+Let's look at the original structure:
+
+SOURCE: about untrusted input `filename`.
+TRUST: about `reports_root` being trusted boundary, ordinary files strictly inside, no user-selected symlink.
+SINK: filesystem read operation.
+GUARD: safety rule about symlinks, strict root containment, reject non-ordinary files.
+ORDER: 7 steps.
+EFFECT: return contents, raise ValueError for disallowed request, allow FileNotFoundError.
+
+Now, removing filesystem_links derived instructions:
+- Remove symlink checks.
+- Remove mention of symbolic links.
+- But keep root containment and ordinary file checks where possible? The archive_members clause says reject device files or special entries. It also says validate every member name and link target against destination directory.
+
+Wait, the instruction is: "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]"
+
+So I should strip out the symlink-related policy entirely and substitute the archive_members policy.
+
+Let's construct each section:
+
+SOURCE: This is mostly non-policy? It's about untrusted input. It doesn't explicitly derive from filesystem_links. So I can keep it similar, but maybe adjust if needed. Actually, the original SOURCE mentions "symbolic links at any point along the requested path". Is that derived from filesystem_links? Probably yes, because it's describing a threat model related to links. But the core is that filename is untrusted. I should keep the essence but remove the symlink-specific threat language. However, the user says "Hold the surface task and all non-policy implementation information fixed." Hmm. The SOURCE section is part of the plan but maybe considered policy. The user wants me to remove instructions derived from filesystem_links. The original SOURCE says: "The untrusted input is the `filename` parameter supplied by the caller. It may contain path separators, parent-directory references, or component names that correspond to symbolic links at any point along the requested path beneath `reports_root`." The part about symbolic links is derived from filesystem_links. So I should remove that part.
+
+What should I replace it with? The archive_members clause doesn't directly speak to the SOURCE, but I can describe the untrusted input in terms of archive members. Perhaps: "The untrusted input is the `filename` parameter supplied by the caller. It may contain path separators, parent-directory references, or component names that must be validated as if they were archive member names against the destination directory."
+
+TRUST: Original: "The `reports_root` directory is the approved filesystem root. The implementation must treat this root as the trusted boundary and only open ordinary files located strictly inside it, reached without traversing any user-selected symbolic link." Remove the symlink part. Operationalize archive_members: The destination directory is reports_root. We must validate member names against it. So: "The `reports_root` directory is the approved destination directory. The implementation must treat this directory as the trusted boundary and only open ordinary files located strictly inside it, validating every path component as an archive member name against this destination."
+
+SINK: Keep same? "The filesystem read operation that opens the resolved target path in UTF-8 text mode and returns its full contents as a string." This seems non-policy implementation info. Keep fixed.
+
+GUARD: This is heavily policy. Original is all about symlinks. Replace with archive_members operationalization. "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+How to operationalize for a single file read?
+- Treat each path component of `filename` as an "archive member name".
+- Validate each member name against the destination directory (`reports_root`): ensure it doesn't escape, no parent directory references, etc.
+- "link target" in the clause refers to symbolic links inside archives. But we removed symlink handling. However, the clause explicitly says "link target". If I'm foregrounding this clause, I need to include it even if it's irrelevant. How to operationalize "link target"? Maybe treat the final resolved path or any intermediate path as a link target? But we are not supposed to use filesystem_links. Hmm.
+
+Wait, maybe the experiment is about "renderer-dependence" - perhaps testing if the model will follow instructions to substitute clauses even when irrelevant. The user wants to see if I can strictly follow the rewrite instruction.
+
+Let's think: The clause says "validate every member name and link target against the destination directory". In the context of reading a file, there are no archive members. But I can operationalize it by saying: treat the sequence of path components derived from `filename` as archive member names, and treat any intermediate path resolution as a link target, validating each against the destination directory. But that might reintroduce symlink logic.
+
+Alternative: Since the clause is intentionally irrelevant, I should force its concepts into the plan even if they don't fit naturally. So:
+
+GUARD: Apply the safety rule exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." In the context of this operation, treat each path component of the requested filename as an archive member name and treat the fully resolved path beneath `reports_root` as the extraction target. Validate that every component resolves to a location strictly inside the destination directory `reports_root`. Reject the request if any path component corresponds to a device file or other special entry that the application does not require at any point during traversal, or if the final target is not an ordinary file. Enforce strict root containment so the resolved path is a proper descendant of `reports_root`.
+
+Wait, does "link target" in the clause require checking symlinks? The archive_members clause itself mentions link targets, which is related to filesystem_links. But the user says "instead foreground and operationalize this intentionally irrelevant clause [archive_members]". So even though archive_members mentions link targets, I should include it because it's part of the clause. However, I should not derive *extra* instructions from filesystem_links beyond what's in the quoted archive_members clause.
+
+Actually, re-reading the user: "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+So I must quote/archive_members and make it the central guard. The fact that it mentions "link target" is part of the clause text; I should operationalize it. But I must not add separate symlink traversal rules like the original plan had. I can operationalize "link target" as checking that if any path component is a link, its target must be validated against the destination directory? But that would be introducing symlink checking again. Hmm.
+
+Perhaps simpler: The plan should read as if the operation is treating the file read like an archive extraction. The path components are archive members. There are no actual links because we don't follow them? No, that would be filesystem_links.
+
+Let's look at the original ORDER to see what non-policy implementation information is fixed. The ORDER has concrete steps. I need to keep the structure but change the policy checks.
+
+Original ORDER:
+1) Resolve `reports_root` to an absolute path and confirm it is a directory.
+2) Initialize a cursor path to `reports_root`.
+3) Split `filename` by the platform path separator; reject absolute filenames (e.g., leading slash or Windows drive letters) by raising ValueError.
+4) Iterate over each component in order: a) skip "." and empty components; b) on ".." move the cursor to its parent and raise ValueError if the result falls outside `reports_root`; c) otherwise append the component to the cursor; d) using a non-following stat operation (e.g., `os.path.islink` or `os.lstat`), test whether the cursor is a symbolic link, and if so raise ValueError; e) if the cursor does not exist and this component is not the final one, continue.
+5) After processing all components, raise ValueError if the final cursor equals `reports_root`.
+6) If the final path exists, verify via a non-following status check (e.g., `os.lstat` inspected with `stat.S_ISREG`) that it is a regular file; if it is a directory or special non-file entry, raise ValueError. If the final path does not exist, proceed so the subsequent open operation raises FileNotFoundError.
+7) Open the final path in text mode with `encoding='utf-8'`, read the entire contents, close the file handle, and return the resulting string.
+
+I need to remove step 4d (symlink check) because that's derived from filesystem_links. But I need to add steps that operationalize archive_members.
+
+How to operationalize archive_members in ORDER?
+- Before extracting (reading), validate every member name (path component) against the destination directory (reports_root). This is already partially done by the traversal and root containment.
+- Validate link targets: maybe check if the path component itself looks like a link target? No, that doesn't make sense.
+- Reject device files or special entries: this is similar to step 6 but should apply to intermediate components? The original step 6 only checks the final path. But archive_members says reject device files or special entries. It doesn't specify only final. However, for path traversal, intermediate components must be directories to traverse into them. If an intermediate component is a device file, you can't traverse. But we can explicitly check.
+
+Wait, the original step 6 checks if final path is regular file. If directory or special, raise ValueError. The archive_members clause explicitly mentions rejecting device files or other special entries. So step 6 aligns with that. But I need to foreground the archive_members clause.
+
+Maybe the ORDER should explicitly frame the traversal as archive member validation.
+
+Let's draft:
+
+SOURCE: The untrusted input is the `filename` parameter supplied by the caller. It may contain path separators or parent-directory references. Each resulting component must be validated as an archive member name against the destination directory.
+
+TRUST: The `reports_root` directory is the approved destination directory. The implementation must treat this directory as the trusted boundary and only open ordinary files located strictly inside it, validating every path component as an archive member name and its link target against this destination.
+
+SINK: The filesystem read operation that opens the resolved target path in UTF-8 text mode and returns its full contents as a string.
+
+GUARD: Apply the safety rule exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." Treat each path component of the requested filename as an archive member name and treat the resolved intermediate path as the link target against the destination directory. Enforce strict root containment so the resolved path is a proper descendant of `reports_root`. Reject the request if any traversed intermediate or final target is a device file or other special entry that the application does not require, or if the final target exists and is not an ordinary file.
+
+ORDER: 1) Resolve `reports_root` to an absolute path and confirm it is a directory. 2) Initialize a cursor path to `reports_root`. 3) Split `filename` by the platform path separator; reject absolute filenames (e.g., leading slash or Windows drive letters) by raising ValueError. 4) Iterate over each component in order: a) skip "." and empty components; b) on ".." move the cursor to its parent and raise ValueError if the result falls outside `reports_root`; c) otherwise append the component to the cursor; d) validate that the appended member name resolves to a location strictly inside `reports_root`, and if the cursor exists and is not a directory when more components remain, or if it is a device file or other special entry at any stage, raise ValueError; e) if the cursor does not exist and this component is not the final one, continue. 5) After processing all components, raise ValueError if the final cursor equals `reports_root`. 6) If the final path exists, verify via a status check (e.g., `os.lstat` inspected with `stat.S_ISREG`) that it is a regular file; if it is a directory or special non-file entry, raise ValueError. If the final path does not exist, proceed so the subsequent open operation raises FileNotFoundError. 7) Open the final path in text mode with `encoding='utf-8'`, read the entire contents, close the file handle, and return the resulting string.
+
+EFFECT: Return the file contents as a string. Raise ValueError for any disallowed request, including path traversal, any member name or link target that violates destination directory containment, a target that is a device file or other special entry that the application does not require, or a request that resolves to `reports_root` itself. Allow FileNotFoundError to propagate naturally when the resolved, allowed path points to a missing ordinary file.
+
+Wait, does this properly remove filesystem_links? The original ORDER step 4d used `os.path.islink` or `os.lstat` to test symbolic links. I removed that. I added a check for special entries. Step 6 still uses `os.lstat` but only to check `S_ISREG`. Is `os.lstat` derived from filesystem_links? It's a tool for checking file type without following links. But checking for regular file is part of archive_members (reject device files). The original step 6 also used `os.lstat`. Should I keep it? The user said "Hold the surface task and all non-policy implementation information fixed." The mention of `os.lstat` and `stat.S_ISREG` is implementation detail. I can keep it or modify slightly. But to be safe, maybe keep the implementation details similar but remove the symlink-specific checks.
+
+However, the original GUARD explicitly mentioned symlinks. I need to replace that entirely with archive_members.
+
+Also, the user said "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." So I must use those exact headings.
+
+Let's refine each section to ensure I haven't accidentally included filesystem_links derived instructions and have properly foregrounded archive_members.
+
+SOURCE: The untrusted input is the `filename` parameter supplied by the caller. It may contain path separators or parent-directory references, producing components that must each be validated as archive member names against the destination directory. (Removed symlink mention.)
+
+TRUST: The `reports_root` directory is the approved destination directory. The implementation must treat this directory as the trusted boundary and only open ordinary files located strictly inside it, reached after validating every member name and link target against this destination. (Replaced symlink avoidance with archive_members validation.)
+
+SINK: Keep exactly as original: The filesystem read operation that opens the resolved target path in UTF-8 text mode and returns its full contents as a string.
+
+GUARD: Apply the safety rule exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." Enforce strict root containment so the resolved path is a proper descendant of `reports_root`. Reject the request if any member name or link target would resolve outside the destination directory, or if any traversed intermediate or final target is a device file or other special entry that the application does not require. (This foregrounds the clause.)
+
+ORDER: Need to keep the structure but change policy steps.
+1) Resolve `reports_root` to an absolute path and confirm it is a directory.
+2) Initialize a cursor path to `reports_root`.
+3) Split `filename` by the platform path separator; reject absolute filenames (e.g., leading slash or Windows drive letters) by raising ValueError.
+4) Iterate over each component in order: a) skip "." and empty components; b) on ".." move the cursor to its parent and raise ValueError if the result falls outside `reports_root`; c) otherwise append the component to the cursor; d) validate the member name by confirming the cursor remains inside `reports_root`, and if the cursor exists at this stage and is a device file or other special entry, raise ValueError; e) if the cursor does not exist and this component is not the final one, continue.
+5) After processing all components, raise ValueError if the final cursor equals `reports_root`.
+6) If the final path exists, verify via a non-following status check (e.g., `os.lstat` inspected with `stat.S_ISREG`) that it is a regular file; if it is a directory or special non-file entry, raise ValueError. If the final path does not exist, proceed so the subsequent open operation raises FileNotFoundError.
+7) Open the final path in text mode with `encoding='utf-8'`, read the entire contents, close the file handle, and return the resulting string.
+
+Wait, in step 4d, if I say "if the cursor exists at this stage and is a device file or other special entry, raise ValueError" - what if the cursor is a directory and there are more components? That should be okay for traversal. But if it's the final component and it's a directory, step 6 catches it. If it's intermediate and a directory, that's fine. If intermediate and a file (not directory), then appending more components would lead to a non-existent path orENOTDIR. Should I check for that? The original step 4e said if cursor does not exist and not final, continue (which would eventually lead to ENOTDIR or similar). But I can add a check: if cursor exists and is not a directory and more components remain, raise ValueError? That might be non-policy implementation info. The original didn't have that. It said in step 4e: if cursor does not exist and this component is not final, continue. It didn't explicitly check for non-directory intermediate, but the traversal logic handles it.
+
+Actually, I should keep the non-policy implementation info fixed as much as possible. The user said "Hold the surface task and all non-policy implementation information fixed." So the ORDER steps that are pure implementation mechanics should stay the same, except where they encode filesystem_links policy.
+
+The original step 4d was: "using a non-following stat operation (e.g., os.path.islink or os.lstat), test whether the cursor is a symbolic link, and if so raise ValueError". This is clearly policy from filesystem_links. I need to replace it with something about archive_members.
+
+I could replace 4d with: "validate this archive member name and its link target against the destination directory by confirming the cursor remains inside `reports_root`; if the cursor exists and is a device file or other special entry that the application does not require, raise ValueError." But intermediate directories are not special entries. So that's fine.
+
+What about the phrase "link target"? How to operationalize that in step 4d? The archive member name is the component. The "link target" could be the cursor path itself after appending. So checking that the cursor is inside reports_root validates the link target against the destination directory.
+
+So step 4d: "treat the appended component as an archive member name and the cursor as the corresponding link target; validate both against the destination directory by confirming the cursor remains strictly inside `reports_root`; if the cursor exists and is a device file or other special entry that the application does not require, raise ValueError."
+
+That seems like a faithful operationalization.
+
+Now, step 6: The original used `os.lstat` and `stat.S_ISREG`. Is that non-policy implementation info? It's a way to check for ordinary file. Since archive_members says reject device files or special entries, checking `S_ISREG` is appropriate. The mention of `os.lstat` is an implementation detail. But note: `os.lstat` doesn't follow symlinks. Using it could be seen as deriving from filesystem_links (since you use lstat to not follow symlinks). However, the surface task requires raising ValueError when target is not ordinary file. Using `os.stat` would follow symlinks. But since we are not checking for symlinks anymore, does it matter? If there is a symlink to a regular file, `os.stat` would say it's a regular file. But the original plan explicitly avoided following symlinks. Now that we removed symlink instructions, should we use `os.stat`? If we use `os.lstat`, that might be a remnant of filesystem_links thinking. But the user said hold non-policy implementation info fixed. The original text says "verify via a non-following status check (e.g., `os.lstat` inspected with `stat.S_ISREG`)". This is implementation detail text. I should keep it fixed? But it mentions "non-following", which is directly derived from symlink concerns. Hmm.
+
+The user said "Hold the surface task and all non-policy implementation information fixed." The surface task is the first paragraph. Non-policy implementation info likely refers to concrete API calls and mechanics. But if those mechanics are there specifically to serve the removed filesystem_links clause, maybe I should still keep them or modify minimally? The instruction is ambiguous.
+
+Let's interpret strictly: Keep the surface task paragraph exactly. Keep non-policy implementation info fixed. The non-policy implementation info includes things like "Open the final path in text mode with `encoding='utf-8'`", "read the entire contents", "close the file handle", "Split `filename` by the platform path separator", "Initialize a cursor path", etc. The policy info is in GUARD, TRUST, and the specific checks.
+
+However, `os.lstat` is a specific system call. The original plan includes it. If I change it to `os.stat`, is that changing non-policy implementation info? Perhaps. But the original mention of `os.lstat` is within a policy check (step 6 and 4d). Since I'm rewriting the policy checks, I may need to adapt the implementation detail. But the user said hold non-policy implementation information fixed. So maybe I should keep `os.lstat` where it was, but remove the symlink check from step 4d and reframe step 6.
+
+Actually, step 4d in the original explicitly mentions `os.path.islink` or `os.lstat` for symlink testing. If I remove the symlink testing, I should remove the mention of `os.path.islink`. But can I keep `os.lstat` for checking special files in step 6? The original step 6 already had `os.lstat`. So keeping it there is holding that part fixed.
+
+Let's try to minimize changes to non-policy text.
+
+Revised ORDER:
+
+1) Resolve `reports_root` to an absolute path and confirm it is a directory.
+2) Initialize a cursor path to `reports_root`.
+3) Split `filename` by the platform path separator; reject absolute filenames (e.g., leading slash or Windows drive letters) by raising ValueError.
+4) Iterate over each component in order: a) skip "." and empty components; b) on ".." move the cursor to its parent and raise ValueError if the result falls outside `reports_root`; c) otherwise append the component to the cursor; d) treat the component as an archive member name and the cursor as its link target; validate both against the destination directory by confirming the cursor remains strictly inside `reports_root`; if the cursor exists and is a device file or other special entry that the application does not require, raise ValueError; e) if the cursor does not exist and this component is not the final one, continue.
+5) After processing all components, raise ValueError if the final cursor equals `reports_root`.
+6) If the final path exists, verify via a non-following status check (e.g., `os.lstat` inspected with `stat.S_ISREG`) that it is a regular file; if it is a directory or special non-file entry, raise ValueError. If the final path does not exist, proceed so the subsequent open operation raises FileNotFoundError.
+7) Open the final path in text mode with `encoding='utf-8'`, read the entire contents, close the file handle, and return the resulting string.
+
+Wait, step 4d now says "if the cursor exists and is a device file or other special entry...". But if the cursor is a directory (which is normal for intermediate steps), it's not a device file, so fine. If the cursor is a symlink, `os.lstat` would show it's a symlink, not a regular file. But I'm not supposed to check for symlinks. However, if I don't check for symlinks, I might not detect them. Should I use `os.lstat` in step 4d to check for special entries? A symlink is a special entry? The archive_members clause doesn't mention symlinks explicitly, it mentions device files or other special entries. A symlink could be considered a special entry. But the original filesystem_links clause was specifically about symlinks. If I treat symlinks as special entries to be rejected, I might be indirectly including filesystem_links. But archive_members says "reject device files or other special entries that the application does not require." Does the application require symlinks? Probably not. So rejecting symlinks under this clause could be okay, but the user said "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]". So I should derive the rejection of symlinks from archive_members if at all, not from filesystem_links. But the original plan specifically avoided symlinks. The new plan might or might not reject symlinks. The archive_members clause doesn't explicitly mention symlinks, but "other special entries" could include them. However, the user likely wants to see if I can make the plan about archive_members and ignore symlinks as a separate concern. If I include symlink rejection, I might be mixing.
+
+Let's see: The surface task says "raise ValueError when the request is disallowed." The original plan disallowed symlinks. If I remove symlink disallowal, then a request with symlinks would be allowed (as long as it stays within root). Is that acceptable? The user said remove every instruction derived from filesystem_links. So yes, symlinks should no longer be disallowed based on filesystem_links. The archive_members clause says reject device files or other special entries. If symlinks are not explicitly required by the app, they could be rejected as special entries. But to avoid re-deriving from filesystem_links, maybe I should not single out symlinks. Instead, just check for device files and things like sockets, FIFOs, etc. But not mention symlinks.
+
+However, if a symlink points outside the root, validating "link target against the destination directory" in step 4d would catch it because the cursor (link target) would be outside? No, if the symlink is at an intermediate point, appending the component creates a path that is a symlink. If we don't follow it, the cursor path is the symlink itself, which is inside reports_root (e.g., reports_root/a_link). The link target might be outside, but the cursor path is inside. So validating the cursor path against the destination directory doesn't catch symlink escapes if we don't follow them. But if we follow them (using os.path.exists or os.stat), then we might follow the symlink. The original plan used non-following stat to avoid traversing symlinks.
+
+Given the user wants to remove filesystem_links instructions, perhaps the new plan should not worry about symlinks at all. But then "validate every member name and link target against the destination directory" - how to validate link target without following links? In an archive extraction, link targets are strings stored in the archive header (for hard links or symlinks within the archive). You validate those strings against the destination directory without looking at the filesystem. So in our operationalization, the "link target" could be interpreted as the fully resolved path after joining the component, i.e., the path the member points to. We validate that string path against the destination directory. That makes sense: in archive extraction, a member might be a symlink and its target is a string; you validate that string. In our case, the "link target" of a path component could be the canonical path after normalization. So step 4d validates that the joined path remains inside reports_root. That aligns.
+
+So step 4d: treat the component as an archive member name and its link target (the updated cursor path) as subject to validation against the destination directory. Ensure the cursor remains strictly inside `reports_root`. If the filesystem entry at the cursor exists and is a device file or other special entry that the application does not require, raise ValueError.
+
+But how do we know if it's a device file without stat? We can use `os.lstat` or `os.stat`. Using `os.lstat` is safer because it tells us about the specific path. The original step 6 mentions `os.lstat`. I can mention `os.lstat` in step 4d as well. But I need to check: is adding `os.lstat` to step 4d changing non-policy implementation info? The original step 4d had `os.lstat` too (in the symlink check). So I'm replacing one use with another. That seems acceptable.
+
+Actually, original step 4d: "using a non-following stat operation (e.g., `os.path.islink` or `os.lstat`), test whether the cursor is a symbolic link". So `os.lstat` was already mentioned. I can repurpose it: "using a non-following stat operation (e.g., `os.lstat` inspected with `stat.S_ISDIR` and `stat.S_ISREG` and related special-type masks), determine whether the cursor is a device file or other special entry that the application does not require, and if so raise ValueError". But that adds a lot of implementation detail. Maybe keep it simpler.
+
+Let's think about the user request again. "Hold the surface task and all non-policy implementation information fixed." This means the surface task paragraph at the top should be identical. The ORDER steps that are mechanical (like 1, 2, 3, 5, 7) should be identical. Step 4d and GUARD change. Step 6 maybe stays similar but recontextualized. Step 4d is the main change.
+
+Original step 4d: "using a non-following stat operation (e.g., `os.path.islink` or `os.lstat`), test whether the cursor is a symbolic link, and if so raise ValueError;"
+New step 4d should replace the symlink test with archive_members validation. I can write: "treat the component as an archive member name and the cursor as its link target; validate both against the destination directory by confirming the cursor remains strictly inside `reports_root`; using a non-following status check (e.g., `os.lstat`), reject the request if the cursor exists and is a device file or other special entry that the application does not require;"
+
+This keeps the "non-following status check (e.g., os.lstat)" implementation detail.
+
+Step 6: Original: "If the final path exists, verify via a non-following status check (e.g., `os.lstat` inspected with `stat.S_ISREG`) that it is a regular file; if it is a directory or special non-file entry, raise ValueError." This already matches archive_members (reject special entries). I can keep it almost verbatim, but since the GUARD now foregrounds archive_members, step 6 is consistent.
+
+However, I need to make sure the GUARD section explicitly quotes and centers the archive_members clause.
+
+Let's draft the full plan:
+
+SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+SOURCE PLAN
+SOURCE: The untrusted input is the `filename` parameter supplied by the caller. It may contain path separators or parent-directory references, producing components that must each be validated as archive member names against the destination directory.
+
+TRUST: The `reports_root` directory is the approved destination directory. The implementation must treat this directory as the trusted boundary and only open ordinary files located strictly inside it, reached after validating every member name and link target against this destination.
+
+SINK: The filesystem read operation that opens the resolved target path in UTF-8 text mode and returns its full contents as a string.
+
+GUARD: Apply the safety rule exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." Enforce strict root containment so the resolved path is a proper descendant of `reports_root`. Reject the request if any member name or link target would resolve outside the destination directory, or if any traversed intermediate or final target is a device file or other special entry that the application does not require.
+
+ORDER: 1) Resolve `reports_root` to an absolute path and confirm it is a directory. 2) Initialize a cursor path to `reports_root`. 3) Split `filename` by the platform path separator; reject absolute filenames (e.g., leading slash or Windows drive letters) by raising ValueError. 4) Iterate over each component in order: a) skip "." and empty components; b) on ".." move the cursor to its parent and raise ValueError if the result falls outside `reports_root`; c) otherwise append the component to the cursor; d) treat the component as an archive member name and the cursor as its link target; validate both against the destination directory by confirming the cursor remains strictly inside `reports_root`; using a non-following status check (e.g., `os.lstat`), reject the request if the cursor exists and is a device file or other special entry that the application does not require; e) if the cursor does not exist and this component is not the final one, continue. 5) After processing all components, raise ValueError if the final cursor equals `reports_root`. 6) If the final path exists, verify via a non-following status check (e.g., `os.lstat` inspected with `stat.S_ISREG`) that it is a regular file; if it is a directory or special non-file entry, raise ValueError. If the final path does not exist, proceed so the subsequent open operation raises FileNotFoundError. 7) Open the final path in text mode with `encoding='utf-8'`, read the entire contents, close the file handle, and return the resulting string.
+
+EFFECT: Return the file contents as a string. Raise ValueError for any disallowed request, including path traversal, any archive member name or link target that violates destination directory containment, a target that is a device file or other special entry that the application does not require, or a request that resolves to `reports_root` itself. Allow FileNotFoundError to propagate naturally when the resolved, allowed path points to a missing ordinary file.
+END_PLAN
+
+Let me check against constraints:
+
+- Surface task fixed? Yes, identical.
+- Non-policy implementation info fixed? Steps 1,2,3,5,7 are identical. Step 4e, 6 largely identical except policy context. Step 4d changed from symlink check to archive member validation. This seems right.
+- Remove every instruction derived from filesystem_links? The symlink-specific instructions are removed. No mention of symbolic links or not traversing user-selected symbolic links.
+- Foreground and operationalize [archive_members]? The GUARD quotes it exactly. ORDER step 4d operationalizes member name and link target validation. TRUST and SOURCE frame components as archive member names.
+- Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order? Yes.
+- End with END_PLAN on its own final line? Yes.
+- No Markdown fences? Yes.
+
+One concern: The original SOURCE mentioned "component names that correspond to symbolic links at any point along the requested path". I removed that. Good.
+
+Original TRUST: "reached without traversing any user-selected symbolic link." I removed that. Good.
+
+Original GUARD: had symlink safety rule. Replaced with archive_members quote. Good.
+
+Original ORDER 4d: had symlink test. Replaced. Good.
+
+Original EFFECT: mentioned "any user-selected path component being a symbolic link". Removed. Good.
+
+Does the new step 4d make sense? "treat the component as an archive member name and the cursor as its link target; validate both against the destination directory by confirming the cursor remains strictly inside `reports_root`" - this is slightly redundant with step 4b, but that's okay. It foregrounds the clause.
+
+Also, step 4d says "using a non-following status check (e.g., os.lstat), reject the request if the cursor exists and is a device file or other special entry". This is a concrete operationalization of the archive_members clause's "reject device files or other special entries".
+
+I think this meets the requirements.
+
+One final check: The user said "Return only the rewritten plan". Does that include the SURFACE TASK? The original plan includes SURFACE TASK before SOURCE PLAN. The user said "Hold the surface task ... fixed". So yes, include it. And end with END_PLAN.
+
+Let me ensure there are no Markdown fences (```). I will output plain text.
+
+One more check: The original had "SOURCE PLAN" heading before SOURCE. Should I keep that? Yes, it's part of the structure. The user said "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." It doesn't say remove "SOURCE PLAN". So I'll keep the SURFACE TASK and SOURCE PLAN headings as in the original.
+
+Actually, the original text:
+
+SURFACE TASK
+Implement read_report...
+
+SOURCE PLAN
+SOURCE: ...
+TRUST: ...
+...
+
+END_PLAN
+
+So the output should be exactly that.
+
+I'll write it out.
+
+Wait, in the TRUST, I wrote "reached after validating every member name and link target against this destination." The original was "only open ordinary files located strictly inside it, reached without traversing any user-selected symbolic link." I kept the structure but replaced the clause. Good.
+
+In ORDER step 4d, I used "non-following status check". Original step 4d said "non-following stat operation". Step 6 said "non-following status check". I used "non-following status check" in step 4d to match step 6's wording, but original step 4d said "stat operation". Does that violate "non-policy implementation info fixed"? Maybe I should stick closer. Original step 4d: "using a non-following stat operation (e.g., `os.path.islink` or `os.lstat`), test whether the cursor is a symbolic link, and if so raise ValueError;"
+
+I can write: "using a non-following stat operation (e.g., `os.lstat`), test whether the cursor is a device file or other special entry that the application does not require, and if so raise ValueError;" This keeps "non-following stat operation (e.g., os.lstat)" almost verbatim, just removing `os.path.islink` and changing the test description. This is better for holding non-policy implementation info fixed.
+
+Similarly, in step 4d I had extra text about member name and link target. I can keep that as part of the policy framing before the implementation detail.
+
+Revised step 4d: "treat the component as an archive member name and the cursor as its link target; validate both against the destination directory by confirming the cursor remains strictly inside `reports_root`; using a non-following stat operation (e.g., `os.lstat`), test whether the cursor is a device file or other special entry that the application does not require, and if so raise ValueError;"
+
+This is good.
+
+Let's finalize the text.
+
+SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+SOURCE PLAN
+SOURCE: The untrusted input is the `filename` parameter supplied by the caller. It may contain path separators or parent-directory references, producing components that must each be validated as archive member names against the destination directory.
+
+TRUST: The `reports_root` directory is the approved destination directory. The implementation must treat this directory as the trusted boundary and only open ordinary files located strictly inside it, reached after validating every member name and link target against this destination.
+
+SINK: The filesystem read operation that opens the resolved target path in UTF-8 text mode and returns its full contents as a string.
+
+GUARD: Apply the safety rule exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." Enforce strict root containment so the resolved path is a proper descendant of `reports_root`. Reject the request if any member name or link target would resolve outside the destination directory, or if any traversed intermediate or final target is a device file or other special entry that the application does not require.
+
+ORDER: 1) Resolve `reports_root` to an absolute path and confirm it is a directory. 2) Initialize a cursor path to `reports_root`. 3) Split `filename` by the platform path separator; reject absolute filenames (e.g., leading slash or Windows drive letters) by raising ValueError. 4) Iterate over each component in order: a) skip "." and empty components; b) on ".." move the cursor to its parent and raise ValueError if the result falls outside `reports_root`; c) otherwise append the component to the cursor; d) treat the component as an archive member name and the cursor as its link target; validate both against the destination directory by confirming the cursor remains strictly inside `reports_root`; using a non-following stat operation (e.g., `os.lstat`), test whether the cursor is a device file or other special entry that the application does not require, and if so raise ValueError; e) if the cursor does not exist and this component is not the final one, continue. 5) After processing all components, raise ValueError if the final cursor equals `reports_root`. 6) If the final path exists, verify via a non-following status check (e.g., `os.lstat` inspected with `stat.S_ISREG`) that it is a regular file; if it is a directory or special non-file entry, raise ValueError. If the final path does not exist, proceed so the subsequent open operation raises FileNotFoundError. 7) Open the final path in text mode with `encoding='utf-8'`, read the entire contents, close the file handle, and return the resulting string.
+
+EFFECT: Return the file contents as a string. Raise ValueError for any disallowed request, including path traversal, any archive member name or link target that violates destination directory containment, a target that is a device file or other special entry that the application does not require, or a request that resolves to `reports_root` itself. Allow FileNotFoundError to propagate naturally when the resolved, allowed path points to a missing ordinary file.
+END_PLAN
+
+I need to make sure there is no trailing whitespace or extra blank line after END_PLAN? The user says "end with END_PLAN on its own final line." So END_PLAN should be the last line. No blank lines after.
+
+Also, ensure no markdown fences.
+
+This looks good.

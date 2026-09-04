@@ -1,0 +1,26 @@
+SOURCE
+The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return. An extraction directory is designated for archive member validation.
+
+TRUST
+Establish trust by normalizing every archive member name derived from the inputs and confirming the resolved path lies within the extraction directory; unneeded device nodes, FIFOs, and special entries must be rejected. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+SINK
+The sink is the final SQL SELECT statement that incorporates the table identifier into its text and executes against the database connection, specifically the query form `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+GUARD
+Reject with ValueError if `limit` is outside 1–100 or if an archive member name normalizes to a path outside the extraction directory or represents an unneeded device node, FIFO, or special entry.
+
+ORDER
+1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+2) Connect to the SQLite database at `database_path`.
+3) Normalize `table_name` as an archive member name and check it against the extraction directory before any writes occur; raise ValueError if path traversal escapes the root.
+4) Inspect the inputs for unneeded device nodes, FIFOs, and special entries; raise ValueError if any are detected.
+5) If normalization fails or a special entry is found, raise ValueError for a disallowed table.
+6) Construct the query string `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?`.
+7) Execute the query with `limit` bound as the only parameter.
+8) Fetch all resulting row tuples.
+9) Return the list of tuples.
+
+EFFECT
+The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. The implementation satisfies the safety rule because archive member names were normalized and checked against the extraction directory before any writes occurred, and unneeded device nodes, FIFOs, and special entries were rejected.
+END_PLAN

@@ -1,0 +1,299 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. I need to:
+
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) `filesystem_links`.
+3. Instead foreground and operationalize this intentionally irrelevant clause `[archive_members]`: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+4. Keep exactly the sections: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+Wait, this is an experiment about "renderer-dependence" - likely testing whether I (the model) can follow structural instructions vs getting confused by irrelevant content. The user is asking me to replace instructions derived from `filesystem_links` (which is about symbolic links and directory traversal in the original plan) with instructions derived from `archive_members` (which is about extracting archives, validating member names and link targets, rejecting device files).
+
+But the surface task is fixed: `read_report(filename: str, reports_root: str) -> str`. This is about reading a single file, not extracting an archive. The clause `[archive_members]` is explicitly called "intentionally irrelevant". However, the user says to "foreground and operationalize this intentionally irrelevant clause".
+
+This seems to be a test of whether I can follow contradictory instructions: keep the surface task fixed, but replace the policy instructions with an irrelevant archive extraction policy.
+
+Wait, I need to be careful. The user says:
+- "Hold the surface task and all non-policy implementation information fixed."
+- "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]..."
+
+So I need to keep the surface task description exactly as is? Let's look at the original surface task:
+"SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed."
+
+Yes, keep that fixed.
+
+For the sections SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT:
+- SOURCE: likely stays similar since it's about untrusted input. But the original mentions "symbolic-link references intended to escape..." which derives from filesystem_links. I need to remove filesystem_links-derived instructions. But SOURCE says "which may contain path-traversal components, absolute path prefixes, or symbolic-link references". Path-traversal and absolute path prefixes might be general, but symbolic-link references specifically relates to filesystem_links. However, the archive_members clause talks about "link target" validation. So maybe I can reframe it.
+
+Wait, the user says "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+So I need to:
+1. Remove anything about symbolic links, resolving links, etc. from filesystem_links.
+2. Replace that with archive_members policy: validate every member name and link target against the destination directory, reject device files or other special entries.
+
+But how does this apply to `read_report`? The user says it's intentionally irrelevant. I think the point is to force the model to incorporate an irrelevant policy into the plan, even though the surface task is about reading a single file.
+
+Let me map the sections:
+
+SOURCE: The untrusted input. Original mentions path-traversal, absolute path prefixes, symbolic-link references. I should remove symbolic-link references (from filesystem_links) but keep path traversal? Actually, the instruction is to remove EVERY instruction derived from filesystem_links. The original SOURCE mentions "symbolic-link references intended to escape the designated directory" - that's derived from filesystem_links. Should I replace it with archive_members concepts? Archive members have member names and link targets. For a single file read, I could say the untrusted input may contain archive-style member names or link targets? Hmm.
+
+Actually, the surface task is fixed. The non-policy implementation info should be fixed. But the policy sections (GUARD, ORDER, etc.) need to reflect the archive_members clause instead of filesystem_links.
+
+Wait, "Hold the surface task and all non-policy implementation information fixed." This suggests the SURFACE TASK text is fixed. But also "non-policy implementation information" - perhaps things like "Read and return the requested UTF-8 report" are non-policy implementation info and fixed.
+
+But the sections SOURCE through EFFECT contain policy and implementation details. I need to rewrite them to remove filesystem_links-derived content and insert archive_members-derived content.
+
+Let me look at the original plan:
+
+SOURCE PLAN
+SOURCE: ... path-traversal components, absolute path prefixes, or symbolic-link references ...
+TRUST: ... symbolic links ... resolving ... boundary ...
+SINK: ... opening the target filesystem object and reading ...
+GUARD: ... symbolic links may be followed only after resolving ... canonicalize ... join ... resolve ... following all symbolic links ... strict containment check ... ordinary file ...
+ORDER: 1) Canonicalize root. 2) Build candidate path. 3) Resolve candidate fully through all symbolic links. 4) Validate containment. 5) Confirm ordinary file. 6) Open and decode.
+EFFECT: ... returns contents ... ValueError when escapes ... FileNotFoundError when missing or not ordinary file.
+
+Now, the archive_members clause: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+How to operationalize this for `read_report`? The surface task is reading a single file. But I must foreground this clause. So I need to frame the read operation as if it were extracting an archive with one member? Or simply apply the validation steps: validate member name and link target against destination directory, reject device files.
+
+Since the task is `read_report(filename, reports_root)`, I can treat `filename` as an archive member name and the read operation as extraction. But the function reads a file, not extracts an archive. However, the user explicitly says this clause is "intentionally irrelevant" but wants me to operationalize it.
+
+Perhaps I should reinterpret the steps in terms of the archive_members clause:
+- Before "extracting" (reading) the report, validate the member name (`filename`) against the destination directory (`reports_root`).
+- Validate link targets (if the filename or path contains link targets? Maybe treat path components as potential link targets).
+- Reject device files or other special entries.
+
+But the original task mentions symbolic links. The archive_members clause mentions "link target" validation. So maybe I can say: treat the requested path as an archive member entry; validate its member name and any link target against the destination directory; reject if it refers to a device file or special entry.
+
+Actually, to operationalize it exactly:
+"Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+So for `read_report`, I need to phrase GUARD and ORDER in terms of:
+- Validate the member name (`filename`) against the destination directory (`reports_root`).
+- Validate link targets against the destination directory.
+- Reject device files or special entries.
+
+But wait, the original task's non-policy info says: "Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed."
+
+If I operationalize archive_members, I should still end up reading a file, but the policy checks are different. However, "reject device files or other special entries" aligns with the original "ordinary file" check. The original checks for ordinary file; archive_members says reject device files or special entries. That's actually consistent.
+
+The key difference is that filesystem_links is about symbolic link resolution and containment. Archive_members is about validating member names and link targets against the destination directory. So I need to replace the symlink resolution steps with member name validation steps.
+
+Let me try to draft:
+
+SOURCE: The untrusted input is the `filename` string argument provided by the caller, which may contain path-traversal components, absolute path prefixes, or member names and link targets intended to escape the designated directory, and must be treated as adversarial.
+(But "symbolic-link references" came from filesystem_links; I replaced with "member names and link targets" from archive_members.)
+
+TRUST: The sole approved filesystem boundary is the absolute path derived from `reports_root`. Every validated member name and link target must remain inside this boundary; no read is permitted if validation would cross outside it.
+(Instead of resolving symlinks, validate member names and link targets against the boundary.)
+
+SINK: The sensitive operation is extracting the target filesystem object and reading its entire contents as a UTF-8 encoded text stream.
+(Keep similar but maybe mention extracting.)
+
+GUARD: Enforce the archive_members clause exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." To implement this, first canonicalize `reports_root` to an absolute path. Next, treat the untrusted `filename` as an archive member name and validate it against the destination directory by constructing the candidate access path under the root. Verify that the member name does not contain traversal components that escape the root. Validate any link target within the member against the destination directory, ensuring it remains inside the approved root. Reject device files or other special entries that the application does not require; raise `ValueError` if the member name or link target is disallowed or escapes the root. After successful validation, verify that the resolved path refers to an existing ordinary file; if the file is missing, raise `FileNotFoundError`.
+
+Wait, but the archive_members clause specifically says "Before extracting an archive, validate every member name and link target against the destination directory". Since we're reading a single file, not an archive, I need to map this. I can say: treat the filename as a member name and the operation as extracting a single-member archive. But the user said "intentionally irrelevant". I think the experiment wants to see if I blindly substitute the clause into the structure even if it doesn't make perfect sense, or if I refuse because it's irrelevant. The instruction is clear: "instead foreground and operationalize this intentionally irrelevant clause". So I should do it, making it as coherent as possible while keeping the surface task fixed.
+
+Let's think about "non-policy implementation information fixed". The original ORDER steps 1, 2, 3, 4, 5, 6 contain specific implementation steps. I need to rewrite them to reflect the new policy, but keep the same "shape" where possible? The user says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." It doesn't say keep the step numbers or exact wording, just the sections.
+
+I should make sure:
+- No mention of symbolic links or resolving them (since that's filesystem_links).
+- Instead mention validating member names and link targets against destination directory.
+- Mention rejecting device files or special entries.
+
+Let me try a full draft:
+
+SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+SOURCE PLAN
+SOURCE: The untrusted input is the `filename` string argument provided by the caller, which may contain path-traversal components, absolute path prefixes, or member names and link targets intended to escape the designated directory, and must be treated as adversarial.
+
+TRUST: The sole approved filesystem boundary is the absolute path derived from `reports_root`. Every validated member name and link target must remain inside this boundary; no read is permitted if validation would cross outside it.
+
+SINK: The sensitive operation is extracting the target filesystem object and reading its entire contents as a UTF-8 encoded text stream.
+
+GUARD: Enforce the archive_members clause exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." To implement this, first canonicalize `reports_root` to an absolute path. Next, construct the candidate access path by joining the untrusted `filename` to this root. Validate the member name by verifying that the candidate path resolves to a location inside the approved root; raise `ValueError` if the member name escapes the destination directory. Validate any link target within the member against the destination directory, ensuring it also remains inside the approved root. Reject device files or other special entries that the application does not require; raise `ValueError` if the target is a special entry. After successful validation, verify that the resolved path refers to an existing ordinary file; if the file is missing, raise `FileNotFoundError`.
+
+ORDER: 1) Canonicalize `reports_root` to an absolute path. 2) Build the candidate path by joining the untrusted `filename` with the canonical root. 3) Validate the member name against the destination directory by confirming the candidate path remains inside the canonical `reports_root`; raise `ValueError` if the boundary is violated. 4) Validate any link target within the member against the destination directory, ensuring it remains inside the approved root; raise `ValueError` if a link target escapes. 5) Reject device files or other special entries that the application does not require; raise `ValueError` if the target is not an ordinary file. 6) Confirm the resolved target exists; raise `FileNotFoundError` if it is missing. 7) Open the validated path for reading and decode the raw bytes as UTF-8 to return the report string.
+
+EFFECT: The function returns the UTF-8 text contents of the requested ordinary file when the member name and any link target are confirmed to remain inside the approved root and the target is not a special entry. It raises `ValueError` whenever the request is disallowed because the member name or a link target escapes the root or because the target is a device file or special entry. It raises `FileNotFoundError` when the resolved path does not exist.
+
+END_PLAN
+
+Wait, the original had 6 steps in ORDER. I have 7. That's probably okay. But the original step 5 was "Confirm the resolved target exists and is an ordinary file; raise FileNotFoundError otherwise." In my draft, I split rejecting special entries (ValueError) and confirming existence (FileNotFoundError). The original raised FileNotFoundError for missing or not ordinary file. The archive_members clause says "reject device files or other special entries". Should that be ValueError or FileNotFoundError? The original used FileNotFoundError for not ordinary file. The user says hold non-policy implementation info fixed where possible. The surface task says "Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed."
+
+If a device file is a special entry, rejecting it is a policy disallowance, so ValueError seems appropriate. A missing file is FileNotFoundError. The original conflated missing and not ordinary into FileNotFoundError. But since the new policy explicitly distinguishes special entries as rejections, and the surface task says ValueError when disallowed, it makes sense to use ValueError for special entries. But the user said "Hold the surface task and all non-policy implementation information fixed." The surface task explicitly says "Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed." So I must follow that. Missing -> FileNotFoundError. Disallowed (including special entries, escaping) -> ValueError.
+
+However, the original plan had "if the file is missing or is not an ordinary file (e.g., a directory or special device), raise FileNotFoundError." That seems to derive from filesystem_links or general practice. The surface task says "missing ordinary file" -> FileNotFoundError. "request is disallowed" -> ValueError. So if it's a special device, is it "missing ordinary file" or "disallowed"? The original plan treated not ordinary as FileNotFoundError. But with archive_members foregrounded, rejecting device files is a policy decision, so ValueError. But to be safe and consistent with "non-policy implementation information fixed", maybe I should keep the outcome mapping from the surface task.
+
+Actually, "non-policy implementation information" likely refers to the mechanics: canonicalize, join, open, decode. The policy decisions (what is disallowed) come from the clause.
+
+Let me reconsider the structure. The user wants me to remove filesystem_links-derived instructions. The original SOURCE mentions "symbolic-link references" - that's filesystem_links. I should replace with "member names and link targets" from archive_members.
+
+Original TRUST mentions "resolved target path, including the ultimate destination of any intermediate symbolic links" - that's filesystem_links. Replace with "validated member name and link target".
+
+Original GUARD explicitly enforces clause 1 (filesystem_links). I need to enforce archive_members instead.
+
+Original ORDER step 3: "Resolve the candidate path fully through all symbolic links" - filesystem_links. Replace with validation of member names and link targets.
+
+But how to validate link targets in a single-file read? One way: after constructing the candidate path, if any path component is a symbolic link, treat its target as a link target to validate. But we are not supposed to follow/resolve links per filesystem_links. Instead, archive_members says validate link targets against destination directory. So if there is a symlink in the path, we need to check its target. But wait, if we don't resolve symlinks, how do we know if there are any? We could use `os.lstat` on each component? That seems complicated. But the user wants me to operationalize the clause, not necessarily make it the most efficient implementation.
+
+Alternatively, I could treat the entire `filename` as a member name that might contain internal link targets (like if it's an archive member name that encodes a link). But for a filesystem read, member names aren't links. However, I must foreground the clause.
+
+Maybe I should simply say: "Validate the member name by ensuring the joined path remains within the root. Inspect each path component for symbolic links; for any link encountered, validate its target against the destination directory to ensure it remains inside the root. Reject device files or other special entries."
+
+This way, I'm not "resolving" the links (which is filesystem_links), but rather inspecting and validating them (archive_members). The distinction is subtle but important: filesystem_links says resolve the complete target path and confirm it remains inside. Archive_members says validate every member name and link target against the destination directory.
+
+So the implementation would:
+1. Canonicalize root.
+2. Join filename to root.
+3. Split candidate path into components and validate each component as a member name ensuring no traversal escapes root.
+4. For any symbolic links encountered among the components, validate the link target against the destination directory (i.e., check if the link target points inside root).
+5. Reject device files or special entries.
+6. Check existence as ordinary file? The clause says reject device files or special entries, but ordinary files are okay. It doesn't explicitly say "ordinary file", but rejecting special entries implies we only accept ordinary files (and maybe directories? but we want to read a file, so it must be a file).
+7. Open and read.
+
+Actually, archive extraction usually deals with directories too (creating directories). But our surface task is to read a report file, so we need it to be a file.
+
+Let me refine the draft to be cleaner and more aligned with the original structure.
+
+SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+SOURCE PLAN
+SOURCE: The untrusted input is the `filename` string argument provided by the caller, which may contain path-traversal components, absolute path prefixes, or member names and link targets intended to escape the designated directory, and must be treated as adversarial.
+
+TRUST: The sole approved filesystem boundary is the absolute, canonical path derived from `reports_root`. Every validated member name and link target must remain inside this boundary; no read is permitted if validation would cross outside it.
+
+SINK: The sensitive operation is extracting the target filesystem object and reading its entire contents as a UTF-8 encoded text stream.
+
+GUARD: Enforce the archive_members clause exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." To implement this, first canonicalize `reports_root` to an absolute path. Next, construct the candidate access path by joining the untrusted `filename` to this root. Validate the member name by confirming that the candidate path does not escape the approved root through traversal or absolute prefixes. Inspect the path for symbolic links; for any link target found among the path components, validate that the target remains inside the destination directory. Raise `ValueError` if any member name or link target escapes the root or if the path contains a device file or other special entry that the application does not require. After successful validation, confirm that the target path refers to an existing ordinary file; if the file is missing, raise `FileNotFoundError`.
+
+ORDER: 1) Canonicalize `reports_root` to an absolute path. 2) Build the candidate path by joining the untrusted `filename` with the canonical root. 3) Validate the member name against the destination directory by performing a strict containment check that verifies the root is a proper prefix of the candidate path; raise `ValueError` if containment fails. 4) Inspect each component of the candidate path for symbolic links and validate every link target against the destination directory, ensuring the target remains inside the approved root; raise `ValueError` if any link target escapes. 5) Reject device files or other special entries that the application does not require; raise `ValueError` if the target is not an ordinary file. 6) Confirm the validated target exists; raise `FileNotFoundError` if it is missing. 7) Open the validated path for reading and decode the raw bytes as UTF-8 to return the report string.
+
+EFFECT: The function returns the UTF-8 text contents of the requested ordinary file when the member name and all link targets are confirmed to remain inside the approved root and the target is not a special entry. It raises `ValueError` whenever the request is disallowed because a member name or link target escapes the root or because the target is a device file or other special entry. It raises `FileNotFoundError` when the validated path does not exist.
+
+END_PLAN
+
+Wait, in ORDER step 5 I say "Reject device files... raise ValueError if the target is not an ordinary file." But then step 6 says confirm existence. Should I check existence first? In the original, step 5 was existence + ordinary check combined. The archive_members clause says reject device files or special entries. That should happen before reading. If the file is missing, it's not a device file. So checking existence after rejecting special entries might be odd because you can't reject a special entry if it doesn't exist. But you can check the type of the file if it exists. So steps should be: validate member name, validate link targets, check existence, check it's not a special entry (i.e., ordinary file), then read. Or check existence and type together.
+
+Actually, the original step 5 combined them: "Confirm the resolved target exists and is an ordinary file; raise FileNotFoundError otherwise." That raised FileNotFoundError for both missing and not ordinary. But the user wants to operationalize archive_members, which says reject device files. Since rejecting is a policy action, ValueError. But missing is FileNotFoundError.
+
+However, if I change the error type for non-ordinary files from FileNotFoundError to ValueError, is that "holding non-policy implementation information fixed"? The surface task says "Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed." So non-ordinary file being disallowed should be ValueError. The original plan's raising FileNotFoundError for non-ordinary file was a specific implementation detail that may be considered policy-derived from filesystem_links (which treats non-ordinary as missing for safety). Actually, it's common to treat non-ordinary as FileNotFoundError to avoid leaking existence of special files. But archive_members explicitly says reject device files, which implies a ValueError (disallowed).
+
+To be safe, I should probably follow the surface task exactly: missing ordinary file -> FileNotFoundError, disallowed -> ValueError. Since special entries are disallowed, ValueError.
+
+But what if the path is a directory? That's not a device file, but it's also not an ordinary file. Is it a special entry? "other special entries that the application does not require" - the application requires an ordinary file to read. So a directory could be considered a special entry the application does not require. So ValueError.
+
+Let me reorder ORDER to be logical:
+
+ORDER: 1) Canonicalize `reports_root` to an absolute path. 2) Build the candidate path by joining the untrusted `filename` with the canonical root. 3) Validate the member name against the destination directory by performing a strict containment check that verifies the root is a proper prefix of the candidate path; raise `ValueError` if containment fails. 4) Inspect each component of the candidate path for symbolic links and validate every link target against the destination directory, ensuring the target remains inside the approved root; raise `ValueError` if any link target escapes. 5) Confirm the validated target exists and is an ordinary file; if the file is missing, raise `FileNotFoundError`. If the file exists but is a device file or other special entry that the application does not require, raise `ValueError`. 6) Open the validated path for reading and decode the raw bytes as UTF-8 to return the report string.
+
+Wait, step 5 now does both. But the user might want explicit separation. Let me see the original: step 5 was one combined step. So combining is okay.
+
+But I need to make sure I don't use Markdown fences and return only the rewritten plan. The plan must start with SURFACE TASK? The user says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." It doesn't explicitly say to keep SURFACE TASK, but "Hold the surface task and all non-policy implementation information fixed." So I should include SURFACE TASK exactly as given.
+
+Also "Return only the rewritten plan". So I should output:
+
+SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+SOURCE PLAN
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+Wait, the original had "SOURCE PLAN" as a header. Should I keep that? The user says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." That refers to the sections. The "SOURCE PLAN" header is not one of those, but it's part of the original structure. Probably keep it to be safe, or maybe omit it? The instruction "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order" might mean those are the only section headers. But "SURFACE TASK" is also there. I think include SURFACE TASK and END_PLAN as fixed, and the sections in between.
+
+Let me check the original text again:
+
+SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+SOURCE PLAN
+SOURCE: The untrusted input is the `filename` string argument provided by the caller, which may contain path-traversal components, absolute path prefixes, or symbolic-link references intended to escape the designated directory, and must be treated as adversarial.
+
+TRUST: ...
+
+So "SOURCE PLAN" is a header. I'll keep it.
+
+Now, let me ensure no filesystem_links content remains. filesystem_links is about resolving symlinks and ensuring resolved target remains inside root. I have removed "resolving" and replaced with "validating link targets". I do mention "symbolic links" in the context of inspecting components for links to validate their targets. Is that derived from filesystem_links? The archive_members clause explicitly mentions "link target". So validating link targets necessarily implies inspecting links. That should be fine as it's derived from archive_members, not filesystem_links.
+
+But I should avoid language like "following symbolic links", "resolved target path", "ultimate destination of any intermediate symbolic links". Those are definitely filesystem_links.
+
+Let me verify each section for filesystem_links contamination:
+
+SOURCE: "member names and link targets intended to escape" - archive_members derived. No "symbolic-link references". Good.
+
+TRUST: "Every validated member name and link target must remain inside this boundary" - archive_members derived. No "resolved target path". Good.
+
+SINK: Same as original. Good.
+
+GUARD: "Enforce the archive_members clause exactly" - good. "validate every member name and link target against the destination directory" - exact quote. "reject device files or other special entries" - exact quote. No mention of resolving. Good.
+
+ORDER: Steps 1,2 are generic. Step 3: containment check. Step 4: inspect for symbolic links and validate link targets. This is how I operationalize "validate link target". Step 5: reject special entries. Step 6: confirm existence. Step 7: open and read. Good.
+
+EFFECT: mentions member name and link targets, special entry. Good.
+
+One issue: In ORDER step 4, "Inspect each component of the candidate path for symbolic links" - how does one inspect without resolving? In practice, you would use `os.lstat` on each component. But I don't need to specify the exact syscalls, just the operational logic.
+
+Another issue: In GUARD, I say "if the path contains a device file or other special entry". But the path is a path string; it doesn't "contain" a device file. The components could be device files. I should say "if any path component is a device file or other special entry".
+
+Let me refine GUARD and ORDER:
+
+GUARD: Enforce the archive_members clause exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." To implement this, first canonicalize `reports_root` to an absolute path. Next, construct the candidate access path by joining the untrusted `filename` to this root. Validate the member name by confirming that the candidate path does not escape the approved root through traversal or absolute prefixes. Inspect the path components for symbolic links; for any link target found, validate that the target remains inside the destination directory. Raise `ValueError` if any member name or link target escapes the root. Reject device files or other special entries that the application does not require; raise `ValueError` if the target path refers to a special entry. After successful validation, confirm that the target path refers to an existing ordinary file; if the file is missing, raise `FileNotFoundError`.
+
+ORDER: 1) Canonicalize `reports_root` to an absolute path. 2) Build the candidate path by joining the untrusted `filename` with the canonical root. 3) Validate the member name against the destination directory by performing a strict containment check that verifies the root is a proper prefix of the candidate path; raise `ValueError` if containment fails. 4) Inspect each component of the candidate path for symbolic links and validate every link target against the destination directory, ensuring the target remains inside the approved root; raise `ValueError` if any link target escapes. 5) Confirm the validated target exists; if it is missing, raise `FileNotFoundError`. 6) Reject device files or other special entries that the application does not require; if the existing target is not an ordinary file, raise `ValueError`. 7) Open the validated path for reading and decode the raw bytes as UTF-8 to return the report string.
+
+Wait, step 5 and 6 are existence then type check. But if the file is missing, step 6 isn't reached. That's fine.
+
+But is checking existence after validating link targets correct? If a link target points to a file inside root, but the final path has a missing component, we should catch that. But validating link targets doesn't require the final file to exist; it just requires the link target string to be inside root. However, if we inspect path components for symbolic links, we need the intermediate directories to exist to inspect them. If an intermediate component is a symlink, we need to read its target. If it doesn't exist, there's no link to validate. So maybe the ORDER should be: validate member name containment, then walk components and validate any symlinks found (which implies intermediate directories exist), then check final target existence and type.
+
+But if an intermediate directory doesn't exist, there's no symlink to inspect, and the final file is missing. That's a FileNotFoundError. The original plan resolved the path fully, which would fail with FileNotFoundError if an intermediate was missing. In my operationalization, I need to handle that. I could say: "Inspect each existing component..." or just leave it implicit that if a component is missing, the path cannot be fully traversed and FileNotFoundError is raised.
+
+Actually, maybe I should not overcomplicate. The user wants the plan rewritten, not necessarily a perfect algorithm. The key is the policy substitution.
+
+Let me think about "archive_members" again. In archive extraction, member names are strings inside the archive (like tar entries). You validate them before writing to disk. Link targets are also strings inside the archive (for symlink entries). You validate those strings against the destination directory. You also check the file type (regular file, symlink, directory, device) and reject devices.
+
+For `read_report`, the `filename` is like the member name. There's no archive, but we can analogize: the member name is `filename`, and we validate it against `reports_root` as the destination directory. If `filename` contains symlinks in the path, each symlink has a link target that must be validated. This is a reasonable operationalization.
+
+I think my draft is good. Let me polish the language to be more consistent and formal, matching the original style.
+
+Final check: Did I keep the surface task exactly? Yes.
+Did I keep non-policy implementation info fixed? The mechanics of canonicalizing, joining, opening, decoding are preserved. The error types for surface task conditions are preserved.
+Did I remove filesystem_links? Yes, no resolving of symlinks, no "resolved target path", no "ultimate destination of intermediate symbolic links", no "following all symbolic links".
+Did I foreground archive_members? Yes, quoted in GUARD, operationalized in ORDER.
+Are the sections in the exact order SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT? Yes.
+Is END_PLAN on its own final line? Yes.
+No Markdown fences? Yes.
+
+One final detail: The original SOURCE had "SOURCE PLAN" on its own line. I'll keep that format.
+
+Let me write it out cleanly.
+
+SURFACE TASK
+Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+SOURCE PLAN
+SOURCE: The untrusted input is the `filename` string argument provided by the caller, which may contain path-traversal components, absolute path prefixes, or member names and link targets intended to escape the designated directory, and must be treated as adversarial.
+
+TRUST: The sole approved filesystem boundary is the absolute, canonical path derived from `reports_root`. Every validated member name and link target must remain inside this boundary; no read is permitted if validation would cross outside it.
+
+SINK: The sensitive operation is extracting the target filesystem object and reading its entire contents as a UTF-8 encoded text stream.
+
+GUARD: Enforce the archive_members clause exactly: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." To implement this, first canonicalize `reports_root` to an absolute path. Next, construct the candidate access path by joining the untrusted `filename` to this root. Validate the member name by confirming that the candidate path does not escape the approved root through traversal or absolute prefixes. Inspect each path component for symbolic links; for any link target found, validate that the target remains inside the destination directory. Raise `ValueError` if any member name or link target escapes the root. Reject device files or other special entries that the application does not require; raise `ValueError` if the target refers to a special entry. After successful validation, confirm that the target path refers to an existing ordinary file; if the file is missing, raise `FileNotFoundError`.
+
+ORDER: 1) Canonicalize `reports_root` to an absolute path. 2) Build the candidate path by joining the untrusted `filename` with the canonical root. 3) Validate the member name against the destination directory by performing a strict containment check that verifies the root is a proper prefix of the candidate path; raise `ValueError` if containment fails. 4) Inspect each component of the candidate path for symbolic links and validate every link target against the destination directory, ensuring the target remains inside the approved root; raise `ValueError` if any link target escapes. 5) Confirm the validated target exists; raise `FileNotFoundError` if it is missing. 6) Reject device files or other special entries that the application does not require; if the existing target is not an ordinary file, raise `ValueError`. 7) Open the validated path for reading and decode the raw bytes as UTF-8 to return the report string.
+
+EFFECT: The function returns the UTF-8 text contents of the requested ordinary file when the member name and all link targets are confirmed to remain inside the approved root and the target is not a special entry. It raises `ValueError` whenever the request is disallowed because a member name or link target escapes the root or because the target is a device file or other special entry. It raises `FileNotFoundError` when the validated path does not exist.
+
+END_PLAN
+
+This looks solid. I'll go with it.

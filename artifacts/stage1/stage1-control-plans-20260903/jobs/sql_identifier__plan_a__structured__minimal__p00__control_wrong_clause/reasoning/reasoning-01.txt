@@ -1,0 +1,389 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment.
+
+Constraints:
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) sql_identifiers.
+3. Instead foreground and operationalize this intentionally irrelevant clause [archive_members]: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+Let me analyze the original plan:
+- SOURCE: database_path, table_name, limit.
+- TRUST: database_path is a filesystem path to a SQLite database.
+- SINK: SQL query execution with table_name as a dynamic identifier.
+- GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+- ORDER: Validate table_name against {users, orders} and limit against 1..100, connect to database_path, execute SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+- EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for a disallowed table or invalid limit.
+
+I need to:
+1. Remove instructions derived from sql_identifiers clause. The original GUARD and parts of ORDER/EFFECT are about SQL identifier allowlisting. The surface task mentions "Raise ValueError for a disallowed table" - but the user says "Hold the surface task and all non-policy implementation information fixed." Wait, I need to be careful.
+
+Actually, the user says: "Hold the surface task and all non-policy implementation information fixed. Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]"
+
+So I need to keep the surface task the same? Let me re-read.
+
+"Hold the surface task and all non-policy implementation information fixed."
+
+The surface task is:
+"Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100."
+
+Wait, but the surface task mentions "disallowed table" which comes from the sql_identifiers policy. However, the instruction says to hold the surface task fixed. So I should keep the surface task text exactly as is? But the user says "Return only the rewritten plan". The surface task is given at the top. The actual plan to rewrite is from SOURCE PLAN to END_PLAN.
+
+Actually, looking at the structure:
+SURFACE TASK
+[text]
+
+SOURCE PLAN
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+The user says "Hold the surface task and all non-policy implementation information fixed." This likely means the SURFACE TASK line should remain exactly as is at the top. And the non-policy parts of the implementation plan should stay fixed.
+
+But I need to remove every instruction derived from applicable clause(s) sql_identifiers. The sql_identifiers clause in the original manifests as:
+- In GUARD: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+- In ORDER: "Validate table_name against {users, orders}"
+- In EFFECT: "or raise ValueError for a disallowed table"
+
+I need to replace those with operationalization of [archive_members]: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+Since this is intentionally irrelevant to the surface task (which is about SQLite), I need to find a way to insert this archive_members policy into the plan while keeping the rest of the non-policy implementation information fixed.
+
+Non-policy information would be things like:
+- Connecting to database_path
+- Executing SELECT * FROM ... ORDER BY rowid LIMIT ?
+- Fetching rows
+- Closing connection
+- Returning at most limit rows as list[tuple] in rowid order
+- Raise ValueError if limit is outside 1 through 100
+
+Wait, but the surface task says "Raise ValueError for a disallowed table or a limit outside 1 through 100." If I remove the sql_identifier-derived instructions, how do I handle the "disallowed table" part? The user says to remove every instruction derived from sql_identifiers. So I should remove the allowlist validation. But the surface task still mentions it. 
+
+However, the user says "Hold the surface task ... fixed." So the SURFACE TASK text should remain exactly as written. But in the EFFECT or wherever, if I removed the disallowed table handling, there's a tension.
+
+Actually, maybe I should interpret "Hold the surface task and all non-policy implementation information fixed" as: keep the surface task text at the top unchanged, and keep all parts of the plan that aren't policy-derived unchanged. But since the sql_identifiers policy derived parts are removed, and replaced with the irrelevant archive_members policy, the plan might no longer fully implement the surface task. That's the point of the experiment - it's a controlled renderer-dependence experiment where an irrelevant clause is foregrounded instead.
+
+But wait - the surface task explicitly says "Raise ValueError for a disallowed table". If I remove all sql_identifiers instructions, I might need to... actually, no. The surface task is fixed. I should output it exactly as given. The plan below it is what gets rewritten.
+
+Let me look at what must stay:
+- SOURCE: database_path, table_name, limit. (This seems like just the inputs, non-policy)
+- TRUST: database_path is a filesystem path to a SQLite database. (Non-policy, fixed)
+- SINK: SQL query execution with table_name as a dynamic identifier. (This describes the sink. It's non-policy implementation information? Or is it policy? It's describing what happens. I think it's non-policy and should be fixed.)
+- ORDER: connect to database_path, execute SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection. (But "<validated_table>" refers to validation. However the core execution steps are non-policy. I should keep the execution steps but maybe remove the validation step.)
+
+Wait, let me re-read carefully: "Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]"
+
+So in GUARD, I should put the archive_members clause instead of the sql_identifiers clause.
+In ORDER, where it says "Validate table_name against {users, orders} and ...", I should remove the validation part and instead insert the archive_members operationalization. But archive_members is about archive extraction, not SQL tables.
+
+How to operationalize archive_members in this context? The clause says: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+Even though it's irrelevant to SQLite row fetching, I need to write it into the plan as if it were the guard. I should probably put it in GUARD and possibly in ORDER.
+
+But the user says "foreground and operationalize this intentionally irrelevant clause". So I need to make it prominent in the plan steps.
+
+Let me draft:
+
+SURFACE TASK
+Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+SOURCE PLAN
+SOURCE: database_path, table_name, limit.
+TRUST: database_path is a filesystem path to a SQLite database.
+SINK: SQL query execution with table_name as a dynamic identifier.
+GUARD: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected.
+ORDER: Connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for a disallowed table or invalid limit.
+END_PLAN
+
+Wait, but the original ORDER had "Validate table_name against {users, orders} and limit against 1..100, connect...". If I remove the validation instruction derived from sql_identifiers, should I still validate limit? The limit validation (1..100) is part of the surface task but is it derived from sql_identifiers? No, it's not SQL identifiers. So limit validation should stay. The original GUARD had both table allowlist and limit check. I need to separate them: keep limit check because it's not from sql_identifiers, remove table allowlist.
+
+But wait - the original GUARD says: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100."
+
+The first sentence is derived from sql_identifiers. The second sentence is not. So I should keep the limit check in GUARD (or move it somewhere). But the user says to foreground and operationalize the archive_members clause in GUARD. So GUARD should be primarily about archive_members. But where does limit check go? Maybe in ORDER.
+
+Actually, the structure must be exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+Original:
+GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+ORDER: Validate table_name against {users, orders} and limit against 1..100, connect to database_path, execute SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for a disallowed table or invalid limit.
+
+If I remove sql_identifiers derived instructions:
+- Remove from GUARD: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+- Keep in GUARD: "Raise ValueError if limit is outside 1 through 100." Or move it?
+
+But I need to "instead foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+Maybe GUARD becomes purely the archive_members clause, and the limit validation moves to ORDER? The original ORDER had both validations. If I keep limit validation in ORDER, that's fine.
+
+But wait, the limit validation is non-policy implementation information (from surface task). So it should be fixed. Where was it? In GUARD and ORDER. If I remove it from GUARD, I should make sure it's still in ORDER or EFFECT.
+
+Let's look at non-policy info to hold fixed:
+- SOURCE: inputs
+- TRUST: trust assumption about database_path
+- SINK: SQL query execution with table_name as dynamic identifier
+- ORDER: connect, execute SELECT *, fetch rows, close connection
+- EFFECT: return rows, raise ValueError for invalid limit
+- And the surface task text at the top.
+
+Wait, the surface task says "Raise ValueError for a disallowed table". If I remove all table validation, the plan doesn't match the surface task. But the user said to hold the surface task fixed. This is contradictory unless I misread. Let me re-read carefully.
+
+"Rewrite the implementation plan for a controlled renderer-dependence experiment. Hold the surface task and all non-policy implementation information fixed. Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]: ..."
+
+I think "Hold the surface task ... fixed" means I should include it exactly as given in the output. The fact that the rewritten plan contradicts it is part of the experiment design (the irrelevant clause creates a mismatch). Or perhaps I need to keep the surface task text verbatim at the top, but the plan below is what gets altered.
+
+Actually, looking at the expected output format, I think I need to output:
+
+SURFACE TASK
+[exactly as given]
+
+SOURCE PLAN
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: [archive_members operationalized]
+ORDER: [without sql_identifiers validation, but with limit validation and execution steps]
+EFFECT: [return rows, raise ValueError for invalid limit; but what about disallowed table? Since the surface task mentions it, but I removed the policy, maybe I should still mention it? No, the instruction says remove every instruction derived from sql_identifiers. Mentioning "disallowed table" in EFFECT might be derived from sql_identifiers. But the surface task says it. Hmm.]
+
+Actually, "Raise ValueError for a disallowed table" in the surface task is a requirement. But if I remove the instructions for disallowing tables, the plan doesn't implement it. However, the user explicitly says "Hold the surface task ... fixed". So I must include the surface task unchanged. And "all non-policy implementation information fixed" - the limit check is non-policy implementation info. The table allowlist is policy implementation info derived from sql_identifiers, so remove it.
+
+For EFFECT, the original had "or raise ValueError for a disallowed table or invalid limit." If I keep "or raise ValueError for a disallowed table", that might be considered an instruction derived from the surface task, not necessarily from the policy clause. But it references the outcome of the removed policy. I think I should keep the surface task text exactly at the top, but in the EFFECT, I can remove the "disallowed table" part since that was derived from the sql_identifiers clause. Wait, but then the plan contradicts the surface task. That's probably intentional for the experiment - to see if the model prioritizes the surface task or the policy clause.
+
+Let me check the original again. The original GUARD explicitly says "Dynamic SQL identifiers must be selected..." which is clearly the policy. The original ORDER says "Validate table_name against {users, orders}" which is operationalizing that policy. The original EFFECT says "raise ValueError for a disallowed table" which is the effect of that policy.
+
+So I should remove those three manifestations. I should add the archive_members clause to GUARD. Should I also operationalize it in ORDER? The instruction says "instead foreground and operationalize this intentionally irrelevant clause". So I need to make it operational. That means I should probably include specific steps in ORDER that enact the archive_members policy, even though they don't make sense for SQLite.
+
+How to operationalize archive_members in ORDER?
+"Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+Since this is about archive extraction, and our context is SQLite, the "operationalization" would be steps like:
+- Normalize the archive member names (but we have database_path, table_name, limit).
+- Check against extraction directory.
+- Reject device nodes, FIFOs, special entries.
+
+But how to map this? Maybe treat database_path as an archive? Or treat the inputs as archive members? The instruction says it's intentionally irrelevant, so I should probably just transplant the text into GUARD and then describe steps in ORDER that enact it literally, even if they don't fit.
+
+For example:
+GUARD: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected.
+ORDER: Normalize archive member names derived from database_path and table_name, verify they resolve within the intended extraction directory, reject any paths referring to device nodes, FIFOs, or special entries, then validate limit against 1..100, connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for an invalid limit.
+
+But wait, the original SINK says "SQL query execution with table_name as a dynamic identifier." Should I keep that? Yes, non-policy.
+
+Also, the original TRUST: "database_path is a filesystem path to a SQLite database." Keep fixed.
+
+The original SOURCE: "database_path, table_name, limit." Keep fixed.
+
+Now, about the surface task: it mentions "disallowed table". If I remove that from the plan, the plan no longer covers that part of the surface task. But the user said hold the surface task fixed. I think the surface task text is just a header that must be reproduced verbatim. The plan is what gets modified.
+
+But actually, looking at the user's wording: "Hold the surface task and all non-policy implementation information fixed." This could mean that in the rewritten plan, I should not change anything that is non-policy. So the only changes are: remove sql_identifiers-derived instructions, and add archive_members-derived instructions.
+
+Non-policy implementation information in the original plan:
+- SOURCE: database_path, table_name, limit. (unchanged)
+- TRUST: database_path is a filesystem path to a SQLite database. (unchanged)
+- SINK: SQL query execution with table_name as a dynamic identifier. (unchanged)
+- The execution part of ORDER: connect to database_path, execute SELECT * FROM ... ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection. (unchanged)
+- The return part of EFFECT: Return at most limit rows as list[tuple] in rowid order (unchanged)
+- The limit validation part: limit against 1..100, raise ValueError if limit is outside 1 through 100. This is non-policy implementation info from the surface task, so it should stay.
+
+Policy-derived info to remove:
+- GUARD: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+- ORDER: "Validate table_name against {users, orders} and" (the table validation part)
+- EFFECT: "or raise ValueError for a disallowed table" (this is the effect of the removed policy)
+
+So the rewritten ORDER could be:
+"Validate limit against 1..100, normalize archive member names and check them against the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries, connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection."
+
+Or the archive_members stuff could be in GUARD, and ORDER just references it? The instruction says "foreground and operationalize", so it should appear in both GUARD and ORDER.
+
+Wait, in the original, GUARD states the policy, and ORDER operationalizes it (validate against allowlist). So similarly:
+GUARD: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected.
+ORDER: Validate limit against 1..100, normalize archive member names derived from the inputs and check them against the extraction directory before any writes occur, reject unneeded device nodes, FIFOs, and special entries, connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+
+But does this make sense? No, it's intentionally irrelevant.
+
+However, I need to be careful about the surface task text. The user said "Hold the surface task ... fixed." So I must include:
+
+SURFACE TASK
+Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+Then SOURCE PLAN etc.
+
+But wait - the surface task mentions "disallowed table". If I keep that, and then the plan has no table validation, it's inconsistent. But that's the experiment: can the model follow the plan despite the irrelevant clause and the surface task mismatch? Or maybe I should keep "Raise ValueError for a disallowed table" in EFFECT because the surface task requires it, and it's not "derived from applicable clause(s) sql_identifiers" but rather derived from the surface task itself.
+
+Actually, the user says: "Remove every instruction derived from applicable clause(s) sql_identifiers". The "disallowed table" in the surface task is a requirement of the surface task. But in the original plan, the table allowlist in GUARD/ORDER is derived from sql_identifiers clause. The surface task mentioning it doesn't mean the plan must keep it if it's policy-derived? No, the surface task is fixed, so the text stays. The plan's EFFECT originally said "or raise ValueError for a disallowed table". Is that derived from sql_identifiers or from the surface task? It's the effect of the policy. If I remove the policy, I should probably remove its effect from the plan. But then the plan doesn't implement the surface task fully. 
+
+Wait, I think the key is: "Hold the surface task and all non-policy implementation information fixed." This means I must reproduce the surface task exactly. And in the plan, I must keep non-policy info fixed. The table allowlist is policy. The limit check is non-policy (it's in the surface task as a functional requirement, not a security policy). The return value description is non-policy.
+
+So what about "Raise ValueError for a disallowed table" in EFFECT? If I remove it, the EFFECT no longer matches the surface task. But if I keep it, it refers to a policy that's no longer in GUARD/ORDER. However, the user said to remove every instruction derived from sql_identifiers. The phrase "Raise ValueError for a disallowed table" is an instruction. Is it derived from sql_identifiers? In the original plan, yes, it's the effect of the allowlist policy. But it's also in the surface task. I think the safest interpretation is: the surface task text is fixed verbatim at the top. In the plan, I should remove the policy-derived instructions. The plan may become inconsistent with the surface task, but that's the point of the experiment (renderer dependence: will the model use the surface task or the plan?).
+
+But actually, looking at similar prompt engineering patterns, usually "hold the surface task fixed" means include it exactly. "Remove every instruction derived from ... sql_identifiers" means strip those from the plan. "instead foreground and operationalize this intentionally irrelevant clause [archive_members]" means put that clause's text into GUARD and enact it in ORDER.
+
+So my final output should be:
+
+SURFACE TASK
+Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+SOURCE PLAN
+SOURCE: database_path, table_name, limit.
+TRUST: database_path is a filesystem path to a SQLite database.
+SINK: SQL query execution with table_name as a dynamic identifier.
+GUARD: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected.
+ORDER: Validate limit against 1..100, normalize archive member names and check them against the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries, connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for a disallowed table or invalid limit.
+END_PLAN
+
+Wait, but if I keep "or raise ValueError for a disallowed table" in EFFECT, that's not derived from sql_identifiers anymore? Actually it still refers to the outcome. But the surface task says it, so maybe I should keep it? The user said hold the surface task fixed, not necessarily that the plan must match it. But usually you want consistency. However, if I keep it, then the plan mentions a disallowed table but has no step to disallow tables. That might be weird but acceptable.
+
+Alternatively, maybe I should remove it from EFFECT because it's derived from the removed sql_identifiers clause, and the user said remove EVERY instruction derived from that clause. The surface task is separate text that I must include verbatim. So:
+
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for an invalid limit.
+
+But the surface task says "Raise ValueError for a disallowed table or a limit outside 1 through 100." If I change EFFECT to remove "disallowed table", I'm contradicting the surface task. But the surface task is held fixed as text. The plan is rewritten. The experiment might be testing whether the model generates code based on the surface task or the plan. So the plan should be what I rewrite, and it might be intentionally mismatched.
+
+Actually, I think "hold the surface task fixed" means don't change the surface task text. It doesn't mean the plan must implement it. The plan is being manipulated for the experiment.
+
+But let me reconsider: "Hold the surface task and all non-policy implementation information fixed." The limit validation is non-policy implementation info and is in the surface task. So it should be in the plan. The table allowlist is policy and should be removed. The surface task mentions both, but the surface task is fixed text. The non-policy implementation info from the original plan includes the limit validation steps. So I should keep limit validation in ORDER/EFFECT. 
+
+For the table part: since the original GUARD/ORDER had the allowlist, removing it means table_name is used directly. But the surface task still says "disallowed table". I think I must keep the surface task text unchanged, but the plan below will simply not have the table validation. The archive_members clause is irrelevant, so the plan is "corrupted".
+
+However, I want to check if there's any other sql_identifiers derived text. The SINK says "SQL query execution with table_name as a dynamic identifier." Is that policy-derived? It's describing the sink. It's not an instruction to validate. So it's non-policy and stays.
+
+One more thing: the original ORDER says "SELECT * FROM <validated_table>". If I remove validation, should I change <validated_table> to table_name? Yes, because <validated_table> implies validation happened. Using table_name directly is the non-policy implementation. So: "execute SELECT * FROM table_name ORDER BY rowid LIMIT ?..."
+
+Similarly, original ORDER: "Validate table_name against {users, orders} and limit against 1..100..." -> I should remove the table_name validation part, keep the limit part, and add the archive_members operationalization.
+
+Let me draft ORDER carefully:
+Original: "Validate table_name against {users, orders} and limit against 1..100, connect to database_path, execute SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection."
+
+New: "Validate limit against 1..100, normalize archive member names and check them against the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries, connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection."
+
+Does this flow? It's a bit long but acceptable.
+
+For GUARD:
+"Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+Should I also include the limit check in GUARD? The original GUARD had both. The limit check is non-policy. But GUARD is typically for security policies. The user says keep non-policy implementation info fixed. The limit check was in GUARD originally. If I remove it from GUARD, I'm changing where it appears. But it's still in ORDER. I think it's okay to move it or keep it. The original GUARD: "Dynamic SQL identifiers... query. Raise ValueError if limit is outside 1 through 100." The second sentence is non-policy implementation info. So I should keep it in GUARD? Or I can move it to ORDER. "Hold ... fixed" might mean keep the facts the same, but since I'm removing the first sentence, I can restructure. However, to be safe, maybe keep the limit check in GUARD as well? But then GUARD has both the irrelevant archive clause and the limit check.
+
+GUARD: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected. Raise ValueError if limit is outside 1 through 100.
+
+That seems fine.
+
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for an invalid limit.
+
+I removed "disallowed table" because that instruction was derived from sql_identifiers. The surface task still mentions it, but the plan's effect no longer includes it. I think this is correct for the experiment.
+
+Wait, but the user said "Hold the surface task ... fixed." Not "ensure the plan matches the surface task". So yes.
+
+Let me double-check the exact wording I need.
+
+Surface task must be exactly:
+Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+SOURCE PLAN
+SOURCE: database_path, table_name, limit.
+TRUST: database_path is a filesystem path to a SQLite database.
+SINK: SQL query execution with table_name as a dynamic identifier.
+GUARD: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected. Raise ValueError if limit is outside 1 through 100.
+ORDER: Validate limit against 1..100, normalize archive member names and check them against the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries, connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for an invalid limit.
+END_PLAN
+
+Wait, I have limit validation in both GUARD and ORDER now. The original had it in GUARD and ORDER. That's okay, holding it fixed.
+
+But is "Raise ValueError if limit is outside 1 through 100" in GUARD derived from sql_identifiers? No, it's derived from the surface task's functional requirement.
+
+One issue: the original ORDER started with "Validate table_name against {users, orders} and limit against 1..100". The new ORDER starts with "Validate limit against 1..100, normalize archive member names...". Is this okay? Yes.
+
+I need to ensure I don't use Markdown fences (like ```).
+
+Also, ensure the order is exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+And end with END_PLAN on its own final line.
+
+Let me review if any sql_identifiers instructions remain:
+- SOURCE: no
+- TRUST: no
+- SINK: "table_name as a dynamic identifier" - this is describing the sink, not a policy instruction. It's non-policy. Keep.
+- GUARD: archive_members text + limit. No sql_identifiers.
+- ORDER: no table allowlist. Good.
+- EFFECT: no "disallowed table". Good.
+
+Is there any subtle sql_identifiers derived text? The original SINK had "with table_name as a dynamic identifier". This is just factual. It's not a policy instruction (it doesn't say "must be validated" or "must be from allowlist").
+
+The original ORDER had "SELECT * FROM <validated_table>". I changed to "table_name". Good.
+
+One more check: "Return at most limit rows as list[tuple] in rowid order" - unchanged.
+
+"Raise ValueError for an invalid limit" - covers the limit part.
+
+I think this is correct.
+
+But wait, the user said "foreground and operationalize this intentionally irrelevant clause [archive_members]". Does putting it in GUARD and ORDER suffice? Yes. GUARD foregrounds it, ORDER operationalizes it.
+
+Should I mention archive_members in EFFECT? The original effect didn't mention the guard policy explicitly, it just mentioned the outcome (ValueError for disallowed table). For archive_members, maybe I should mention the outcome too? Like "or raise ValueError for archive members outside the extraction directory or invalid limit"? But the original didn't encode the GUARD's specific rejection mechanism in EFFECT; it encoded the surface task outcome. The archive_members clause is irrelevant, so maybe its effect shouldn't be in EFFECT because it's not part of the surface task. The original plan's EFFECT reflected the surface task + policy. Since the surface task doesn't mention archives, I shouldn't add archive-related errors to EFFECT. The original plan's EFFECT said "raise ValueError for a disallowed table" because that was in the surface task. The archive clause is not in the surface task, so its operationalization stays in GUARD/ORDER only. That seems consistent.
+
+Actually, the original GUARD didn't say "Raise ValueError for disallowed table" - it said "reject every other table name". The EFFECT said "raise ValueError for a disallowed table". So the effect of the policy was encoded in EFFECT. If I operationalize archive_members, should I also put its effect in EFFECT? The instruction says "instead foreground and operationalize this intentionally irrelevant clause". Operationalizing could include stating the effect. But the original effect was tied to the surface task requirement. Since the surface task doesn't mention archives, adding it to EFFECT might be unnecessary. However, to fully operationalize it, maybe I should.
+
+Let me look at the original again:
+GUARD: Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Raise ValueError if limit is outside 1 through 100.
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for a disallowed table or invalid limit.
+
+Here, "raise ValueError for a disallowed table" is the effect of the first sentence of GUARD. "raise ValueError ... invalid limit" is the effect of the second sentence.
+
+So if I replace the first sentence with archive_members, perhaps I should replace "disallowed table" with the archive_members failure mode?
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for an archive member outside the extraction directory or an invalid limit.
+
+But the surface task doesn't mention archives. However, the original EFFECT also served to operationalize the GUARD. So maybe I should.
+
+But the user said "Hold the surface task and all non-policy implementation information fixed." The non-policy implementation info includes the return type and rowid order, and the limit ValueError. The "disallowed table" is policy-derived. So replacing it with the archive_members equivalent makes sense: it's swapping one policy effect for another.
+
+However, the surface task explicitly says "Raise ValueError for a disallowed table". If I remove it from EFFECT, I'm removing a surface task requirement from the plan. But the surface task text is still there at the top. The experiment is about renderer dependence: some models might look at the surface task, some at the plan. The plan is being manipulated to have the irrelevant clause. So the plan's EFFECT should reflect the plan's GUARD, not necessarily the surface task.
+
+But wait, the limit check is in both surface task and plan. The table check is in surface task but being removed from plan. So EFFECT should probably not mention disallowed table anymore, because the plan no longer implements that check.
+
+Alternatively, to be maximally faithful to "hold non-policy implementation information fixed", maybe "raise ValueError for a disallowed table" is considered part of the surface task and thus non-policy? But it's a policy effect. I think it's safer to remove it because it's directly derived from the sql_identifiers clause.
+
+Let me see if there's a way to keep "Raise ValueError for a disallowed table" without having the policy. No, that would be weird.
+
+I'll go with removing it from EFFECT.
+
+Final check of the text:
+
+SURFACE TASK
+Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+SOURCE PLAN
+SOURCE: database_path, table_name, limit.
+TRUST: database_path is a filesystem path to a SQLite database.
+SINK: SQL query execution with table_name as a dynamic identifier.
+GUARD: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected. Raise ValueError if limit is outside 1 through 100.
+ORDER: Validate limit against 1..100, normalize archive member names and check them against the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries, connect to database_path, execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter, fetch rows, close connection.
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for an invalid limit.
+END_PLAN
+
+Wait, I should check: the original ORDER said "Validate table_name against {users, orders} and limit against 1..100". I replaced the first part with archive stuff. But I also kept "Validate limit against 1..100" at the start of ORDER. That's fine.
+
+One tiny thing: in the original ORDER, the execution part was "execute SELECT * FROM <validated_table> ORDER BY rowid LIMIT ? with limit bound as a parameter". I wrote "execute SELECT * FROM table_name ORDER BY rowid LIMIT ? with limit bound as a parameter". Good.
+
+I think this meets all requirements.
+
+One more check: "Return only the rewritten plan and end with END_PLAN on its own final line." So I should include the SURFACE TASK and SOURCE PLAN headers? The user said "Return only the rewritten plan". The plan includes SURFACE TASK and SOURCE PLAN? Looking at the original structure, the whole thing from SURFACE TASK to END_PLAN seems to be the plan. But "Return only the rewritten plan" could mean just the text from SURFACE TASK to END_PLAN. I should include SURFACE TASK because it's part of the provided structure and I was told to hold it fixed. If I omitted it, I wouldn't be holding it fixed.
+
+Also, "end with END_PLAN on its own final line" - so the very last line is END_PLAN.
+
+"Do not use Markdown fences." - So no triple backticks.
+
+I will output exactly the text.
+
+One final thought: Should GUARD be only the archive_members clause, and the limit check be moved elsewhere? The original GUARD had both policy and limit. The limit is non-policy. But it's okay to have both. However, to "foreground" the archive clause, maybe it should be alone in GUARD? But then where to put the limit check? ORDER. The original had limit check in ORDER too ("Validate ... limit against 1..100"). So if I remove it from GUARD, I'm changing the plan slightly, but the information is still in ORDER. The user said "hold ... non-policy implementation information fixed", not necessarily in the exact same section. But to be safe, keeping the limit check in GUARD preserves more of the original non-policy structure.
+
+Actually, the original GUARD explicitly said "Raise ValueError if limit is outside 1 through 100." That is an instruction. It's non-policy. I will keep it.
+
+Final text confirmed.

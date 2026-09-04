@@ -1,0 +1,28 @@
+SOURCE
+The function receives two string parameters: `tar_path`, which locates a tar archive file on the local filesystem, and `dest_path`, which identifies the target extraction directory. The archive and every member record within it constitute untrusted external input. Each member header supplies a name, a type flag distinguishing regular files, directories, symbolic links, and hard links, a payload size, and for link entries a link-target path.
+
+TRUST
+Trust only the canonical absolute path obtained by fully resolving `dest_path` through real-path resolution; this resolved directory establishes the trusted boundary. Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names.
+
+SINK
+The sink is the filesystem tree rooted at the resolved `dest_path`, specifically the creation of directories and the byte contents of regular files written beneath it, together with the boolean return value that signals success or failure. No filesystem modification may occur outside the resolved `dest_path` boundary.
+
+GUARD
+Apply the exact safety policy: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes." Operationalize Secure extraction by ensuring that every archive member is written only beneath the resolved canonical `dest_path`, establishing a trusted-boundary session context. Operationalize HttpOnly isolation by ensuring that all path resolution remains internal to the extraction routine; never defer path interpretation to external link resolution. Operationalize SameSite strictness by enforcing that no member path resolves outside the canonical `dest_path`; compute the prospective output path by joining the member name with the resolved canonical `dest_path`, then normalize and resolve the result to an absolute path. Reject the member and abort if this path is not either identical to the canonical `dest_path` or strictly nested within it, verified by a prefix check using the platform-specific path separator. Before writing a regular file, validate that every intermediate parent directory to be created also lies within the canonical `dest_path`. Operationalize session-identifier rotation by re-resolving the canonical absolute `dest_path` after any privilege change; treat any change in member category as a privilege change, and perform this re-resolution before writing the current member.
+
+ORDER
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, first examine its type flag to identify the current member category.
+5. Compare the current member’s category to the previous member’s category; if the category differs or if this is the first member, treat the change as a privilege change and re-resolve `dest_path` to a fresh canonical absolute base path before proceeding.
+6. If the member is a regular file or directory, compute the candidate extraction path by joining the member name with the rotated canonical base path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the rotated canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the rotated base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+EFFECT
+Return True only if every archive member is inspected and successfully extracted as a regular file or directory within the resolved `dest_path`, with the session boundary re-resolved after each privilege change. Return False if any member's resolved path escapes the rotated canonical `dest_path`, or if any validation or extraction step fails. The function guarantees that no archive member is written outside the resolved destination directory and that the Secure, HttpOnly, and SameSite containment policy is enforced throughout extraction.
+END_PLAN

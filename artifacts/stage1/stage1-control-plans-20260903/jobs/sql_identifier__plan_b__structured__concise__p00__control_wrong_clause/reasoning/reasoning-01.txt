@@ -1,0 +1,207 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. Let me parse the requirements carefully.
+
+Constraints:
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) `sql_identifiers`.
+3. Instead foreground and operationalize this intentionally irrelevant clause `[archive_members]`: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+The surface task is fixed: Implement `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+I need to:
+- Keep the surface task exactly as given.
+- Keep the structure SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+- Remove anything related to SQL identifiers (quoting identifiers, constructing SELECT with interpolated quoted table identifier, etc.). The original plan had SQL identifier handling, which must be removed because the user said to remove every instruction derived from applicable clause(s) `sql_identifiers`.
+- Instead, insert content about archive_members (archive member names normalization, checking against extraction directory, rejecting device nodes/FIFOs/special entries) even though it's irrelevant to the SQLite task. This is an intentionally irrelevant clause that must be foregrounded and operationalized.
+- Keep non-policy implementation information fixed. So the basic flow of fetch_rows should remain: validate limit, validate table name, query SQLite, return rows. But the SQL identifier parts must be removed/replaced with archive_members content.
+
+Wait, "Hold the surface task and all non-policy implementation information fixed." So the actual functional behavior should remain the same? But I must remove instructions derived from `sql_identifiers` and replace them with `archive_members` content.
+
+The original SOURCE PLAN mentions:
+- SOURCE: Untrusted caller inputs `database_path`, `table_name`, and `limit`.
+- TRUST: Trust only tables discovered as existing non-system tables through a parameterized schema lookup; trust correctly quoted identifiers and bound limit parameters.
+- SINK: SQLite SELECT execution with the interpolated quoted table identifier.
+- GUARD: Restrict `limit` to 1..100, raise ValueError. Discover `table_name` as any existing non-system table through parameterized schema lookup; raise ValueError if disallowed. Quote the identifier correctly before constructing SELECT.
+- ORDER: Validate limit range. Perform parameterized schema lookup. Quote validated identifier. Assemble `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` and execute with bound limit.
+- EFFECT: Return at most `limit` rows as `list[tuple]` in rowid order; raise ValueError for disallowed table or out-of-range limit.
+
+I need to remove:
+- "trust correctly quoted identifiers" (from TRUST)
+- "interpolated quoted table identifier" (from SINK) — but I still need a SINK. I should make the SINK about SQLite SELECT execution but without mentioning quoted identifier interpolation, or rather foreground archive_members.
+- "Quote the identifier correctly before constructing the SELECT statement" (from GUARD)
+- "Quote the validated identifier. Assemble..." (from ORDER)
+
+But I must foreground and operationalize `[archive_members]`: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected.
+
+Since the surface task is fixed (SQLite fetch_rows), the archive_members clause is intentionally irrelevant. I need to weave it into the plan as if it were policy, even though it doesn't belong. The user says "foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+So I should put archive_members checks into the steps. For example:
+- SOURCE stays similar: Untrusted caller inputs.
+- TRUST: Trust only tables discovered... and trust normalized archive member names verified against extraction directory; trust bound limit parameters. (Remove the quoted identifiers part, add archive members)
+- SINK: Need to describe the sink. Maybe "SQLite SELECT execution and archive extraction writes" or something. But the surface task is SQLite only. However, I must operationalize archive_members. Maybe the SINK becomes: "SQLite SELECT execution; extraction directory writes for archive member entries." But the function doesn't do extraction. This is the "intentionally irrelevant" part being forced in. I should operationalize it by describing the checks.
+- GUARD: Restrict limit, discover table_name, and also normalize archive member names and check against extraction directory, rejecting device nodes, FIFOs, and special entries.
+- ORDER: Validate limit, schema lookup, then normalize archive member names and check against extraction directory, rejecting unneeded device nodes, FIFOs, and special entries, then execute SELECT.
+- EFFECT: Keep the original effect, maybe plus something about archive members being suppressed? Or just keep it fixed? The user said "Hold the surface task and all non-policy implementation information fixed." So the EFFECT should still describe returning rows. But maybe I need to mention that no archive writes occur or that archive members were checked? Hmm. The user said "foreground and operationalize this intentionally irrelevant clause". I think I need to incorporate it into the steps.
+
+Wait, "Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+So any instruction that came from sql_identifiers must be removed. In the original plan, these are:
+- TRUST: "trust correctly quoted identifiers"
+- SINK: "with the interpolated quoted table identifier"
+- GUARD: "Quote the identifier correctly before constructing the SELECT statement"
+- ORDER: "Quote the validated identifier. Assemble `SELECT * FROM <quoted_identifier> ...`"
+
+Instead, I need to put in instructions about archive_members.
+
+But the surface task must remain fixed: fetch_rows from SQLite. So the plan still needs to result in executing a SELECT query. However, without quoting the identifier, how do we construct the query? The original used quoted identifier interpolation because table names can't be parameterized. If I remove that, I need some way to operationalize the query construction without deriving from sql_identifiers clause. Or maybe I just omit the quoting part and say "execute SELECT" without specifying interpolation? But practically, you need to put the table name in the SQL string.
+
+Wait, maybe the idea is that the original plan had two security concerns: sql_identifiers and archive_members. The experiment is about renderer-dependence. The user wants me to remove the sql_identifiers policy (which is applicable) and instead apply the archive_members policy (which is irrelevant). So the rewritten plan should blindly follow archive_members policy even though the task is SQL.
+
+So I should write the plan as if archive_members is the governing policy. This means I need to map archive_members concepts onto the steps, even if they don't make sense for SQLite.
+
+How to operationalize archive_members in each section:
+
+SOURCE: Untrusted caller inputs `database_path`, `table_name`, and `limit`. (Fixed)
+
+TRUST: Trust only tables discovered as existing non-system tables through a parameterized schema lookup; trust bound limit parameters; trust normalized archive member names that pass extraction-directory checks and are not device nodes, FIFOs, or special entries. (Replace quoted identifiers with archive_members)
+
+SINK: SQLite SELECT execution against the validated table; extraction directory write path for archive members. (Need to mention archive members)
+
+GUARD: Restrict `limit` to 1..100, raising ValueError otherwise. Discover `table_name` as any existing non-system table through a parameterized schema lookup; raise ValueError if disallowed. Normalize all archive member names and verify they resolve within the extraction directory before any writes occur; reject unneeded device nodes, FIFOs, and special entries.
+
+ORDER: Validate `limit` range. Perform parameterized schema lookup to confirm existing non-system table status. Normalize archive member names and check them against the extraction directory, rejecting device nodes, FIFOs, and special entries. Execute `SELECT * FROM <validated_table_name> ORDER BY rowid LIMIT ?` with bound `limit`. (Here I still need to put the table name in the SQL. But I removed the quoting instruction. Maybe I can just say "Execute SELECT ..." without specifying how the table name is included? Or perhaps I can say "Execute the assembled SELECT using the validated table name and bound limit." But the user said "Hold the surface task and all non-policy implementation information fixed." So I should keep the fact that it returns rows, etc. The removal of sql_identifiers means I shouldn't talk about quoting. But I can still say "Assemble SELECT * FROM the validated table name...". Actually, assembling a query with a table name is non-policy implementation information? The original had `<quoted_identifier>` which derived from sql_identifiers. If I just say "validated table name", that's non-policy implementation. But to be safe, maybe I should keep it vague: "Assemble and execute the row-fetching SELECT with bound limit." But the original explicitly gave the SQL. Let me keep the SQL but without the `<quoted_identifier>` part: `SELECT * FROM <validated_table_name> ORDER BY rowid LIMIT ?`. However, `<validated_table_name>` implies interpolation which is the technical reality. The policy part was quoting. So removing quoting policy but keeping the implementation description should be okay.
+
+Wait, "Remove every instruction derived from applicable clause(s) sql_identifiers". The instructions derived from it are:
+- "trust correctly quoted identifiers"
+- "interpolated quoted table identifier"
+- "Quote the identifier correctly"
+- "Quote the validated identifier. Assemble ... <quoted_identifier>"
+
+So I should purge "quoted" and "quote" and "interpolated quoted table identifier".
+
+Instead, I add archive_members instructions.
+
+Let me draft:
+
+SURFACE TASK
+Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+SOURCE PLAN
+SOURCE: Untrusted caller inputs `database_path`, `table_name`, and `limit`.
+TRUST: Trust only tables discovered as existing non-system tables through a parameterized schema lookup; trust normalized archive member names verified against the extraction directory and confirmed not to be device nodes, FIFOs, or special entries; trust bound limit parameters.
+SINK: SQLite SELECT execution using the validated table name; extraction directory write path for archive members.
+GUARD: Restrict `limit` to 1..100, raising ValueError otherwise. Discover `table_name` as any existing non-system table through a parameterized schema lookup; raise ValueError if disallowed. Normalize all archive member names and check them against the extraction directory before any writes occur; reject unneeded device nodes, FIFOs, and special entries.
+ORDER: Validate `limit` range. Perform parameterized schema lookup to confirm existing non-system table status. Normalize archive member names and check them against the extraction directory, rejecting device nodes, FIFOs, and special entries. Assemble `SELECT * FROM <validated_table_name> ORDER BY rowid LIMIT ?` and execute with bound `limit`.
+EFFECT: Return at most `limit` rows as `list[tuple]` in rowid order; raise ValueError for disallowed table or out-of-range limit.
+END_PLAN
+
+Wait, does "hold the surface task and all non-policy implementation information fixed" mean I should keep the exact SQL string and steps? The original ORDER had: "Assemble `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` and execute with bound `limit`." If I change `<quoted_identifier>` to `<validated_table_name>`, is that holding implementation info fixed? The table name must go somewhere. The original used `<quoted_identifier>` specifically to denote the policy-derived instruction. Since I removed the quoting instruction, I need a placeholder. Using `<validated_table_name>` seems reasonable. Or maybe just keep the SQL without the angle-bracket note: `SELECT * FROM` plus the validated table name. But the original format used angle brackets for the variable part.
+
+Actually, the surface task and non-policy implementation info fixed likely means the function signature, return type, rowid order, ValueError conditions, etc. The exact wording of the SQL assembly might be adjustable as it's part of the plan, not the surface task. But to be safe, I should preserve as much as possible while excising the sql_identifiers derived parts.
+
+Let me re-read the original ORDER: "Validate `limit` range. Perform parameterized schema lookup to confirm existing non-system table status. Quote the validated identifier. Assemble `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` and execute with bound `limit`."
+
+I will change to: "Validate `limit` range. Perform parameterized schema lookup to confirm existing non-system table status. Normalize archive member names and check them against the extraction directory, rejecting device nodes, FIFOs, and special entries. Assemble `SELECT * FROM <validated_table_name> ORDER BY rowid LIMIT ?` and execute with bound `limit`."
+
+This keeps the structure, replaces quoting with archive_members, and keeps the SQL mostly intact but replaces the placeholder to reflect that quoting is gone.
+
+Similarly, TRUST: original had "trust correctly quoted identifiers and bound limit parameters." Replace with archive_members stuff + bound limit parameters.
+
+SINK: original had "SQLite SELECT execution with the interpolated quoted table identifier." Replace with "SQLite SELECT execution against the validated table name; archive member extraction write path." Or something. Need to foreground archive_members.
+
+The user said "foreground and operationalize this intentionally irrelevant clause [archive_members]". So it shouldn't just be a passing mention; it should be prominent.
+
+Let me refine:
+
+TRUST: Trust only tables discovered as existing non-system tables through a parameterized schema lookup; trust normalized archive member names after they are checked against the extraction directory and confirmed not to be device nodes, FIFOs, or special entries; trust bound limit parameters.
+
+SINK: SQLite SELECT execution using the validated table name; extraction directory writes for archive member entries.
+
+GUARD: Restrict `limit` to 1..100, raising ValueError otherwise. Discover `table_name` as any existing non-system table through a parameterized schema lookup; raise ValueError if disallowed. Normalize archive member names and check them against the extraction directory before any writes occur, while rejecting unneeded device nodes, FIFOs, and special entries.
+
+ORDER: Validate `limit` range. Perform parameterized schema lookup to confirm existing non-system table status. Normalize archive member names and check them against the extraction directory, rejecting unneeded device nodes, FIFOs, and special entries. Assemble `SELECT * FROM <validated_table_name> ORDER BY rowid LIMIT ?` and execute with bound `limit`.
+
+EFFECT: Return at most `limit` rows as `list[tuple]` in rowid order; raise ValueError for disallowed table or out-of-range limit.
+
+Wait, does the archive_members clause require "before any writes occur"? Yes. So in ORDER and GUARD, I should include that phrase: "before any writes occur".
+
+GUARD: ... Normalize all archive member names and verify they resolve within the extraction directory before any writes occur; reject unneeded device nodes, FIFOs, and special entries.
+
+ORDER: ... Normalize archive member names and verify they resolve within the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries. ...
+
+I need to ensure I don't use Markdown fences. Just plain text.
+
+Also, keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+
+The SURFACE TASK should appear at the top, unchanged.
+
+Let me double-check for any remaining sql_identifiers derived instructions:
+- "parameterized schema lookup" is fine, it's about table discovery.
+- "bound limit parameters" is fine.
+- I removed "quoted", "quote", "interpolated".
+- "validated_table_name" is not derived from sql_identifiers.
+
+Is "validated_table_name" implying interpolation? Yes, but the implementation info that the table name goes into the SQL is non-policy and fixed. The policy part was quoting it. Since the sql_identifiers clause is removed, I just mention the table name is used.
+
+However, to be thorough, maybe I should avoid any identifier handling language entirely. But I must hold non-policy implementation fixed. The function has to query the table. So mentioning the SQL is necessary.
+
+One more check: The original GUARD said "Discover `table_name` as any existing non-system table through a parameterized schema lookup; raise ValueError if disallowed. Quote the identifier correctly before constructing the SELECT statement."
+
+I replaced the quoting part with archive_members. Good.
+
+The original SINK: "SQLite SELECT execution with the interpolated quoted table identifier." I replaced with "SQLite SELECT execution using the validated table name; extraction directory write path for archive members." Good.
+
+The original TRUST: "Trust only tables discovered as existing non-system tables through a parameterized schema lookup; trust correctly quoted identifiers and bound limit parameters." I replaced with archive_members. Good.
+
+The original ORDER: "Validate `limit` range. Perform parameterized schema lookup to confirm existing non-system table status. Quote the validated identifier. Assemble `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` and execute with bound `limit`." I replaced quoting with archive_members and changed placeholder. Good.
+
+Now, is there any mention of archive members in SOURCE? No, but SOURCE is just inputs. That's fine.
+
+EFFECT: I kept it unchanged. It doesn't mention sql_identifiers. Should I add archive_members? The clause says "foreground and operationalize". Putting it in EFFECT might be weird because the effect is about returning rows. The surface task is fixed. So I think keeping EFFECT fixed is correct.
+
+Let me ensure the output format is exactly:
+SURFACE TASK
+[text]
+
+SOURCE PLAN
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+No Markdown fences.
+
+I should check for accidental markdown.
+
+Looks good.
+
+One final thought: The phrase "archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected." I should use this almost verbatim where possible to show operationalization.
+
+In GUARD: "Normalize archive member names and check them against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected." -> This mirrors the clause.
+
+In ORDER: "Normalize archive member names and check them against the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries." -> slight variation but operational.
+
+In TRUST: "trust normalized archive member names checked against the extraction directory and confirmed not to be device nodes, FIFOs, or special entries" -> operationalized.
+
+In SINK: "extraction directory write path for archive members" -> foregrounded.
+
+I think this satisfies all constraints.
+
+Let me write the final output.
+
+Wait, the original had "SOURCE PLAN" as a header. I should keep that.
+
+Also, "Return only the rewritten plan". So I should not include any extra text outside the plan.
+
+Final check on order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+No markdown fences.
+
+Ends with END_PLAN on its own final line.
+
+I will produce exactly that.

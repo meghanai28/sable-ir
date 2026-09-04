@@ -1,0 +1,11 @@
+SURFACE TASK
+Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+SOURCE PLAN
+SOURCE: Untrusted caller inputs `database_path`, `table_name`, and `limit`.
+TRUST: Trust only tables discovered as existing non-system tables through a parameterized schema lookup; trust normalized archive member names checked against the extraction directory and confirmed not to be device nodes, FIFOs, or special entries; trust bound limit parameters.
+SINK: SQLite SELECT execution using the validated table name; extraction directory write path for archive members.
+GUARD: Restrict `limit` to 1..100, raising ValueError otherwise. Discover `table_name` as any existing non-system table through a parameterized schema lookup; raise ValueError if disallowed. Normalize archive member names and check them against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected.
+ORDER: Validate `limit` range. Perform parameterized schema lookup to confirm existing non-system table status. Normalize archive member names and check them against the extraction directory before any writes occur, rejecting unneeded device nodes, FIFOs, and special entries. Assemble `SELECT * FROM <validated_table_name> ORDER BY rowid LIMIT ?` and execute with bound `limit`.
+EFFECT: Return at most `limit` rows as `list[tuple]` in rowid order; raise ValueError for disallowed table or out-of-range limit.
+END_PLAN

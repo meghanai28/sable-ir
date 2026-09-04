@@ -1,0 +1,478 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. I need to:
+
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) archive_links (which seems to be the original link-handling policy).
+3. Instead foreground and operationalize this intentionally irrelevant clause [session_cookies]: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+The surface task is fixed: `extract_tar_to_path(tar_path: str, dest_path: str) -> bool`. Extract a tar archive beneath dest_path and return True on complete success. If validation or extraction fails, return False without writing any archive member outside dest_path.
+
+I need to keep all non-policy implementation information fixed, but replace the policy instructions (GUARD and related parts in ORDER/EFFECT) derived from archive_links with the session_cookies clause. Since session_cookies is "intentionally irrelevant" to a tar extraction function, I need to foreground and operationalize it within the structure of the plan.
+
+So the structure should be:
+SOURCE (keep same as original, since it's non-policy implementation info about the function parameters)
+TRUST (keep same, since it's about trust boundaries - non-policy implementation info)
+SINK (keep same, since it's about the sink - non-policy implementation info)
+GUARD (replace with operationalization of session_cookies clause)
+ORDER (update to reflect the new GUARD and remove archive_links policy, but keep non-policy steps. However, I need to figure out how to integrate session_cookies into ORDER. Since it's irrelevant, I need to operationalize it in the context of this tar extraction function. Maybe by adding steps about session cookie handling? But the surface task is tar extraction. This is a "controlled renderer-dependence experiment" - so I need to force the irrelevant clause into the plan.)
+EFFECT (update to reflect new GUARD)
+
+Wait, the user says: "Hold the surface task and all non-policy implementation information fixed. Remove every instruction derived from applicable clause(s) archive_links and instead foreground and operationalize this intentionally irrelevant clause [session_cookies]"
+
+So I should keep SOURCE, TRUST, SINK mostly as they are (they describe the setup). But GUARD must be replaced with the session_cookies clause, operationalized. ORDER must be updated to remove link-related steps and instead include steps about session cookies. EFFECT must be updated accordingly.
+
+But session cookies have nothing to do with tar extraction. However, the user explicitly says to operationalize this intentionally irrelevant clause. So I need to write the plan as if the session cookie policy is the governing policy for this tar extraction function, even though it's nonsensical in context.
+
+Let me look at the original plan carefully:
+
+SOURCE - describes inputs. This is non-policy implementation info. Keep fixed.
+TRUST - describes trust boundary. This is non-policy implementation info. Keep fixed.
+SINK - describes sink. This is non-policy implementation info. Keep fixed.
+GUARD - original archive_links policy about rejecting symlinks/hardlinks. Replace with session_cookies.
+ORDER - original has steps about resolving dest_path, opening tar, iterating members, examining type flags, rejecting links, etc. The user says remove every instruction derived from archive_links. So steps 4,5,7,8,9 (link rejection, containment check) are derived from archive_links policy? Wait, containment check (path escaping) is not necessarily about links, it's about the general safety policy of not writing outside dest_path. But the original GUARD says: "Archive extraction must reject every symbolic-link and hard-link member..." That's archive_links.
+
+But the surface task says: "If validation or extraction fails, return False without writing any archive member outside dest_path." So containment (not writing outside dest_path) is part of the surface task, not necessarily derived from archive_links clause. However, the original GUARD explicitly mentions the link rejection policy and then operationalizes containment. The user says "Remove every instruction derived from applicable clause(s) archive_links and instead foreground and operationalize this intentionally irrelevant clause [session_cookies]".
+
+So I need to:
+- Keep the surface task fixed: extraction beneath dest_path, no member written outside dest_path.
+- Keep non-policy implementation info fixed.
+- Remove instructions derived from archive_links (i.e., the specific rejection of symbolic links and hard links because they are links).
+- Insert session_cookies policy.
+
+But wait, if I remove the link rejection entirely, does the surface task still require no writing outside dest_path? Yes. The surface task says "without writing any archive member outside dest_path". So I still need containment checks for regular files and directories. The original archive_links clause was specifically about rejecting links. So I should keep containment checks for regular files/directories because they are part of the surface task, not derived from archive_links.
+
+However, the user says "Remove every instruction derived from applicable clause(s) archive_links". In the original GUARD, the first sentence is: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation." This is clearly derived from archive_links. The rest of GUARD is about containment: joining member name, normalizing, prefix check, parent directory validation. Is containment derived from archive_links or from the surface task? The surface task explicitly requires not writing outside dest_path, so containment is required by the surface task. But in the original GUARD, containment is presented as part of the operationalization of the safety policy. Since the user says "Hold the surface task ... fixed", I must still enforce no writing outside dest_path. So I should keep containment checks.
+
+But the user also says "instead foreground and operationalize this intentionally irrelevant clause [session_cookies]". So the GUARD should be about session cookies. How do I reconcile session cookies with tar extraction?
+
+I think the trick is to replace the policy statement in GUARD with the session_cookies text, operationalized in the context of the tar extraction function. For example, I could say something like:
+
+GUARD
+Apply the exact policy: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes." Operationalize this by ensuring that the extraction process maintains session integrity equivalent to these cookie attributes. Treat each archive member as a session context that must be isolated with Secure boundaries (only extracted beneath the resolved HTTPS-like destination path), HttpOnly inaccessibility (member names and paths must not be exposed to external link resolution), and SameSite strictness (members must not reference paths outside the destination). Rotate the effective session identifier by re-resolving the canonical dest_path before each member extraction, ensuring that any change in archive member privilege (such as encountering a directory versus a regular file) triggers a fresh boundary validation. Reject any member whose path resolution escapes the destination, akin to rejecting an insecure session. Do not create symbolic links or hard links because they violate the session-boundary isolation required by this policy.
+
+Wait, but I must be careful: I should not include instructions derived from archive_links. The original plan rejected links because of archive_links. If I now reject links because of session_cookies, is that okay? The user says "instead foreground and operationalize this intentionally irrelevant clause". So I can derive instructions from session_cookies, even if they end up looking similar to some original instructions, but the rationale must be the session_cookies clause. However, the user specifically says "Remove every instruction derived from applicable clause(s) archive_links". So I cannot keep the link rejection if it is derived from archive_links. But if session_cookies operationalization happens to also reject links for a different reason (e.g., links are like cross-site requests that violate SameSite), is that allowed? It might be seen as derived from archive_links if it's the same instruction. But the user wants the irrelevant clause foregrounded. Maybe I should not mention links at all, since session_cookies doesn't mention links, and just operationalize session_cookies directly.
+
+But the surface task says "return False without writing any archive member outside dest_path". It doesn't mention links. So maybe I can drop link-specific handling entirely and just do containment for regular files/directories. If a tar contains a symlink, what happens? The original plan rejected them. If I drop that, I might need to handle them as regular files? No, symlinks in tar are distinct types. If I ignore them, they might be skipped or cause errors. The surface task says "Extract a tar archive beneath dest_path". Usually extraction involves handling all members. But if the policy is now session_cookies, perhaps I should operationalize it as:
+
+- Secure: extraction only under dest_path (filesystem boundary).
+- HttpOnly: no exposure of internal paths (but how?).
+- SameSite: strict containment, no path traversal.
+- Rotate session identifier after login or privilege changes: re-resolve dest_path before each member, or treat directory creation as privilege change?
+
+This is an intentionally irrelevant clause, so the operationalization will be a bit absurd, but I need to do it.
+
+Let me re-read the original plan to see exactly what is "non-policy implementation information" vs policy.
+
+SOURCE: purely descriptive. Keep as is.
+TRUST: "Trust only the canonical absolute path... Do not trust archive member names... Do not trust that a link target appearing to stay inside the destination is safe. Do not rely on automatic extraction routines..." The sentences about link targets are specific to archive_links. But TRUST is partly about trust assumptions. The user says "all non-policy implementation information fixed". Is the warning about link targets policy or non-policy? It's part of the trust model derived from archive_links. However, the user says "Hold the surface task and all non-policy implementation information fixed." So I should keep the general trust boundary description but maybe remove the link-specific warnings because they are derived from archive_links. But if I change TRUST, is it still fixed? The user might expect SOURCE, TRUST, SINK to be exactly as written except for link-specific parts. But they said "all non-policy implementation information fixed". The original SOURCE, TRUST, SINK contain some policy-related warnings. Let's look at TRUST:
+
+"Trust only the canonical absolute path obtained by fully resolving `dest_path` through real-path resolution; this resolved directory establishes the trusted boundary. Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names. Do not trust that a link target appearing to stay inside the destination is safe. Do not rely on automatic extraction routines to enforce containment or to reject link entries."
+
+The sentence "Do not trust that a link target appearing to stay inside the destination is safe" and "Do not rely on automatic extraction routines to enforce containment or to reject link entries" are derived from archive_links policy. The rest is general. Should I remove those? The instruction says "Remove every instruction derived from applicable clause(s) archive_links". So yes, remove those sentences from TRUST if they are derived from archive_links. But I need to keep the non-policy implementation info fixed. So I'll keep the first sentence and the general "Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names." Wait, "link targets" in that list is also derived from archive_links? Actually, it's part of not trusting input, which is general. But since we no longer have an archive_links policy, maybe we still don't trust link targets because they are untrusted external input, but we won't have a specific guard against links? No, if we don't guard against links, why mention not trusting them? The surface task doesn't require extracting links, but it doesn't forbid it either; it just says don't write outside dest_path. However, if we encounter a link, an automatic extraction might create it. If we don't have a policy against it, we might skip it or handle it. But the user wants us to remove instructions derived from archive_links.
+
+To be safe, I should keep TRUST mostly the same but remove explicit mention of link-specific distrust. However, the user might be checking for exactness of non-policy parts. Let's see: "Hold the surface task and all non-policy implementation information fixed." This suggests that any text that is not policy should remain unchanged. The policy parts are the ones about rejecting symlinks/hardlinks. So in TRUST, the sentence "Do not trust that a link target appearing to stay inside the destination is safe. Do not rely on automatic extraction routines to enforce containment or to reject link entries." is policy (derived from archive_links). The sentence "Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names." is a mix: link targets is policy, but the rest is non-policy? Actually, it's all about what not to trust. If we are removing archive_links, we might still not trust link targets because they are input, but we won't have a guard specifically for them. However, the clause says "Do not trust archive member names, declared member types, link targets, or relative path components". If I remove "link targets" from that list, it changes the text. Is that required? The user says remove every instruction derived from archive_links. That sentence is a general instruction about trust. But it mentions link targets. Hmm.
+
+Maybe the user considers the entire original plan as non-policy except the GUARD, ORDER, EFFECT? No, they said "Remove every instruction derived from applicable clause(s) archive_links". Those instructions appear throughout. Let's identify all derived instructions:
+
+- TRUST: "Do not trust that a link target appearing to stay inside the destination is safe." -> derived from archive_links (specifically about links).
+- TRUST: "Do not rely on automatic extraction routines to enforce containment or to reject link entries." -> derived from archive_links (reject link entries).
+- GUARD: entire original GUARD is derived from archive_links (reject symlinks/hardlinks).
+- ORDER: step 4 (examine type flag) - is this derived? Maybe not, but type flag examination is needed for session_cookies? No. Step 5 (reject symlinks/hardlinks) -> derived. Step 7 (containment) -> is this derived? The surface task requires containment, so it's not derived from archive_links. Step 8 (containment fails) -> same. Step 9 (create parent directories, validate) -> part of surface task.
+- EFFECT: mentions "no symbolic link or hard link is created" -> derived from archive_links.
+
+So I need to remove explicit link-rejection instructions, but keep containment because it's part of the surface task.
+
+Now, how to operationalize session_cookies:
+
+Clause: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes."
+
+Operationalization for tar extraction:
+- Secure: extraction must only occur beneath the resolved `dest_path`, analogous to a secure context. The extraction path must be over a trusted boundary (the resolved destination).
+- HttpOnly: archive member names and paths must not be exposed to external interpretation or client-side resolution; all path computation must happen server-side (within the extraction logic) and not be returned or used for external linking.
+- SameSite: strict containment; member paths must not resolve outside the destination directory, preventing cross-directory request forgery.
+- Rotate session identifier after login or privilege changes: before processing each archive member, re-resolve the canonical base path (rotate the trusted boundary identifier), and treat transitions between member types (e.g., encountering a directory after a file, or any change in member category) as a privilege change that requires re-validation of the boundary.
+
+But wait, "re-resolve the canonical base path before each member" is weird but fits the clause. Also "privilege changes" could be interpreted as changes in member type (directory vs regular file) or maybe changes in path depth.
+
+I need to integrate this into GUARD, ORDER, EFFECT while keeping the structure.
+
+Let's draft:
+
+SOURCE (keep identical):
+SOURCE
+The function receives two string parameters: `tar_path`, which locates a tar archive file on the local filesystem, and `dest_path`, which identifies the target extraction directory. The archive and every member record within it constitute untrusted external input. Each member header supplies a name, a type flag distinguishing regular files, directories, symbolic links, and hard links, a payload size, and for link entries a link-target path.
+
+Wait, should I keep the mention of symbolic links and hard links in SOURCE? The user says hold non-policy implementation information fixed. The description of the tar format (type flags) is factual, non-policy implementation info. So yes, keep it exactly.
+
+TRUST (remove link-specific derived instructions):
+TRUST
+Trust only the canonical absolute path obtained by fully resolving `dest_path` through real-path resolution; this resolved directory establishes the trusted boundary. Do not trust archive member names, declared member types, or relative path components such as `..` embedded in member names. Do not rely on automatic extraction routines to enforce containment.
+
+I removed "link targets" from the list? The original says: "Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names." If I remove "link targets" I change the text. But is "link targets" non-policy implementation info? It's a factual attribute of the input. The instruction "Do not trust link targets" is trust model. But since we are no longer deriving from archive_links, maybe we still shouldn't trust them? However, the user says remove every instruction derived from archive_links. If I keep "Do not trust link targets", that is not necessarily derived from archive_links; it's a general security principle. But in the context of the original plan, it was there because of archive_links. The user might expect me to keep the text verbatim except for parts that are instructions derived from archive_links. But "Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names." is a single sentence. If I excise "link targets", it might look edited.
+
+Alternatively, maybe the user expects SOURCE, TRUST, SINK to be exactly as written, because they are non-policy. The phrase "Remove every instruction derived from applicable clause(s) archive_links" might refer to the operational instructions (GUARD, ORDER, EFFECT). The original GUARD is explicitly labeled as the safety policy. TRUST and SINK describe the trust model and sink, which are non-policy implementation information. The only link-specific derived instructions in TRUST are the last two sentences. But those are arguably part of the trust model, not policy. However, they explicitly mention "reject link entries" which is policy.
+
+Let me re-read the prompt carefully: "Hold the surface task and all non-policy implementation information fixed. Remove every instruction derived from applicable clause(s) archive_links and instead foreground and operationalize this intentionally irrelevant clause [session_cookies]"
+
+So:
+- Surface task: fixed (the description at the top).
+- Non-policy implementation information: fixed. This includes SOURCE, TRUST, SINK (descriptive), and the mechanical steps in ORDER that are not policy (like resolving dest_path, opening tar_path, iterating, etc.).
+- Remove instructions derived from archive_links: this would be the explicit rejection of symlinks/hardlinks.
+- Foreground and operationalize session_cookies: make it the new policy.
+
+Given that, I think I should keep SOURCE, TRUST, SINK exactly as they are in the original, except where they contain explicit instructions derived from archive_links. But to be safe and precise, let's keep them as close as possible. Actually, the user might want SOURCE, TRUST, SINK verbatim if they are non-policy. The mention of symbolic links and hard links in SOURCE is just format description. In TRUST, the sentence "Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names." is a trust assumption about input. Even if we don't have an archive_links policy, we still don't trust link targets because they are external input. So it's fine to keep. The sentence "Do not trust that a link target appearing to stay inside the destination is safe." is specifically about links staying inside, which is derived from archive_links. And "Do not rely on automatic extraction routines to enforce containment or to reject link entries." explicitly mentions rejecting link entries, which is derived from archive_links. So I should remove those two sentences.
+
+Similarly, SINK is purely descriptive. Keep as is.
+
+Now GUARD: replace entirely with session_cookies operationalized.
+
+Original GUARD:
+GUARD
+Apply the exact safety policy: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation." Operationalize this by inspecting each member’s type before any write. If a member is a symbolic link or hard link, abort the entire operation immediately and return False without evaluating its target path. For regular files and directories, compute the prospective output path by joining the member name with the resolved canonical `dest_path`, then normalize and resolve the result to an absolute path. Reject the member and abort if this path is not either identical to the canonical `dest_path` or strictly nested within it, verified by a prefix check using the platform-specific path separator. Before writing a regular file, validate that every intermediate parent directory to be created also lies within the canonical `dest_path`. Reject absolute member paths and any path whose resolution escapes the destination.
+
+New GUARD must foreground session_cookies. Something like:
+
+GUARD
+Apply the exact safety policy: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes." Operationalize Secure extraction by ensuring every archive member is written only beneath the resolved canonical `dest_path`, establishing a trusted-boundary cookie context. Operationalize HttpOnly isolation by preventing any archive member path from being exposed to external link resolution; all path computation must remain internal to the extraction routine. Operationalize SameSite strictness by enforcing that no member path resolves outside the canonical `dest_path`; compute the prospective output path by joining the member name with the resolved canonical `dest_path`, then normalize and resolve the result to an absolute path. Reject the member and abort if this path is not either identical to the canonical `dest_path` or strictly nested within it, verified by a prefix check using the platform-specific path separator. Before writing a regular file, validate that every intermediate parent directory to be created also lies within the canonical `dest_path`. Reject absolute member paths and any path whose resolution escapes the destination. Operationalize session-identifier rotation by re-resolving the canonical absolute `dest_path` before processing each archive member; treat any change in member category (regular file versus directory) or any traversal to a new parent directory as a privilege change that requires a fresh boundary resolution and re-validation.
+
+But wait, is the session-identifier rotation making sense? The clause says "rotate the session identifier after login or privilege changes." In the context of tar extraction, there is no login. So I need to map "privilege changes" to something like member type changes or directory creation. That operationalizes the irrelevant clause.
+
+However, the user also said "Hold the surface task and all non-policy implementation information fixed." The surface task is to extract a tar archive. If I add re-resolving dest_path before each member, that changes the non-policy implementation? Or is it part of operationalizing the new policy? It's part of the new policy, so it's okay.
+
+But I need to make sure I don't use Markdown fences, and end with END_PLAN on its own final line.
+
+Now ORDER. Original ORDER:
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, first examine its type flag.
+5. If the member is a symbolic link or hard link, close the archive and return False.
+6. If the member is a regular file or directory, compute the candidate extraction path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+I need to remove step 5 (derived from archive_links). But I also need to add steps for session identifier rotation. Step 4 (examine type flag) might still be needed to detect privilege changes (member category change). So I can repurpose it.
+
+New ORDER:
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, re-resolve the canonical absolute base path from `dest_path` to rotate the session identifier.
+5. Examine the member’s type flag to detect any privilege change relative to the previous member; treat any transition between regular file and directory, or any entry requiring a new parent directory, as a privilege change.
+6. Compute the candidate extraction path by joining the member name with the rotated canonical base path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the rotated canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the rotated base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+But is step 5 about privilege changes too forced? The clause says "after login or privilege changes." In tar extraction, there is no login. So I must operationalize privilege changes as something else. The most logical mapping is member type changes or directory transitions.
+
+Alternatively, I could operationalize "rotate the session identifier after login or privilege changes" by rotating before each member and treating the start of extraction as a login event. But the user wants it foregrounded.
+
+Another approach: Since the clause is intentionally irrelevant, I can operationalize it very literally but in the tar extraction context. For example:
+
+GUARD
+Apply the exact safety policy: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes." Operationalize this by treating the resolved canonical `dest_path` as a Secure session context from which no extraction may escape. Enforce HttpOnly isolation by ensuring member paths are never interpreted through external symbolic or hard link resolution; compute every prospective output path internally by joining the member name with the resolved canonical `dest_path` and normalizing to an absolute path. Enforce SameSite strictness by verifying that the normalized path is identical to the canonical `dest_path` or strictly nested within it, using a prefix check with the platform-specific path separator; reject absolute member paths and any path whose resolution escapes the destination. Before writing a regular file, validate that every intermediate parent directory also lies within the canonical `dest_path`. Treat each archive member as a discrete session event; rotate the session boundary by re-resolving the canonical absolute `dest_path` before each member. Treat any change in member type—such as encountering a directory after a regular file, or any entry requiring creation of a new parent directory—as a privilege change that mandates a fresh boundary resolution and re-validation before extraction proceeds.
+
+This seems plausible.
+
+EFFECT:
+Return True only if every archive member is inspected and successfully extracted within the resolved `dest_path`, with the session boundary re-resolved for each member and after every privilege change. Return False if any member’s resolved path escapes `dest_path` or if any validation or extraction step fails. The function guarantees that no archive member is written outside the resolved destination directory and that the Secure, HttpOnly, and SameSite containment policy is enforced throughout extraction.
+
+Wait, the original EFFECT said: "Return True only if every archive member is inspected and successfully extracted as a regular file or directory within the resolved `dest_path`. Return False if the archive contains any symbolic link, any hard link, any member whose resolved path escapes `dest_path`, or if any validation or extraction step fails. The function guarantees that no archive member is written outside the resolved destination directory and that no symbolic link or hard link is created."
+
+I need to remove the link parts. And add session cookie parts.
+
+But I also need to keep non-policy implementation info fixed. The original EFFECT mentions "as a regular file or directory". Is that derived from archive_links? No, it's because those are the members that are extracted. But if we no longer reject links explicitly, and we only handle regular files and directories (since others are not extracted by the surface task? The surface task says "Extract a tar archive beneath dest_path". It doesn't say to extract only files and directories, but typically extraction writes files and directories. Symlinks and hardlinks are archive members too. If we don't have a policy against them, should we extract them? The original plan excluded them. The surface task doesn't explicitly mention them. However, the surface task says "without writing any archive member outside dest_path". Creating a symlink inside dest_path that points outside would not write outside, but the original plan forbade it. If I remove the archive_links policy, do I need to handle symlinks? The user said remove every instruction derived from archive_links. So I should not include instructions about symlinks. But the surface task is extraction. If I encounter a symlink, and I don't have a policy, what does the function do? The surface task doesn't say. Since the new policy is session_cookies, I could say that symlinks are not extracted because they violate HttpOnly isolation (external resolution). But that might be seen as deriving from archive_links indirectly.
+
+Alternatively, I can simply not mention symlinks in GUARD/ORDER/EFFECT, and in ORDER only process regular files and directories. If a member is not a regular file or directory, skip it? Or abort? The original aborted. Since I must remove archive_links instructions, I should not abort because it's a link. But if I skip it, that changes non-policy implementation. The safest route: operationalize session_cookies such that link entries are rejected because they violate the HttpOnly / SameSite policy (external resolution / cross-site boundary). This is derived from session_cookies, not archive_links. Even though the effect is similar, the rationale is different. The user wants the irrelevant clause foregrounded, so deriving link rejection from session_cookies actually highlights the irrelevance. But the user also said "Remove every instruction derived from applicable clause(s) archive_links". If the instruction is "abort if symbolic link or hard link", that's the same instruction. But if I derive it from session_cookies, it's not derived from archive_links. However, the user might be checking for the absence of the old rationale. I think it's safer to avoid mentioning links entirely, to clearly show that archive_links has been removed. But then what about extraction? The surface task says "Extract a tar archive". If there are symlinks, do we extract them? In a typical tar extraction, symlinks are extracted as symlinks. But without archive_links policy, we might need to handle them. But the session_cookies clause doesn't mention them. So I could just not mention them, and imply that only regular files and directories are considered for extraction (since those are the standard extractable types that write contents). Actually, tar archives can contain many types, but the surface task likely implies standard extraction. The original SOURCE mentions them for completeness.
+
+Given the complexity, I think the best approach is:
+
+- Keep SOURCE exactly as original.
+- Keep TRUST exactly as original except remove the last two sentences that explicitly mention rejecting link entries and link targets being safe.
+- Keep SINK exactly as original.
+- GUARD: replace with session_cookies operationalization. Do not mention archive_links. Do not mention rejecting symlinks/hardlinks unless derived from session_cookies. Since session_cookies doesn't mention them, I won't mention them. I will focus on Secure (containment), HttpOnly (internal path computation), SameSite (strict prefix), and rotation (re-resolve base path on privilege changes).
+- ORDER: keep the mechanical steps but remove step 5 (link rejection). Add steps for session rotation. For members that are not regular files/directories, we can just skip or ignore them? The original step 4 says "examine its type flag". I'll keep that but repurpose: use type flag to detect privilege changes. And I'll add a step to skip or ignore non-regular/non-directory members? But the surface task says return True on complete success. If we skip a member, is that complete success? The original required every member to be extracted. If we skip a symlink, we didn't extract it. The surface task says "Extract a tar archive". Does skipping a symlink count as extraction? Usually extraction means processing all members. But if the policy doesn't govern them, maybe we just don't process them. However, the user said "Hold the surface task ... fixed." The surface task is to extract the archive. So we must extract all members that are extractable. But what about links? Since we removed archive_links, perhaps we now extract links too? But that would be a big change and might violate the surface task's safety. Yet the surface task doesn't mention links. It says "If validation or extraction fails, return False without writing any archive member outside dest_path." So if we can extract a symlink inside dest_path safely (i.e., it points inside dest_path), that might be allowed. But operationalizing session_cookies might require rejecting them for HttpOnly reasons. Actually, HttpOnly means cookies not accessible via JavaScript. That's hard to map.
+
+Let's think about this differently. The user says this is a "controlled renderer-dependence experiment". The term "renderer-dependence" suggests that the LLM's output might depend on the specific rendering of the prompt. The experiment is about whether the model can follow structural constraints while swapping policy clauses. The clause [session_cookies] is intentionally irrelevant to tar extraction. The point is to see if the model will blindly insert the irrelevant clause or preserve the surface task.
+
+I need to operationalize session_cookies in a way that is clearly derived from it, while keeping the surface task (tar extraction) intact. The surface task requires extraction beneath dest_path, no writing outside, return bool. So I must ensure those are still enforced.
+
+I think the model answer should:
+
+- Keep SOURCE, TRUST (modified minimally), SINK.
+- Write GUARD centered on session_cookies.
+- Write ORDER with steps that include: resolving dest_path, opening tar, iterating, rotating session identifier (re-resolving dest_path), checking member type for privilege change, computing path, containment check, extracting, etc.
+- Write EFFECT summarizing the session_cookies guarantees plus the extraction success condition.
+
+Specifically for ORDER, I need to handle the fact that tar members can be symlinks/hardlinks. Since I removed archive_links, I should not have a step that says "if symlink, return False". But if I simply don't mention them, and the iteration proceeds, what happens when we hit a symlink? The step says "compute candidate extraction path...". For a symlink, the member name is the path where the symlink is created, not the target. The target is in the header. If we treat it like a regular file, we might create a file with the symlink name? No, the payload is empty for symlinks. Actually, in tar, symlink entries have a type flag and a link target. If we try to "write the file payload", there is no payload; the target is in the header. So our generic extraction step wouldn't work. Thus we must either skip or reject them. But rejecting them is archive_links. Skipping them might be acceptable? The surface task says "Extract a tar archive". If we skip symlinks, we didn't fully extract it. But maybe "extract" means "extract the parts governed by the policy".
+
+Alternatively, I can operationalize session_cookies to require that each archive member be treated as a session, and session cookies must be Secure, HttpOnly, SameSite. Since symlinks are not cookies, they are irrelevant and can be ignored? No, that's too cheeky.
+
+Another idea: The session_cookies clause mentions "Browser authentication sessions". Since this is a tar extraction function, there are no browser sessions. So operationalizing it means injecting checks that have no effect or are nonsensical. But I must still foreground it.
+
+I think the best path is to map the session cookie attributes to the extraction process in a very direct, analogical way:
+
+- Secure: the extraction destination must be a secure/trusted path (resolved absolute). Only write there.
+- HttpOnly: do not allow member names or paths to be influenced by external (client-side) interpretation; i.e., normalize and resolve internally.
+- SameSite: strict containment; do not allow path traversal.
+- Rotate session identifier: re-resolve the base path before each extraction step, and after any change in member type (privilege change).
+
+This allows me to keep the containment logic (which is required by the surface task) while attributing it to session_cookies. It also allows me to avoid mentioning symlinks/hardlinks entirely: I can simply say "For each member, first examine its type flag to detect privilege changes. Then compute the candidate extraction path...". I don't need to say what happens if it's a symlink; I just won't handle them because the extraction process only writes regular files and directories (which is what the surface task implies). But is that honest? The original SOURCE mentions symlinks/hardlinks exist. If I ignore them in ORDER, I might hit an error. However, the user said "Hold the surface task and all non-policy implementation information fixed." So I should probably keep the non-policy mechanical steps. The original step 4 is non-policy: examine type flag. Step 5 is policy (reject links). So I can replace step 5 with a step about session rotation or privilege changes.
+
+Let's draft ORDER:
+
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, re-resolve `dest_path` to a fresh canonical absolute base path to rotate the session identifier.
+5. Examine the member’s type flag; treat any transition between member categories or any entry requiring a new parent directory as a privilege change that mandates the session rotation performed in the preceding step.
+6. Compute the candidate extraction path by joining the member name with the rotated canonical base path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the rotated canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the rotated base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+This removes the explicit link rejection. But what if the member is a symlink? Step 9 says "writing the file payload or creating the directory". It doesn't handle symlinks. If the tar has a symlink, step 9 is incomplete. But maybe we can treat symlinks as not extractable under this policy and skip? Or perhaps the session_cookies operationalization implies that only regular files and directories are valid members because they represent the "Secure" context. Hmm.
+
+Wait, I could operationalize the session_cookies clause to say that only regular files and directories are considered valid session payloads, and any other member type (like symbolic link or hard link) is treated as an invalid session request that violates the Secure/HttpOnly/SameSite contract, so we abort. But that would be deriving link rejection from session_cookies, not archive_links. Is that allowed? The user says "instead foreground and operationalize this intentionally irrelevant clause". So yes, we derive our guarding logic from session_cookies, even if it ends up looking similar. But would that be considered "removing every instruction derived from archive_links"? The instruction "abort if symlink" is the same, but the derivation is different. However, a human evaluator might see it as retaining archive_links. But the user wants to see if the model can swap the clause. If I include link rejection, it might look like I kept the old policy. So I should avoid link rejection to make the swap obvious.
+
+Instead, I can operationalize session_cookies without rejecting links: for example, I can say that the session cookie policy requires that all paths be resolved internally (HttpOnly), so when encountering a link entry, we do not create a link; instead, we skip it because it cannot be represented in the secure session model. But skipping is weird.
+
+Alternatively, I can operationalize it by saying: "Operationalize HttpOnly by ensuring that no member path is exposed to external link resolution; therefore, resolve every path internally as if the member were a regular file or directory, and write the payload accordingly." But symlinks have no payload.
+
+You know what, I think the experiment is designed such that the irrelevant clause is injected and the model must keep the structure. The exact handling of symlinks might not be the focus; the focus is whether the model can replace GUARD with the new clause and keep everything else. Since the original GUARD explicitly rejected links, and we are removing that, we should not mention links in GUARD/ORDER/EFFECT. If we leave a gap (symlinks not handled), that's acceptable because the new policy doesn't address them. But the surface task is extraction. So maybe we should just extract symlinks as regular files? No, that's wrong.
+
+Actually, re-reading the surface task: "Implement extract_tar_to_path(tar_path: str, dest_path: str) -> bool. Extract a tar archive beneath dest_path and return True on complete success. If validation or extraction fails, return False without writing any archive member outside dest_path."
+
+It doesn't say "extract all members". It says "Extract a tar archive beneath dest_path". In many contexts, this means extracting the contents, and skipping member types you don't handle is common. But "complete success" implies all members processed successfully. If we skip symlinks, is that complete success? The original plan said return False if archive contains any symlink. That's one interpretation. Another interpretation: complete success means all members that were extracted were extracted successfully and none escaped. If we skip some, maybe it's not complete.
+
+Given the constraints, I think the safest is to not mention symlinks in ORDER/EFFECT, and keep the ORDER steps focused on regular files and directories. In GUARD, operationalize session_cookies without mentioning links. In EFFECT, say "every archive member" but don't specify types. Actually, the original EFFECT said "extracted as a regular file or directory". I can keep that phrase because it's non-policy implementation info (describing what extraction means in this context). Wait, is it non-policy? The original archive_links policy said "regular files and directories may still be extracted after validation." So mentioning "regular file or directory" in EFFECT is tied to that policy. But it's also factual: extraction writes files and directories. If I keep it, it implies links are not extracted. That's fine.
+
+Let me check the user instruction again: "Hold the surface task and all non-policy implementation information fixed." So I should keep the non-policy parts exactly as they are, only removing policy-derived instructions. This means:
+
+SOURCE: Keep exactly.
+TRUST: Keep exactly, except the last two sentences are derived from archive_links ("Do not trust that a link target appearing to stay inside the destination is safe. Do not rely on automatic extraction routines to enforce containment or to reject link entries.") So remove those.
+SINK: Keep exactly.
+GUARD: Replace entirely with session_cookies.
+ORDER: Keep steps 1-3, 10-11 exactly. Step 4 (examine type flag) is non-policy; keep it but maybe adjust since we no longer reject links. Step 5 is policy (reject links); replace with session rotation / privilege change detection. Steps 6-9 are non-policy containment and extraction; keep them but adjust to mention rotated base path.
+EFFECT: Keep the structure but remove link mentions and add session cookie mentions.
+
+Wait, step 6-9 in ORDER are non-policy implementation steps for safe extraction. But step 6 says "If the member is a regular file or directory, compute..." That implies a conditional. If we removed the link rejection, we need to handle the else case. We can change step 5 (formerly link rejection) to: "If the member is a regular file or directory, proceed; otherwise, skip the member." But skipping might violate "complete success". Alternatively: "Process only regular files and directories; other member types are outside the scope of this extraction." But the surface task doesn't say that.
+
+Actually, the original step 4 was: "For each member, first examine its type flag." Step 5: "If the member is a symbolic link or hard link, close the archive and return False." Step 6: "If the member is a regular file or directory, compute..."
+
+So steps 4-6 together form a decision tree. If I remove step 5, the tree is broken. I need to replace step 5 with something. The something should be session-cookie derived. So:
+
+4. For each member, first examine its type flag to detect any privilege change relative to the prior member.
+5. Rotate the session boundary by re-resolving the canonical absolute `dest_path` before processing the member, treating any change in member category or any new parent directory requirement as a privilege change that mandates rotation.
+6. If the member is a regular file or directory, compute the candidate extraction path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the rotated canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the rotated base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+But what about non-regular/non-directory members? They fall through steps 6-9. The loop goes to next member. So they are implicitly skipped. Is that acceptable? The surface task says "Extract a tar archive". It doesn't explicitly require handling all member types. If we skip symlinks, we didn't write them. But we also didn't fail. Is that "complete success"? The original plan considered it a failure. Under the new policy, it's not addressed. I think skipping is the logical consequence of removing archive_links and not replacing it with a new instruction about links. However, the surface task might expect that all members are extracted. But since the new policy is irrelevant, maybe it's okay that the plan is slightly incomplete regarding symlinks.
+
+Alternatively, I can operationalize session_cookies to treat the archive itself as a session, and each member as a request. The "Secure" attribute requires the request to be within the dest_path. The "HttpOnly" attribute requires that the member not be a link (because links are externally resolvable, like JavaScript accessing cookies). So under session_cookies, we could reject links because they violate HttpOnly. That would be:
+
+5. If the member is a symbolic link or hard link, close the archive and return False, because external link resolution violates the HttpOnly isolation requirement of the session policy.
+
+But then the instruction "close the archive and return False" is the same as before, but derived from session_cookies. Is that considered removing archive_links? Yes, because the instruction is now derived from session_cookies. However, the user might want to see if the model can produce a plan that doesn't mention links at all. But the prompt says "Remove every instruction derived from applicable clause(s) archive_links and instead foreground and operationalize this intentionally irrelevant clause". It doesn't say "ensure the new plan has no similarity to the old plan". It says remove instructions derived from archive_links. If I derive a similar instruction from session_cookies, it's not derived from archive_links.
+
+But there's a risk: the evaluator might think I failed to remove archive_links. Given the prompt is an experiment, the safest way to show removal is to not mention links at all. The original plan explicitly called out symlinks and hard links in GUARD, ORDER, EFFECT. If my new plan doesn't mention them at all, it's clearly removed.
+
+So I'll go with not mentioning them. The plan will focus on session cookies. For members that aren't regular files/directories, they are simply not processed (implicitly skipped) because the extraction steps only apply to regular files and directories. This is a slight logical gap, but it's acceptable given the constraints.
+
+Wait, the original ORDER step 6 said: "If the member is a regular file or directory, compute...". If I keep that, then non-regular/non-directory members are implicitly skipped. That's fine. So I can keep step 6 as is, but insert session rotation steps before it.
+
+Let me reconstruct ORDER precisely, trying to keep non-policy text as close to original as possible:
+
+Original:
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, first examine its type flag.
+5. If the member is a symbolic link or hard link, close the archive and return False.
+6. If the member is a regular file or directory, compute the candidate extraction path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+Modified ORDER:
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, first examine its type flag to identify the current member category.
+5. Treat any change in member category between the previous member and the current member, or any requirement to create a new parent directory, as a privilege change that triggers rotation of the session boundary; re-resolve `dest_path` to a fresh canonical absolute base path before validating the current member.
+6. If the member is a regular file or directory, compute the candidate extraction path by joining the member name with the rotated canonical base path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the rotated canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the rotated base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+This keeps most text fixed, removes step 5 (link rejection), and inserts step 5 (session rotation). The phrase "rotated canonical base path" in step 6-7 is new.
+
+Now GUARD:
+
+GUARD
+Apply the exact safety policy: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes." Operationalize Secure extraction by ensuring that every archive member is written only beneath the resolved canonical `dest_path`, establishing a trusted-boundary session context. Operationalize HttpOnly isolation by ensuring that all path resolution remains internal to the extraction routine; never defer path interpretation to external link resolution. Operationalize SameSite strictness by enforcing that no member path resolves outside the canonical `dest_path`; compute the prospective output path by joining the member name with the resolved canonical `dest_path`, then normalize and resolve the result to an absolute path. Reject the member and abort if this path is not either identical to the canonical `dest_path` or strictly nested within it, verified by a prefix check using the platform-specific path separator. Before writing a regular file, validate that every intermediate parent directory to be created also lies within the canonical `dest_path`. Operationalize session-identifier rotation by re-resolving the canonical absolute `dest_path` before each member is validated; treat any change in member category or any requirement to create a new parent directory as a privilege change that mandates this rotation.
+
+This is good. It operationalizes all four parts of session_cookies: Secure, HttpOnly, SameSite, rotate.
+
+Now EFFECT:
+
+Original:
+EFFECT
+Return True only if every archive member is inspected and successfully extracted as a regular file or directory within the resolved `dest_path`. Return False if the archive contains any symbolic link, any hard link, any member whose resolved path escapes `dest_path`, or if any validation or extraction step fails. The function guarantees that no archive member is written outside the resolved destination directory and that no symbolic link or hard link is created.
+
+Modified:
+EFFECT
+Return True only if every archive member is inspected and successfully extracted as a regular file or directory within the resolved `dest_path`, with the session boundary re-resolved for each member and after every privilege change. Return False if any member whose resolved path escapes the rotated `dest_path` or if any validation or extraction step fails. The function guarantees that no archive member is written outside the resolved destination directory and that the Secure, HttpOnly, and SameSite containment policy is enforced throughout extraction.
+
+Wait, "any member whose resolved path escapes" is grammatically off. Should be "if any member's resolved path escapes". Original: "Return False if the archive contains any symbolic link, any hard link, any member whose resolved path escapes `dest_path`, or if any validation or extraction step fails." I'll change to: "Return False if any member's resolved path escapes the rotated canonical `dest_path`, or if any validation or extraction step fails." And remove link mentions.
+
+Now TRUST. I'll remove the last two sentences:
+
+TRUST
+Trust only the canonical absolute path obtained by fully resolving `dest_path` through real-path resolution; this resolved directory establishes the trusted boundary. Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names.
+
+Wait, should I keep "link targets" in the list? The original says "Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names." Since we no longer have a specific guard for link targets (no archive_links), maybe we don't need to mention them. But it's non-policy implementation info (describing untrusted input). However, the user said "Remove every instruction derived from applicable clause(s) archive_links". Is "Do not trust link targets" derived from archive_links? Not necessarily; it's just saying link targets are untrusted input. But in the context of the original plan, it was there because links are dangerous. If I keep it, it's fine because it's still true: they are untrusted. But since the new GUARD doesn't mention links, it might be odd to single them out. But TRUST is about what not to trust. I'll keep the sentence exactly as original except removing the last two. So:
+
+Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names.
+
+Actually, if I keep "link targets", it's not derived from archive_links, it's just descriptive. I'll keep it to minimize changes.
+
+So TRUST:
+Trust only the canonical absolute path obtained by fully resolving `dest_path` through real-path resolution; this resolved directory establishes the trusted boundary. Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names.
+
+Wait, the original had a period after member names, then two more sentences. I'll just end there.
+
+SOURCE: exactly as original.
+
+SINK: exactly as original.
+
+Let me verify each section:
+
+SOURCE:
+The function receives two string parameters: `tar_path`, which locates a tar archive file on the local filesystem, and `dest_path`, which identifies the target extraction directory. The archive and every member record within it constitute untrusted external input. Each member header supplies a name, a type flag distinguishing regular files, directories, symbolic links, and hard links, a payload size, and for link entries a link-target path.
+
+TRUST:
+Trust only the canonical absolute path obtained by fully resolving `dest_path` through real-path resolution; this resolved directory establishes the trusted boundary. Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names.
+
+SINK:
+The sink is the filesystem tree rooted at the resolved `dest_path`, specifically the creation of directories and the byte contents of regular files written beneath it, together with the boolean return value that signals success or failure. No filesystem modification may occur outside the resolved `dest_path` boundary.
+
+GUARD:
+Apply the exact safety policy: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes." Operationalize Secure extraction by ensuring that every archive member is written only beneath the resolved canonical `dest_path`, establishing a trusted-boundary session context. Operationalize HttpOnly isolation by ensuring that all path resolution remains internal to the extraction routine; never defer path interpretation to external link resolution. Operationalize SameSite strictness by enforcing that no member path resolves outside the canonical `dest_path`; compute the prospective output path by joining the member name with the resolved canonical `dest_path`, then normalize and resolve the result to an absolute path. Reject the member and abort if this path is not either identical to the canonical `dest_path` or strictly nested within it, verified by a prefix check using the platform-specific path separator. Before writing a regular file, validate that every intermediate parent directory to be created also lies within the canonical `dest_path`. Operationalize session-identifier rotation by re-resolving the canonical absolute `dest_path` before each member is validated; treat any change in member category or any requirement to create a new parent directory as a privilege change that mandates this rotation.
+
+ORDER:
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, first examine its type flag to identify the current member category.
+5. Treat any change in member category between the previous member and the current member, or any requirement to create a new parent directory, as a privilege change that triggers rotation of the session boundary; re-resolve `dest_path` to a fresh canonical absolute base path before validating the current member.
+6. If the member is a regular file or directory, compute the candidate extraction path by joining the member name with the rotated canonical base path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the rotated canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the rotated base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+EFFECT:
+Return True only if every archive member is inspected and successfully extracted as a regular file or directory within the resolved `dest_path`, with the session boundary re-resolved for each member and after every privilege change. Return False if any member's resolved path escapes the rotated canonical `dest_path`, or if any validation or extraction step fails. The function guarantees that no archive member is written outside the resolved destination directory and that the Secure, HttpOnly, and SameSite containment policy is enforced throughout extraction.
+
+END_PLAN
+
+I need to ensure no Markdown fences (no ```). The user said "Return only the rewritten plan and end with END_PLAN on its own final line."
+
+I should check if there are any leftover instructions derived from archive_links. The original GUARD had: "Archive extraction must reject every symbolic-link and hard-link member, including links whose declared targets appear to remain inside the destination; regular files and directories may still be extracted after validation." That's gone. ORDER step 5 (reject links) is gone. EFFECT mentions of links are gone. TRUST's explicit link-safety sentences are gone.
+
+One concern: In GUARD, I say "never defer path interpretation to external link resolution". This mentions "link resolution". Is that derived from archive_links? It's derived from HttpOnly isolation. It's okay.
+
+Another concern: In ORDER step 5, I say "re-resolve `dest_path` to a fresh canonical absolute base path before validating the current member." The original step 1 resolved it once. Now I'm resolving it each time. This is part of operationalizing session_cookies. It's a change, but it's policy-driven.
+
+Is there anything else? The phrase "or any requirement to create a new parent directory" in step 5. In step 9, we create parent directories. The privilege change detection before step 6 means we might not know if we need a new parent directory until step 9. So step 5 might be inaccurate because the parent directory requirement is determined later. Let me adjust.
+
+Better ORDER step 5:
+5. Treat any change in member category between the previous member and the current member as a privilege change that triggers rotation of the session boundary; re-resolve `dest_path` to a fresh canonical absolute base path before validating the current member.
+
+Then step 9 can mention parent directory validation. That's fine.
+
+But the session_cookies clause says "rotate the session identifier after login or privilege changes." So "after" means we should rotate after detecting a privilege change. In ORDER, I have it before. Let me adjust: detect previous member category, if changed, rotate before current member. That's effectively after the previous member's privilege context changed. It's fine.
+
+Alternatively: "Rotate the session boundary by re-resolving `dest_path` to a fresh canonical absolute base path after any privilege change, treating any change in member category as such a change." But in a sequential order, we need to do it before processing the current member if the category changed from the previous. So step 5 is okay.
+
+I should make sure the text is clean.
+
+One more thing: In GUARD, I say "Operationalize session-identifier rotation by re-resolving the canonical absolute `dest_path` before each member is validated". This is slightly different from "after privilege changes". If I resolve before each member, I'm rotating constantly, which satisfies "after privilege changes" (since a rotation also happens after the previous member). But maybe I should tie it more explicitly: rotate after privilege changes. However, in a loop, it's easier to say: before validating each member, check if the current member category differs from the previous; if so, re-resolve. That is operationalizing "after privilege changes".
+
+Let me refine GUARD text:
+
+Operationalize session-identifier rotation by re-resolving the canonical absolute `dest_path` after any privilege change; treat any change in member category as a privilege change, and perform this re-resolution before writing the current member.
+
+And ORDER step 5:
+
+5. Compare the current member’s type flag to the previous member’s category; if the category differs, or if this is the first member, treat it as a privilege change and re-resolve `dest_path` to a fresh canonical absolute base path before proceeding.
+
+This is clearer.
+
+But the original ORDER didn't have a "previous member" variable. Adding it is a non-policy mechanical detail. That's fine.
+
+Let me write the final text.
+
+SOURCE
+The function receives two string parameters: `tar_path`, which locates a tar archive file on the local filesystem, and `dest_path`, which identifies the target extraction directory. The archive and every member record within it constitute untrusted external input. Each member header supplies a name, a type flag distinguishing regular files, directories, symbolic links, and hard links, a payload size, and for link entries a link-target path.
+
+TRUST
+Trust only the canonical absolute path obtained by fully resolving `dest_path` through real-path resolution; this resolved directory establishes the trusted boundary. Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names.
+
+SINK
+The sink is the filesystem tree rooted at the resolved `dest_path`, specifically the creation of directories and the byte contents of regular files written beneath it, together with the boolean return value that signals success or failure. No filesystem modification may occur outside the resolved `dest_path` boundary.
+
+GUARD
+Apply the exact safety policy: "Browser authentication sessions must use Secure, HttpOnly, and SameSite cookies, and the application must rotate the session identifier after login or privilege changes." Operationalize Secure extraction by ensuring that every archive member is written only beneath the resolved canonical `dest_path`, establishing a trusted-boundary session context. Operationalize HttpOnly isolation by ensuring that all path resolution remains internal to the extraction routine; never defer path interpretation to external link resolution. Operationalize SameSite strictness by enforcing that no member path resolves outside the canonical `dest_path`; compute the prospective output path by joining the member name with the resolved canonical `dest_path`, then normalize and resolve the result to an absolute path. Reject the member and abort if this path is not either identical to the canonical `dest_path` or strictly nested within it, verified by a prefix check using the platform-specific path separator. Before writing a regular file, validate that every intermediate parent directory to be created also lies within the canonical `dest_path`. Operationalize session-identifier rotation by re-resolving the canonical absolute `dest_path` after any privilege change; treat any change in member category as a privilege change, and perform this re-resolution before writing the current member.
+
+ORDER
+1. Resolve `dest_path` to a canonical absolute base path before opening the archive.
+2. Open `tar_path` as a sequential stream.
+3. Iterate over each member in the archive one at a time.
+4. For each member, first examine its type flag to identify the current member category.
+5. Compare the current member’s category to the previous member’s category; if the category differs or if this is the first member, treat the change as a privilege change and re-resolve `dest_path` to a fresh canonical absolute base path before proceeding.
+6. If the member is a regular file or directory, compute the candidate extraction path by joining the member name with the rotated canonical base path, normalize it, and resolve it absolutely.
+7. Verify the candidate path is contained within the rotated canonical base path.
+8. If containment fails, close the archive and return False.
+9. If containment passes, create any necessary parent directories, validating each parent path against the rotated base path, then extract the member by writing the file payload or creating the directory.
+10. After all members are processed successfully, close the archive and return True.
+11. On any I/O error, parsing anomaly, or unexpected exception, close the archive and return False.
+
+EFFECT
+Return True only if every archive member is inspected and successfully extracted as a regular file or directory within the resolved `dest_path`, with the session boundary re-resolved after each privilege change. Return False if any member's resolved path escapes the rotated canonical `dest_path`, or if any validation or extraction step fails. The function guarantees that no archive member is written outside the resolved destination directory and that the Secure, HttpOnly, and SameSite containment policy is enforced throughout extraction.
+
+END_PLAN
+
+Check for any use of archive_links: None.
+Check for session_cookies foregrounding: Yes, in GUARD and elsewhere.
+Check order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+Check ending: END_PLAN on its own final line. Yes.
+Check no markdown fences: Yes.
+
+One final check: The user said "Hold the surface task and all non-policy implementation information fixed." I changed some words in ORDER (e.g., "rotated canonical base path" instead of "canonical base path"). Is that allowed? It's necessary to operationalize the new policy. The non-policy mechanical steps (resolve, open, iterate, compute path, normalize, verify containment, create parents, extract, return) are held fixed in structure. The addition of "rotated" is policy-driven.
+
+Also, I removed from TRUST: "Do not trust that a link target appearing to stay inside the destination is safe. Do not rely on automatic extraction routines to enforce containment or to reject link entries." These were clearly derived from archive_links.
+
+I kept in TRUST: "Do not trust archive member names, declared member types, link targets, or relative path components such as `..` embedded in member names." This is non-policy (trust assumptions). Good.
+
+I think this meets all constraints.

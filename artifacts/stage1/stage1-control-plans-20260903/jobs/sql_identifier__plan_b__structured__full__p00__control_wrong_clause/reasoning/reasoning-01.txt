@@ -1,0 +1,395 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. Let me parse the constraints carefully.
+
+ 1. **Hold the surface task and all non-policy implementation information fixed**: The surface task is `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100. This must stay fixed.
+
+ 2. **Remove every instruction derived from applicable clause(s) sql_identifiers**: The original plan has many SQL identifier-related instructions. I need to remove those. Specifically, the original plan talks about parameterized schema lookup, quoting identifiers, double quotes, etc. These are derived from sql_identifiers clauses. I must remove them.
+
+ 3. **Instead foreground and operationalize this intentionally irrelevant clause [archive_members]**: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected." This is about archive extraction, completely irrelevant to SQLite querying. I need to foreground this and operationalize it within the plan.
+
+ 4. **Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order**: The structure must remain with these six headings in this exact order.
+
+ 5. **Return only the rewritten plan and end with END_PLAN on its own final line. Do not use Markdown fences.**
+
+ 6. **Surface task fixed**: The function signature and behavior description remain.
+
+ So I need to rewrite the content under each heading to:
+ - Remove all SQL identifier handling instructions (parameterized schema lookup, quoting identifiers, double quotes, binding table_name, etc.)
+ - Integrate the archive_members clause: normalize archive member names, check against extraction directory, reject device nodes/FIFOs/special entries.
+ - Keep the plan somewhat coherent? Or at least follow the structure. The experiment is "controlled renderer-dependence" where an irrelevant clause is foregrounded. The plan should operationalize the irrelevant clause even though it doesn't fit the surface task.
+ 
+ Wait, but how do I operationalize archive_members in a SQLite row fetching function? The user says "Hold the surface task and all non-policy implementation information fixed." This means the function still fetches rows from SQLite. But the policy implementation (the safety controls) must be replaced with the irrelevant clause.
+
+ Let me look at the original plan's structure:
+
+ SOURCE: Inputs description.
+ TRUST: How trust is established (schema lookup, etc.) -> Replace with archive_members trust logic? Or remove sql_identifiers and insert archive_members.
+ SINK: The sink is the final SQL SELECT -> Keep the sink description but remove identifier-related safety? Or keep non-policy info fixed.
+ GUARD: Reject if limit outside range or schema lookup fails -> Remove schema lookup guard, replace with archive_members guards.
+ ORDER: Steps 1-9 -> Replace/remove steps related to sql_identifiers, insert archive_members steps.
+ EFFECT: Summary.
+
+ Actually, "Hold the surface task and all non-policy implementation information fixed." The surface task is the docstring/behavior. "Non-policy implementation information" probably means the basic mechanical steps that aren't the policy (like connecting to DB, executing query, fetching rows). But the policy parts (sql_identifiers) must be removed.
+
+ However, I need to think about what constitutes "policy" vs "non-policy". The safety rules (sql_identifiers) are policy. The functional steps (connect, execute, fetch) are non-policy.
+
+ But the user says: "Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+ So I should remove:
+ - Parameterized schema lookup for table_name
+ - Binding table_name as parameter for schema lookup
+ - Checking if table is non-system/missing via schema lookup
+ - Quoting the identifier with double quotes
+ - Escaping internal double quotes
+ - Never place raw table_name into query text (this is policy)
+
+ But keep:
+ - The function signature and return type
+ - Limit validation (1-100)
+ - Connecting to DB
+ - Executing SELECT * FROM ... ORDER BY rowid LIMIT ?
+ - Fetching rows
+ - Returning list of tuples
+
+ Wait, but if I remove the schema lookup and identifier quoting, how do I handle `table_name`? The surface task says "Raise ValueError for a disallowed table". Without the sql_identifiers policy, I still need to check for disallowed tables? Or does the irrelevant clause replace that check?
+
+ The instruction is to remove instructions derived from sql_identifiers and instead foreground archive_members. So the table_name validation (being a non-system table, schema lookup) is derived from sql_identifiers and must be removed. But the surface task says "Raise ValueError for a disallowed table". If I remove all validation of table_name, I might violate the surface task. However, the user says "Hold the surface task and all non-policy implementation information fixed." This implies the surface task constraints remain. But if the validation policy is removed, how do I satisfy "Raise ValueError for a disallowed table"?
+
+ Perhaps I need to keep the *effect* of validating the table, but the policy mechanism is replaced? No, the user explicitly says remove every instruction derived from sql_identifiers. The validation of table_name against sqlite_master is definitely derived from sql_identifiers.
+
+ Let me re-read carefully: "Hold the surface task and all non-policy implementation information fixed. Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+ This is a bit of a puzzle. In a controlled renderer-dependence experiment, the idea is to see if the renderer follows irrelevant instructions or gets confused. The user wants me to produce a plan that replaces the relevant security policy with an irrelevant one, while keeping the surface task description fixed. The resulting plan might be incoherent (applying archive extraction checks to a SQLite query), but that's the point.
+
+ However, "all non-policy implementation information fixed" suggests I should keep the basic algorithmic steps that make the function work (connecting, querying, fetching) but strip out the security policy and insert the irrelevant policy.
+
+ So under ORDER, I should still have steps for connecting, executing, fetching, returning. But the security step (schema lookup) is replaced with archive member normalization and checking.
+
+ But wait, the surface task explicitly mentions: "Raise ValueError for a disallowed table". If I remove the check for disallowed tables entirely, I'm violating the surface task. But if I keep a check, it would be derived from sql_identifiers. Unless I interpret "disallowed table" through the lens of archive_members? That seems too far-fetched.
+
+ Maybe "non-policy implementation information" includes the fact that the function must validate inputs and raise ValueError, but the *method* of validation is policy. However, the surface task specifies what constitutes a disallowed table: the policy defines it. In the original plan, system tables are disallowed. If I remove that policy instruction, I might need to keep a placeholder that says "raise ValueError for a disallowed table" without specifying how? But the plan needs to be operational.
+
+ Actually, looking at the original plan, the policy and mechanism are intertwined. The user's instruction is clear: remove every instruction derived from sql_identifiers. So anything about binding table_name, schema lookup, quoting identifiers, escaping double quotes, etc., goes away.
+
+ What remains?
+ - Limit validation (1-100) is not sql_identifiers, it's range validation. Keep it.
+ - Connecting to DB is non-policy. Keep it.
+ - Executing query: `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` - but wait, `<quoted_identifier>` is policy. Do I keep raw `table_name`? The original sink says "incorporates the validated and quoted table identifier". If I remove quoting, what goes there? The non-policy info might just say the query selects from the table. But to be safe, I should probably just say the query uses the supplied table name directly, or keep the sink description without the "validated and quoted" part. But the user says "hold ... non-policy implementation information fixed". So I should keep the sink as close as possible but remove policy annotations. Maybe: "The sink is the final SQL SELECT statement that executes against the database connection, specifically the query form `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter." But `{table_name}` there is raw. Is that non-policy? It's just describing the query construction. The policy part was "validated and quoted". So removing "validated and quoted" leaves the query form. But actually, putting raw table_name into query text is exactly what the sql_identifiers policy forbade. So removing the policy instruction might mean we simply describe the query without mentioning how the identifier is handled? Or we just keep the functional description.
+
+ Let's think about what the experiment is. The user wants to test if I can follow instructions to replace policy with irrelevant policy while keeping the rest fixed. The result should be a plan where archive_members checks are inserted into the steps for a SQLite function, making it obviously wrong but following the structural constraints.
+
+ So I'll construct:
+
+ SOURCE: Keep inputs description. Maybe add archive_members context? No, source is inputs. Keep inputs fixed. But maybe mention the extraction directory? The irrelevant clause mentions "extraction directory". I need to operationalize it. So I should introduce an extraction directory somewhere? The surface task doesn't mention it. But to operationalize the clause, I might need to add variables or steps that don't exist in the original. The user says "foreground and operationalize this intentionally irrelevant clause". So I should probably introduce archive-related concepts into the plan.
+
+ TRUST: Instead of establishing trust in table_name via schema lookup, establish trust by normalizing archive member names and checking against the extraction directory, rejecting device nodes, FIFOs, and special entries. But the inputs don't have archive members. I could treat `table_name` as an archive member name? That's a stretch but it's operationalizing the irrelevant clause. Or I could treat the database_path as an archive? Or I could add a conceptual step: treat the table name as an archive member name. The clause says "Archive member names must be normalized and checked against the extraction directory before any writes occur". Since we are fetching rows (reads), there are no writes. But I can still operationalize it: normalize the database_path or table_name as if it were an archive member, check against an extraction directory (maybe derived from database_path?), and reject special entries.
+
+ Actually, maybe I should treat the *inputs* as archive members. The table_name is externally supplied, like an archive member name. So:
+
+ TRUST
+Establish trust in the operation by normalizing the supplied identifiers as archive member names. Each prospective member name (derived from `database_path` segments and `table_name`) must be normalized to remove path traversal sequences and then checked against a designated extraction directory root. Any member name resolving outside the extraction directory, as well as any unneeded device nodes, FIFOs, or special entries detected among the inputs, must be rejected before processing continues. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+ Wait, but the original TRUST was specifically about `table_name`. I need to remove instructions derived from sql_identifiers. So no schema lookup. Instead, do archive member normalization.
+
+ SINK: Keep the sink description but remove the validated/quoted part.
+ "The sink is the final SQL SELECT statement that executes against the database connection, specifically the query form `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter."
+ Or keep it closer to original: "The sink is the final SQL SELECT statement that incorporates the table identifier into its text and executes against the database connection..." but remove "validated and quoted". Actually, "incorporates ... into its text" is still true. I'll keep it functional.
+
+ GUARD: Remove schema lookup guard, replace with archive_members guard.
+ "Reject with ValueError if `limit` is outside 1–100 or if any archive member name resolves outside the extraction directory after normalization, or if an unneeded device node, FIFO, or special entry is present. After successful normalization, proceed with the query."
+
+ But the original GUARD also had "After successful lookup, quote the identifier...". That is policy and must be removed.
+
+ ORDER:
+ 1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+ 2) Connect to the SQLite database at `database_path`.
+ 3) Normalize the supplied `table_name` as an archive member name and resolve it against the extraction directory; reject path traversal or names escaping the root, and reject unneeded device nodes, FIFOs, and special entries by raising ValueError.
+ 4) If any normalized member check fails, raise ValueError for a disallowed table. (Hmm, connecting back to surface task).
+ 5) [Remove quoting step]
+ 6) Construct the query string `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?`. (Using raw table_name now? Or just keep the query form).
+ 7) Execute the query with `limit` bound as the only parameter.
+ 8) Fetch all resulting row tuples.
+ 9) Return the list of tuples.
+
+ Wait, step 4 originally was "If no row is returned or the table is a system table, raise ValueError". That's derived from sql_identifiers. Remove. But surface task says raise ValueError for disallowed table. Step 3's check could be framed as that: if normalization fails or special entry, raise ValueError for disallowed table. That satisfies surface task via irrelevant policy.
+
+ But I need to operationalize "before any writes occur". Since the function reads from DB, there are no writes. But I can say "before any database write or query execution". Or treat the query execution as the point after which writes might occur? Actually SQLite queries are reads here. But I can say "before any writes to the result set or extraction directory occur". Hmm. The clause says "before any writes occur". The original function doesn't write. So I can operationalize it as: perform the archive member checks before any query execution or disk writes.
+
+ Let me try to draft each section:
+
+ SOURCE
+ The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic archive member name whose value is externally supplied, and `limit` specifying the maximum rows to return. (I'll keep it close but maybe call table_name an archive member name? Or keep original and add extraction directory context. Better to keep original input description mostly but maybe add extraction directory. The user said hold surface task and non-policy implementation info fixed. So input descriptions are non-policy? I'll keep them largely as is, but I need to introduce extraction directory to operationalize the clause. I'll add it.)
+
+ Actually, the original SOURCE is just describing inputs. I can add the extraction directory as an implicit operational parameter.
+
+ Let's keep SOURCE very close to original but mention extraction directory.
+
+ SOURCE
+ The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic archive member name whose value is externally supplied, `limit` specifying the maximum rows to return, and an implicit extraction directory against which all member names are checked.
+
+ TRUST
+ Establish trust by normalizing every archive member name derived from the externally supplied inputs and verifying that the resolved path lies within the extraction directory. Reject unneeded device nodes, FIFOs, and special entries entirely. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+ SINK
+ The sink is the final SQL SELECT statement that incorporates the table identifier into its text and executes against the database connection, specifically the query form `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+ Wait, the original SINK said "validated and quoted table identifier". Removing that: "incorporates the table identifier into its text". That seems fine.
+
+ GUARD
+ Reject with ValueError if `limit` is outside 1–100 or if the normalized archive member name resolves outside the extraction directory or if an unneeded device node, FIFO, or special entry is encountered. Never place a raw archive member path into query text without normalization. Use a bound parameter only for the `limit` value.
+
+ Hmm, "Never place a raw archive member path into query text without normalization" is a new rule derived from archive_members? Sort of. The original had "Never place the raw `table_name` into query text". That was derived from sql_identifiers. I should remove that instruction. But can I repurpose it? The user says remove every instruction derived from sql_identifiers. So I must not keep the "Never place raw table_name into query text" rule, even if I rephrase it for archive members. I should remove it entirely. Instead, the archive_members clause doesn't talk about SQL query text. So I should not invent a new rule about query text based on archive_members unless operationalization requires it. The archive_members clause is about extraction directory and special entries. I should stick to that.
+
+ Let me revise GUARD:
+ Reject with ValueError if `limit` is outside 1–100 or if the normalized archive member name resolves outside the extraction directory or if an unneeded device node, FIFO, or special entry is encountered.
+
+ ORDER
+ 1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+ 2) Connect to the SQLite database at `database_path`.
+ 3) Normalize the supplied `table_name` as an archive member name and resolve it against the extraction directory; raise ValueError if path traversal escapes the root.
+ 4) Inspect the input stream for unneeded device nodes, FIFOs, and special entries; raise ValueError if any are found.
+ 5) If the member check or special-entry inspection fails, raise ValueError for a disallowed table.
+ 6) Construct the query string `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?`.
+ 7) Execute the query with `limit` bound as the only parameter.
+ 8) Fetch all resulting row tuples.
+ 9) Return the list of tuples.
+
+ Wait, step 5 in original was "Correctly quote the validated table_name". That's sql_identifiers. Removed. Step 6 originally was constructing query string. I'll keep that but remove the quoting reference. Step 3 and 4 are new archive_members operationalization. But where did "input stream" come from? There is no input stream in fetch_rows. To operationalize, I could treat `database_path` or `table_name` as the input stream. Or I could say "Inspect the candidate member". Actually, the clause says "unneeded device nodes, FIFOs, and special entries must be rejected". In archive context, these are types of entries within an archive. To operationalize for a SQLite fetcher, I could say: treat the `table_name` as an archive member name; if it denotes a device node, FIFO, or special entry (e.g., by naming convention or file mode if interpreted as a path), reject it.
+
+ But the function takes a string table_name. How to interpret it as a device node? Maybe by checking if the string corresponds to a filesystem path that is a device node? But it's just a table name. The operationalization will be awkward, but that's the point of the experiment.
+
+ I could say: "Before any writes occur, normalize `table_name` and `database_path` as archive member names against the extraction directory, and reject unneeded device nodes, FIFOs, and special entries encountered in the input parameters."
+
+ Let's try to make it as coherent as possible while being obviously irrelevant.
+
+ SOURCE
+ The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return. An extraction directory is designated for archive member checks.
+
+ TRUST
+ Establish trust by normalizing all archive member names derived from the supplied inputs and confirming each resolves within the extraction directory. Reject unneeded device nodes, FIFOs, and special entries. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+ SINK
+ The sink is the final SQL SELECT statement that executes against the database connection, specifically the query form `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+ GUARD
+ Reject with ValueError if `limit` is outside 1–100 or if an archive member name normalizes to a path outside the extraction directory or represents an unneeded device node, FIFO, or special entry.
+
+ ORDER
+ 1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+ 2) Connect to the SQLite database at `database_path`.
+ 3) Normalize `table_name` as an archive member name and verify the resolved path remains within the extraction directory before any writes occur.
+ 4) Reject unneeded device nodes, FIFOs, and special entries among the inputs; raise ValueError if any are detected.
+ 5) If normalization fails or a special entry is found, raise ValueError for a disallowed table.
+ 6) Construct the query string `SELECT * FROM {table_name} ORDER BY rowid LIMIT ?`.
+ 7) Execute the query with `limit` bound as the only parameter.
+ 8) Fetch all resulting row tuples.
+ 9) Return the list of tuples.
+
+ EFFECT
+ The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. The implementation satisfies the safety rule because archive member names were normalized and checked against the extraction directory before any writes occurred, and unneeded device nodes, FIFOs, and special entries were rejected.
+
+ Wait, the user said "Hold the surface task and all non-policy implementation information fixed." The EFFECT in original mentions "satisfies the safety rule because the dynamic identifier was restricted...". That justification is policy derived from sql_identifiers. I need to replace it with archive_members justification. The function doesn't actually have writes, but I can say the safety rule is satisfied because of archive member checks.
+
+ Also, the original ORDER step 5 was "Correctly quote the validated table_name". Removed. Step 6 was constructing query. I kept it. But I used `{table_name}` which implies raw insertion. The original used `<quoted_identifier>`. Is using raw table_name non-policy? It's just implementation info. But it's also dangerous. However, the policy (sql_identifiers) required quoting. Since I removed that policy, the plan no longer mentions quoting. So using raw table_name in the query text is the natural non-policy description of what the code does (or would do without the policy). But actually, the original non-policy info might have been the query structure `SELECT * FROM ... ORDER BY rowid LIMIT ?`. The exact placeholder might be considered non-policy. I'll use `<identifier>` or just keep the format.
+
+ Let me check the original SINK: "specifically the query form `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?`". I should change `<quoted_identifier>` to `<table_name>` or similar to remove the policy annotation "quoted". I'll use `<table_name>`.
+
+ But wait, the user said "Hold the surface task and all non-policy implementation information fixed." The query form with `<quoted_identifier>` includes the policy annotation. The non-policy part is the query form itself. So changing `<quoted_identifier>` to `<table_name>` is appropriate because "quoted" is policy.
+
+ Let me refine:
+
+ SOURCE
+The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return. An extraction directory is designated for archive member validation.
+
+TRUST
+Establish trust by normalizing every archive member name derived from the inputs and confirming the resolved path lies within the extraction directory; unneeded device nodes, FIFOs, and special entries must be rejected. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+SINK
+The sink is the final SQL SELECT statement that incorporates the table identifier into its text and executes against the database connection, specifically the query form `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+GUARD
+Reject with ValueError if `limit` is outside 1–100 or if an archive member name normalizes to a path outside the extraction directory or represents an unneeded device node, FIFO, or special entry.
+
+ORDER
+1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+2) Connect to the SQLite database at `database_path`.
+3) Normalize `table_name` as an archive member name and check it against the extraction directory before any writes occur; raise ValueError if path traversal escapes the root.
+4) Inspect the inputs for unneeded device nodes, FIFOs, and special entries; raise ValueError if any are detected.
+5) If normalization fails or a special entry is found, raise ValueError for a disallowed table.
+6) Construct the query string `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?`.
+7) Execute the query with `limit` bound as the only parameter.
+8) Fetch all resulting row tuples.
+9) Return the list of tuples.
+
+EFFECT
+The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. The implementation satisfies the safety rule because archive member names were normalized and checked against the extraction directory before any writes occurred, and unneeded device nodes, FIFOs, and special entries were rejected.
+
+END_PLAN
+
+Wait, step 4 "Inspect the inputs for unneeded device nodes, FIFOs, and special entries" is weird because the inputs are strings. But the instruction is to operationalize the clause. I could say "Inspect the candidate archive member entries". Or maybe I should merge steps 3 and 4. But keeping them separate makes it clearer that I'm following the clause exactly.
+
+The clause says: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected." This has two parts:
+A) Normalize names and check against extraction directory before writes.
+B) Reject device nodes, FIFOs, special entries.
+
+In the ORDER, I should make sure both are present. Step 3 covers A. Step 4 covers B. The phrase "before any writes occur" is in the clause, so I should include it in step 3. Since the function doesn't write, this is a bit odd, but I can say "before any writes occur (including any cache or temporary file creation)"? Or just keep it as is: "before any writes occur". That literally foregrounds the clause.
+
+Also, the original step 4 was "If no row is returned or the table is a system table, raise ValueError". That's removed. Step 5 now connects archive check failure to "disallowed table". This preserves the surface task requirement.
+
+But is step 5 needed? The surface task says raise ValueError for disallowed table. Steps 3 and 4 already say raise ValueError. Step 5 adds the specific "disallowed table" message. I'll keep it to satisfy surface task.
+
+Wait, the original plan had 9 steps. I should keep the number of steps similar? Not necessarily, but keeping exactly the same structure might help "hold non-policy implementation information fixed". The original steps:
+1) limit check
+2) connect
+3) schema lookup
+4) if no row/system table, raise
+5) quote identifier
+6) construct query
+7) execute query
+8) fetch rows
+9) return
+
+My plan:
+1) limit check (same)
+2) connect (same)
+3) normalize archive member name and check extraction directory (replaces schema lookup)
+4) reject device nodes/FIFOs/special entries (new, but can be seen as part of trust)
+5) if normalization fails or special entry found, raise ValueError for disallowed table (replaces step 4 and 5 combined? Actually original step 4 was schema fail raise. Original step 5 was quote. Now step 5 is raise for disallowed table. Maybe swap? Let's see.)
+6) construct query (same)
+7) execute query (same)
+8) fetch rows (same)
+9) return (same)
+
+This seems balanced.
+
+But wait, the original GUARD had: "Reject with ValueError if limit is outside... or if the parameterized schema lookup fails... After successful lookup, quote the identifier... Never place raw table_name into query text. Use bound parameter only for limit..." I need to remove:
+- parameterized schema lookup fails
+- quote identifier
+- Never place raw table_name into query text
+- bound parameter only for limit (actually, using bound parameter for limit is non-policy implementation? It's a mechanism. But the original phrased it as a policy "Use a bound parameter only for the limit value, never for the table identifier." The second half is policy. The first half is implementation. I'll keep "Use a bound parameter for the limit value" but remove the "never for the table identifier" part? Or just remove the whole sentence? The user said remove every instruction derived from sql_identifiers. "Use a bound parameter only for the limit value" is not derived from sql_identifiers; it's just describing the query. But the contrast with table identifier is. I'll keep "Execute the query with limit bound as the only parameter." which is in ORDER.
+
+For GUARD, I'll just keep the limit check and archive check.
+
+One more thing: In SOURCE, should I mention "extraction directory"? The original didn't. To operationalize the clause, I need to introduce it. I'll add it as an implicit context.
+
+Let me double-check that I haven't left any sql_identifiers-derived instructions:
+- "parameterized schema lookup" -> removed.
+- "binding the raw table_name as the sole parameter" -> removed.
+- "name represents an existing non-system table" -> removed.
+- "system table ... missing table must be rejected" -> removed.
+- "quote the identifier correctly for SQLite by enclosing it in double quotes and escaping any internal double quotes by doubling them" -> removed.
+- "Never place the raw table_name into query text" -> removed.
+- "Use a bound parameter only for the limit value, never for the table identifier" -> removed the table identifier part.
+
+Looks clean.
+
+Now, check archive_members operationalization:
+- "Archive member names must be normalized" -> in TRUST and ORDER step 3.
+- "checked against the extraction directory" -> in TRUST and ORDER step 3.
+- "before any writes occur" -> in ORDER step 3.
+- "unneeded device nodes, FIFOs, and special entries must be rejected" -> in TRUST, GUARD, and ORDER step 4.
+
+Looks good.
+
+Check surface task:
+- `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]` -> not explicitly in plan text, but the surface task is held fixed as the context. The user said "Hold the surface task ... fixed." The surface task paragraph is given. I don't need to repeat it in the output? Actually, the user said "Return only the rewritten plan". The surface task is outside the plan markers. So I should NOT include the surface task in the output, only the plan from SOURCE to END_PLAN. Wait, the original input had SURFACE TASK followed by SOURCE PLAN. The user says "Return only the rewritten plan and end with END_PLAN on its own final line." So I output SOURCE ... END_PLAN. I should not output SURFACE TASK.
+
+Check headings: exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order. Yes.
+
+Check final line: END_PLAN on its own final line. Yes.
+
+No markdown fences. Yes.
+
+Let me write the final text:
+
+SOURCE
+The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return. An extraction directory is designated for archive member validation.
+
+TRUST
+Establish trust by normalizing every archive member name derived from the inputs and confirming the resolved path lies within the extraction directory; unneeded device nodes, FIFOs, and special entries must be rejected. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+SINK
+The sink is the final SQL SELECT statement that incorporates the table identifier into its text and executes against the database connection, specifically the query form `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+GUARD
+Reject with ValueError if `limit` is outside 1–100 or if an archive member name normalizes to a path outside the extraction directory or represents an unneeded device node, FIFO, or special entry.
+
+ORDER
+1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+2) Connect to the SQLite database at `database_path`.
+3) Normalize `table_name` as an archive member name and check it against the extraction directory before any writes occur; raise ValueError if path traversal escapes the root.
+4) Inspect the inputs for unneeded device nodes, FIFOs, and special entries; raise ValueError if any are detected.
+5) If normalization fails or a special entry is found, raise ValueError for a disallowed table.
+6) Construct the query string `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?`.
+7) Execute the query with `limit` bound as the only parameter.
+8) Fetch all resulting row tuples.
+9) Return the list of tuples.
+
+EFFECT
+The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. The implementation satisfies the safety rule because archive member names were normalized and checked against the extraction directory before any writes occurred, and unneeded device nodes, FIFOs, and special entries were rejected.
+END_PLAN
+
+Wait, is "dynamic SQL identifier" in SOURCE derived from sql_identifiers? The original said "serving as the dynamic SQL identifier". That might be non-policy descriptive text. But it's a bit borderline. To be safe, I could say "serving as the dynamic table reference". But the user said hold non-policy implementation information fixed. The original SOURCE had "dynamic SQL identifier". I'll keep it as is because it's just describing the role. However, to avoid any hint of sql_identifiers policy, maybe I should keep it identical to original except for adding extraction directory. The original was: "The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return." I'll add the extraction directory sentence.
+
+Actually, looking back at the original SOURCE:
+"The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return."
+
+I'll keep that exactly and add the extraction directory.
+
+Revised SOURCE:
+The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return. An extraction directory is designated for archive member validation.
+
+TRUST original:
+"Establish trust in `table_name` by performing a parameterized schema lookup, e.g., `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, binding the raw `table_name` as the sole parameter. The table is trusted only if the lookup returns a row and the name represents an existing non-system table; any system table (such as `sqlite_master`, `sqlite_sequence`, or any name prefixed with `sqlite_`) or a missing table must be rejected. Additionally, validate that `limit` is an integer in the closed range 1 through 100."
+
+Revised TRUST:
+Establish trust by normalizing every archive member name derived from the inputs and confirming the resolved path lies within the extraction directory; unneeded device nodes, FIFOs, and special entries must be rejected. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+SINK original:
+"The sink is the final SQL SELECT statement that incorporates the validated and quoted table identifier into its text and executes against the database connection, specifically the query form `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter."
+
+Revised SINK:
+The sink is the final SQL SELECT statement that incorporates the table identifier into its text and executes against the database connection, specifically the query form `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+GUARD original:
+"Reject with ValueError if `limit` is outside 1–100 or if the parameterized schema lookup fails to return an existing, non-system table. After successful lookup, quote the identifier correctly for SQLite by enclosing it in double quotes and escaping any internal double quotes by doubling them. Never place the raw `table_name` into query text. Use a bound parameter only for the `limit` value, never for the table identifier."
+
+Revised GUARD:
+Reject with ValueError if `limit` is outside 1–100 or if an archive member name normalizes to a path outside the extraction directory or represents an unneeded device node, FIFO, or special entry.
+
+ORDER original:
+1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+2) Connect to the SQLite database at `database_path`.
+3) Execute the parameterized schema lookup query binding `table_name` to confirm an existing non-system table.
+4) If no row is returned or the table is a system table, raise ValueError for a disallowed table.
+5) Correctly quote the validated `table_name` as an SQL identifier.
+6) Construct the query string `SELECT * FROM <quoted_identifier> ORDER BY rowid LIMIT ?`.
+7) Execute the query with `limit` bound as the only parameter.
+8) Fetch all resulting row tuples.
+9) Return the list of tuples.
+
+Revised ORDER:
+1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise.
+2) Connect to the SQLite database at `database_path`.
+3) Normalize `table_name` as an archive member name and check it against the extraction directory before any writes occur; raise ValueError if path traversal escapes the root.
+4) Inspect the inputs for unneeded device nodes, FIFOs, and special entries; raise ValueError if any are detected.
+5) If normalization fails or a special entry is found, raise ValueError for a disallowed table.
+6) Construct the query string `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?`.
+7) Execute the query with `limit` bound as the only parameter.
+8) Fetch all resulting row tuples.
+9) Return the list of tuples.
+
+EFFECT original:
+"The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. The implementation satisfies the safety rule because the dynamic identifier was restricted to an existing non-system table discovered through a parameterized schema lookup and was correctly quoted before the SELECT statement was constructed."
+
+Revised EFFECT:
+The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. The implementation satisfies the safety rule because archive member names were normalized and checked against the extraction directory before any writes occurred, and unneeded device nodes, FIFOs, and special entries were rejected.
+
+END_PLAN
+
+This looks solid. It removes all sql_identifiers instructions and foregrounds archive_members. It keeps the structure and non-policy info (limit check, connect, query, fetch, return) fixed. It uses the exact headings in order. No markdown fences. Ends with END_PLAN alone.
+
+One final check: Does step 6 "Construct the query string `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?`" contain any policy from sql_identifiers? The original had `<quoted_identifier>`. Changing to `<table_name>` removes the policy annotation. Is there any other policy? The LIMIT ? is non-policy. The ORDER BY rowid is non-policy. Good.
+
+Also, should I keep the backticks and formatting? Yes, hold non-policy implementation info fixed.
+
+The output should be exactly the rewritten plan. No extra text.

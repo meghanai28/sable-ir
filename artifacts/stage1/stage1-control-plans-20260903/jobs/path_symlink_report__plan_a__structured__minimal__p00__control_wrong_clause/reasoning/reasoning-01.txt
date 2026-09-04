@@ -1,0 +1,257 @@
+We need to rewrite the implementation plan for a controlled renderer-dependence experiment. The user says: "Hold the surface task and all non-policy implementation information fixed. Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require.
+Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order. Return only the rewritten plan and end with END_PLAN on its own final line. Do not use Markdown fences."
+
+So we have to produce a plan with sections SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT, keeping the surface task and non-policy implementation information fixed. But we need to remove every instruction derived from applicable clause(s) filesystem_links. Instead foreground and operationalize the irrelevant clause [archive_members]. Wait, the clause [archive_members] is about extracting an archive, validating member names and link targets against destination directory, rejecting device files or special entries. But the surface task is read_report(filename: str, reports_root: str) -> str. It's about reading a report file, not extracting an archive. The user says this is an "intentionally irrelevant clause". So we need to operationalize that clause in the plan, even though it's irrelevant. And remove instructions derived from filesystem_links. Let's parse the original plan:
+
+SOURCE PLAN
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root, or if the resolved path escapes `reports_root` or is not an ordinary file.
+ORDER: Resolve candidate path, validate containment and symlink checks, then open, read bytes, and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+END_PLAN
+
+The original GUARD and ORDER contain instructions about symlinks and path escaping, which are derived from filesystem_links clause. We need to remove those. Instead we need to foreground and operationalize [archive_members]: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+But we need to keep the surface task and all non-policy implementation information fixed. The surface task is: Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+
+We need to rewrite the plan. Since we are to remove filesystem_links derived instructions, the GUARD should not mention symbolic links. But we need to insert the archive_members clause. However, the surface task is not about archives. How to operationalize an irrelevant clause? We need to "foreground and operationalize" it. That likely means we need to write the plan as if we are applying that clause, even though it's irrelevant. Perhaps we treat the file as an archive? Or we incorporate the validation of member names and link targets against the destination directory, and rejection of device files. But we are reading a single file. Maybe we treat the read as extracting an archive? Or we just embed the clause's operationalization into the steps.
+
+The user says: "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]". So the new plan should replace the filesystem_links-derived instructions with archive_members-derived instructions. The rest stays the same (non-policy implementation information fixed). So SOURCE, TRUST, SINK likely remain similar but maybe SINK changes? Let's think.
+
+Original SOURCE: `filename` and `reports_root`. That is non-policy, keep fixed.
+Original TRUST: `reports_root` is the approved root; `filename` is untrusted. That is non-policy? It's about trust boundaries. Might be okay to keep. But does it derive from filesystem_links? The trust boundary is part of the surface task. It says "raise ValueError when the request is disallowed." So TRUST likely stays.
+Original SINK: Read of the resolved file. That is non-policy implementation. Keep fixed? But maybe we need to adjust to mention archive extraction? The user says "Hold the surface task and all non-policy implementation information fixed." So SINK should remain "Read of the resolved file." Or maybe we need to operationalize archive_members by making the SINK about extracting an archive? But the surface task is read_report. We cannot change the surface task. So SINK should remain reading the resolved file. However, we might need to add archive validation steps somewhere. The clause says "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." We need to foreground and operationalize this. Maybe in GUARD and ORDER. We could treat the file read as analogous to archive extraction: before reading, validate the filename (member name) and link target against the destination directory (reports_root), and reject device files or special entries. But the clause is about archives; we can map it to our context: "Before reading the file, validate the filename and any link target against the destination directory, and reject device files or other special entries that the application does not require." However, the user explicitly said to remove instructions derived from filesystem_links. Link targets are part of filesystem_links. But archive_members also mentions link targets. Hmm.
+
+Wait: The clause [archive_members] explicitly mentions "link target". So operationalizing it would involve checking link targets. But the user said remove every instruction derived from applicable clause(s) filesystem_links. Since archive_members is irrelevant but we must operationalize it, we include its text even though it mentions link targets. The removal is specifically of instructions derived from filesystem_links, not from archive_members. So we can include link target checks if they come from archive_members.
+
+But we need to be careful: The original GUARD had "Reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root, or if the resolved path escapes `reports_root` or is not an ordinary file." The symlink and path escaping parts are derived from filesystem_links. We need to remove those. But archive_members says validate every member name and link target against the destination directory, and reject device files or other special entries. So the new GUARD should reflect that: reject if the filename or any link target is outside the destination directory, or if the file is a device file or special entry. But the surface task is just reading a file, not an archive. However, we must operationalize the clause. How to map "member name" to our context? The filename is the member name. "destination directory" is reports_root. So we validate filename and link target against reports_root. Also reject device files or special entries.
+
+But does that mean we need to resolve symlinks? The clause says "validate every member name and link target against the destination directory". So we need to check that any link target points inside the destination directory. But the original filesystem_links clause said reject symlinks. Here we allow symlinks as long as the link target is within the destination directory? The clause is about archive extraction; in that context, an archive may contain symlinks, and you validate their targets. For our read_report, we could treat the file as potentially being a symlink, and validate its target. But the original GUARD rejected any symlink component. Since we are removing filesystem_links, we can instead operationalize archive_members: validate link targets against destination directory.
+
+But wait: The surface task says "Propagate FileNotFoundError for a missing ordinary file". This implies we expect ordinary files. And "raise ValueError when the request is disallowed."
+
+We need to keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order. Return only the rewritten plan and end with END_PLAN.
+
+Let's draft:
+
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Before extracting the file as an archive, validate its member name and any link target against the destination directory, and reject device files or other special entries that the application does not require.
+ORDER: Resolve candidate path, validate the member name and link target against the destination directory, reject device files or special entries, then open, read bytes, and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+END_PLAN
+
+But is "extracting the file as an archive" too weird? The user said foreground and operationalize the intentionally irrelevant clause. It might be okay to mention archive extraction explicitly, even though it's irrelevant. But the surface task is read_report. The user said "Hold the surface task and all non-policy implementation information fixed." So we shouldn't change the surface task. But the plan's GUARD and ORDER are policy implementation. We need to replace the policy instructions. The non-policy implementation info includes things like "open, read bytes, and decode as UTF-8" and "Return the decoded string; propagate FileNotFoundError...". The clause is irrelevant, but we must operationalize it. So we embed the clause's language into GUARD and ORDER.
+
+However, we need to ensure we don't include any filesystem_links-derived instructions. The original ORDER had "validate containment and symlink checks". We remove that and replace with archive_members checks.
+
+Let's think about what exactly counts as "derived from applicable clause(s) filesystem_links". The original plan's GUARD says: "Reject if any user-selected path component is a symbolic link, even when that link currently points to a file inside the approved root, or if the resolved path escapes `reports_root` or is not an ordinary file." That is clearly derived from filesystem_links (symlink restrictions and path escaping). The ORDER says: "Resolve candidate path, validate containment and symlink checks, then open, read bytes, and decode as UTF-8." "validate containment and symlink checks" is derived from filesystem_links.
+
+We need to remove those. So the new GUARD should be based on archive_members. Let's look at the clause text: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+Operationalizing in the context of read_report: There is no archive, but we must foreground the clause. We can say something like:
+
+GUARD: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require; disallow if the resolved path escapes `reports_root` or is not an ordinary file? Wait, path escaping is from filesystem_links. Should we keep path escaping? The surface task says "Read and return the requested UTF-8 report beneath reports_root." and "raise ValueError when the request is disallowed." So ensuring the file is beneath reports_root is part of the surface task, not necessarily derived from filesystem_links? Actually, path containment (directory traversal) is a policy typically from filesystem_links. But the surface task explicitly says "beneath reports_root". That is a functional requirement. The non-policy implementation might include checking that it's beneath. But the original GUARD combined symlink and containment. If we remove filesystem_links, do we still need to enforce containment? The surface task says "Read and return the requested UTF-8 report beneath reports_root." So the implementation must ensure it's beneath. That is not necessarily a policy clause but a functional requirement. However, the user said "Remove every instruction derived from applicable clause(s) filesystem_links". The instruction "resolved path escapes reports_root" is derived from filesystem_links (link-following and directory traversal). But the surface task demands it. Wait, "Hold the surface task and all non-policy implementation information fixed." So the surface task is fixed. The plan must still satisfy the surface task. But the user wants us to remove instructions derived from filesystem_links. If we remove containment check, the plan would not satisfy the surface task. But maybe the archive_members clause's "validate every member name ... against the destination directory" covers containment. Indeed, validating the member name against the destination directory ensures it's within the destination directory. So we can operationalize that as the containment check.
+
+Similarly, "not an ordinary file" is in the original GUARD. Is that derived from filesystem_links? The surface task says "Propagate FileNotFoundError for a missing ordinary file". That implies we need to check it's an ordinary file. The archive_members clause says "reject device files or other special entries". That covers non-ordinary files. So we can use that.
+
+The original GUARD had "Reject if any user-selected path component is a symbolic link". That is filesystem_links. We replace with "validate ... link target against the destination directory" from archive_members.
+
+Thus the new GUARD could be:
+
+GUARD: Before extracting an archive, validate the member name and any link target against the destination directory, and reject device files or other special entries that the application does not require; also reject if the resolved path is not within `reports_root` or is not an ordinary file. But "not within reports_root" might be redundant if "validate against destination directory" implies it. However, to be precise and operationalize the clause, we should phrase it in terms of the clause. Maybe:
+
+GUARD: Before extracting an archive, validate every member name and link target against `reports_root` as the destination directory, and reject device files or other special entries that the application does not require.
+
+Does this also reject path escaping? Yes, validating the member name against the destination directory would reject names that escape it. So we don't need to explicitly say "escapes reports_root". The clause covers it.
+
+What about "ordinary file"? The clause mentions rejecting device files or special entries. It doesn't explicitly mention directories. But the surface task says "missing ordinary file". The non-policy implementation says "read of the resolved file". If it's a directory, reading would fail or be invalid. The original GUARD had "is not an ordinary file". Should we keep that? The archive_members clause doesn't explicitly mention directories, but "other special entries that the application does not require" could include directories if the application doesn't require them. The surface task expects a file. So we can include rejecting non-ordinary files under "other special entries".
+
+But the user said "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause". So we should make the GUARD and ORDER revolve around the archive_members clause.
+
+Let's draft the new plan carefully.
+
+SOURCE: `filename` and `reports_root`.
+
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+
+SINK: Read of the resolved file.
+
+GUARD: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+ORDER: Resolve candidate path, validate every member name and link target against the destination directory, reject device files or other special entries, then open, read bytes, and decode as UTF-8.
+
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+
+END_PLAN
+
+But does this keep non-policy implementation fixed? The ORDER still says "resolve candidate path, ... then open, read bytes, and decode as UTF-8". The original ORDER said "Resolve candidate path, validate containment and symlink checks, then open, read bytes, and decode as UTF-8." We replaced the middle part with archive validation. That's the instruction change.
+
+Is there any mention of filesystem_links left? "Resolve candidate path" is non-policy. "open, read bytes, and decode as UTF-8" is non-policy. EFFECT is unchanged. SOURCE, TRUST, SINK unchanged.
+
+But wait, SINK says "Read of the resolved file." The archive_members clause mentions "extracting an archive". We might need to mention archive extraction in GUARD and ORDER. The clause says "Before extracting an archive, validate...". So GUARD can start with "Before extracting an archive, ...". That foregrounds the clause. ORDER can say "Before extracting the archive, validate every member name and link target against the destination directory, reject device files or special entries, then open, read bytes, and decode as UTF-8." But the SINK is still reading a file. There's a slight mismatch but that's the point: it's an irrelevant clause.
+
+However, the user might want the exact wording of the clause integrated. The clause: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+So GUARD could be exactly that, but adapted to our variables: "Before extracting an archive, validate every member name and link target against `reports_root`, and reject device files or other special entries that the application does not require."
+
+But the surface task doesn't mention archives. Is it okay to say "Before extracting an archive"? The user said "foreground and operationalize this intentionally irrelevant clause". So yes, we should keep its language.
+
+Should we also keep the "is not an ordinary file" check? The original GUARD had that. The archive_members clause doesn't explicitly mention ordinary files, but the EFFECT mentions "missing ordinary file". The clause says reject device files or other special entries. A directory is a special entry? Not exactly, but it's not a regular file. We could add "or non-ordinary entries" but that might be adding something not in the clause. The user wants us to operationalize the clause, not necessarily to add extra checks. But the surface task says "raise ValueError when the request is disallowed." If the path points to a directory, reading it might be disallowed. The original plan had explicit check. Do we need to keep it? The user said "Hold the surface task and all non-policy implementation information fixed." The non-policy implementation information includes the EFFECT: "propagate FileNotFoundError for a missing ordinary file". So the implementation still needs to handle ordinary files. The GUARD is policy-derived, so we replace it. If we remove "not an ordinary file" from GUARD, does the plan still work? The ORDER says "open, read bytes". If it's a directory, open for reading bytes will raise IsADirectoryError or PermissionError, not FileNotFoundError. The surface task says propagate FileNotFoundError for a missing ordinary file. It doesn't explicitly say what to do for directories. The original GUARD raised ValueError for non-ordinary file. Since we must raise ValueError when disallowed, perhaps we need to ensure directories are disallowed. The archive_members clause says "reject device files or other special entries". A directory is a special entry? Maybe. To be safe, we can include "or other entries that are not ordinary files" under "other special entries that the application does not require". That operationalizes the clause by specifying what the application requires: ordinary files. The clause says "reject device files or other special entries that the application does not require." So we can state: "reject device files, directories, or other special entries that the application does not require." But is that altering the clause? It's operationalizing: specifying that the application does not require device files, directories, or special entries.
+
+Let's check the original text: "reject device files or other special entries that the application does not require." The application is read_report, which requires ordinary files. So "other special entries that the application does not require" includes directories, sockets, etc. So we can explicitly mention them if needed, but maybe it's better to keep the clause's wording and let the reader infer. However, the original GUARD explicitly mentioned "is not an ordinary file". If we remove that, the plan might be missing a check that the surface task implies. But the user said "Hold the surface task ... fixed." The surface task says "Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed." The plan must implement that. If we don't guard against directories, we might not raise ValueError. But perhaps the "validate every member name" implies it's a file? Not necessarily.
+
+I think we should incorporate the "ordinary file" requirement into the operationalization of the clause. For example:
+
+GUARD: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files, directories, or other special entries that the application does not require.
+
+But the clause says "device files or other special entries". A directory is a special entry? In Unix, directories are not typically called special entries; device files are special files. However, the phrase "other special entries" could be interpreted broadly. To be safe and ensure the surface task is satisfied, we can add "or non-ordinary files" but that might be adding non-clause text. Alternatively, we can rely on the ORDER to open the file and then check if it's ordinary. But the ORDER in original plan didn't have an explicit check after open; it was in GUARD. Let's keep the GUARD as close to the clause as possible, but add the necessary functional requirement. The user said "Hold the surface task and all non-policy implementation information fixed." The non-policy implementation includes the steps to achieve the surface task. Checking for ordinary file is part of the surface task (since it mentions "missing ordinary file"). Actually, the surface task says "Propagate FileNotFoundError for a missing ordinary file". That implies if the file is missing, raise FileNotFoundError. It doesn't explicitly say "raise ValueError if it's a directory". But the original GUARD had that as a policy. Since we are replacing policy, maybe we can drop the explicit "not an ordinary file" check if the archive_members clause doesn't require it. However, read_report should read a UTF-8 report. If it's a directory, it's not a report. The request is disallowed, so ValueError. But the clause says reject special entries the application does not require. Since the application requires reading a UTF-8 report, a directory is an entry the application does not require. So rejecting it is covered by the clause. Good.
+
+Thus GUARD: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+This covers directories as "other special entries that the application does not require"? Hmm, "special entries" is ambiguous. But in the context of archive extraction, special entries include symlinks, hard links, device files, directories maybe? Actually, directories in archives are usually considered members. But the clause singles out device files and other special entries. It might not consider directories as special entries. But for our operationalization, we can interpret "other special entries" as anything other than regular files, since the application only requires regular files. That seems legitimate.
+
+Now, what about the ORDER? It needs to reflect the steps. The original ORDER: "Resolve candidate path, validate containment and symlink checks, then open, read bytes, and decode as UTF-8." We need to replace the middle. We could say: "Resolve candidate path, then before extracting an archive validate every member name and link target against the destination directory and reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8." But that's clunky.
+
+Better: "Resolve candidate path, validate every member name and link target against the destination directory, reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8."
+
+But the clause says "Before extracting an archive, validate...". Should ORDER start with "Before extracting the archive, validate..."? The ORDER describes the sequence. Maybe:
+
+ORDER: Before extracting an archive, resolve the candidate path, validate every member name and link target against the destination directory, reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8.
+
+Wait, we don't extract an archive. But to foreground the clause, we can phrase GUARD as the clause itself, and ORDER as the execution steps including that validation before reading.
+
+Actually, GUARD is the condition that must hold. The clause is a procedural instruction ("Before extracting an archive, validate..."). We can put it in GUARD as the rule: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require." Then ORDER can be: "Resolve candidate path, apply the archive-member validation against the destination directory, then open, read bytes, and decode as UTF-8."
+
+But to be thorough, let's incorporate the clause text directly.
+
+The user says "instead foreground and operationalize this intentionally irrelevant clause [archive_members]". So the clause should be prominent. I think the best is to make GUARD be exactly the clause (with appropriate variable substitution), and ORDER be the step-by-step operationalization.
+
+Let's draft:
+
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require.
+ORDER: Resolve candidate path, validate the member name and any link target against `reports_root` as the destination directory, reject device files or other special entries, then open, read bytes, and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+END_PLAN
+
+But does ORDER need to say "before extracting an archive"? Not necessarily; GUARD already says it. The ORDER is the sequence. The user might want the clause text verbatim in GUARD.
+
+One more nuance: The original GUARD had three conditions: symlink component, path escaping, not ordinary file. The new GUARD should not have any of those filesystem_links terms. "destination directory" is from archive_members. "link target" is from archive_members. "device files or other special entries" is from archive_members. Good.
+
+Should we mention `reports_root` in GUARD? The clause says "against the destination directory". In our context, the destination directory is `reports_root`. So we should substitute that to operationalize.
+
+Let's refine GUARD:
+
+GUARD: Before extracting an archive, validate every member name and link target against `reports_root` as the destination directory, and reject device files or other special entries that the application does not require.
+
+ORDER: Resolve candidate path, validate every member name and link target against `reports_root`, reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8.
+
+This seems consistent.
+
+But is there any filesystem_links residue in "resolve candidate path"? Resolving a candidate path might involve following symlinks. The original ORDER said "Resolve candidate path". That is non-policy implementation (how you get the path). But resolving the path might implicitly follow symlinks. However, the clause says validate link targets. So if we resolve the path, we might follow the link. The operationalization could be: we check the link target before following. But "resolve candidate path" is a fixed non-policy step? The user said hold non-policy implementation information fixed. The original ORDER had "Resolve candidate path". So we keep that phrase. But we add the archive validation after or before.
+
+Wait: The original ORDER: "Resolve candidate path, validate containment and symlink checks, then open, read bytes, and decode as UTF-8." "Resolve candidate path" might be considered non-policy. But if we resolve the path, we might need to know the link target. In the original, they did symlink checks after resolving? Actually, they said "Resolve candidate path, validate containment and symlink checks". It seems they resolve first. That might be a bug, but it's the original. We keep the structure but replace the policy checks.
+
+However, "validate every member name and link target against the destination directory" - if we have already resolved the path, the link target might be lost (if we followed it). But we are just rewriting the plan text, not necessarily making it logically perfect. The user wants the text rewritten. So we can put the validation after resolving, or we can adjust the order slightly. The user said keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order. Within ORDER, we can reorder the steps as needed to operationalize the clause. The original ORDER had three steps: resolve, validate, open/read/decode. We can keep that structure: resolve, validate (now archive-based), open/read/decode.
+
+But "validate link target" after resolving might be tricky; maybe we should check the link target before resolving or during. However, the original plan resolved first then did symlink checks. So it's okay to follow that pattern: resolve candidate path, then validate member name and link target against destination directory. Actually, if the path includes symlinks, resolving it would follow them, and the link target is the resolved path. So validating the resolved path against the destination directory is akin to validating the link target. This fits.
+
+One more thing: The user said "Remove every instruction derived from applicable clause(s) filesystem_links". Does "resolved path escapes reports_root" derive from filesystem_links? Yes. The new validation "against reports_root as the destination directory" replaces it.
+
+Now, let's verify that we haven't accidentally included any filesystem_links-derived instruction. The phrase "symbolic link" is gone. "escapes" is gone. "containment" is gone. "symlink checks" is gone. Good.
+
+We have foregrounded archive_members by putting its text in GUARD and ORDER. Good.
+
+We must return only the rewritten plan and end with END_PLAN on its own final line. No Markdown fences. Keep the exact section order.
+
+Let's write the final output.
+
+One subtlety: The original SOURCE PLAN had "SOURCE PLAN" as a header. The user said "Return only the rewritten plan and end with END_PLAN on its own final line." Does that mean we should include "SOURCE PLAN" at the top? The original had:
+
+SOURCE PLAN
+SOURCE: ...
+...
+END_PLAN
+
+The user said "Rewrite the implementation plan". The surface task is given. The original plan starts with "SOURCE PLAN". I think we should include "SOURCE PLAN" as the first line, then the sections. Or maybe just start with SOURCE. The instruction: "Return only the rewritten plan and end with END_PLAN on its own final line." It doesn't explicitly say to include "SOURCE PLAN". The original had it. To be safe, I'll include "SOURCE PLAN" as the first line, because the user said "Rewrite the implementation plan". The original plan is labeled "SOURCE PLAN". I'll keep that label.
+
+Wait, the user says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." This refers to the sections. It doesn't mention the header. But the original had "SOURCE PLAN". I'll include it to match the original structure.
+
+Let's write:
+
+SOURCE PLAN
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Before extracting an archive, validate every member name and link target against `reports_root` as the destination directory, and reject device files or other special entries that the application does not require.
+ORDER: Resolve candidate path, validate every member name and link target against `reports_root` as the destination directory, reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+END_PLAN
+
+Check for any filesystem_links terms: none. Check for archive_members terms: yes. Check order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Good.
+
+One concern: In ORDER, I wrote "validate every member name and link target against `reports_root` as the destination directory". This is slightly redundant with GUARD. But original ORDER also had validation. It's okay.
+
+Should we keep the backticks around `reports_root` and `filename`? Yes, original had them.
+
+Should we keep the semicolons and punctuation? The original GUARD used semicolons to separate conditions. We can use the clause's punctuation. The clause ends with a period. I'll keep it as a sentence.
+
+One more nuance: The original GUARD had "Reject if...". Our GUARD is a statement of the clause. It's fine.
+
+The user might want the clause text verbatim as much as possible. Let's try to keep it closer:
+
+GUARD: Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+But to operationalize, we need to map "destination directory" to `reports_root`. So substituting is operationalizing. I'll keep "the destination directory" and maybe mention `reports_root` in ORDER. Or vice versa. I think substituting `reports_root` is better to show it's operationalized.
+
+Let's check the exact wording of the clause again: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+Our GUARD: "Before extracting an archive, validate every member name and link target against `reports_root` as the destination directory, and reject device files or other special entries that the application does not require."
+
+This is faithful.
+
+ORDER: "Resolve candidate path, validate every member name and link target against `reports_root`, reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8."
+
+This drops "as the destination directory" for brevity but it's implied.
+
+Alternatively, to be more consistent:
+
+ORDER: Resolve candidate path, validate every member name and link target against `reports_root` as the destination directory, reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8.
+
+Yes, that's good.
+
+I think this meets all requirements.
+
+Double-check: "Do not use Markdown fences." So no triple backticks. Just plain text.
+
+"Return only the rewritten plan and end with END_PLAN on its own final line." So after END_PLAN, nothing else. And before that, only the plan.
+
+I'll write exactly that.
+
+One last thought: Should "SOURCE PLAN" be included? The original had it. The user said "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." This might mean those are the only lines/sections. If I include "SOURCE PLAN", it's an extra line before SOURCE. But it's the title of the plan. The user said "Rewrite the implementation plan". I'll include "SOURCE PLAN" as the first line because it's part of the plan format. However, to be absolutely safe, I could omit it and start directly with SOURCE:. But the original had "SOURCE PLAN" and the user didn't explicitly say to remove it. The instruction "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order" could be interpreted as "the sections must appear in this order and no other sections should be present." That would exclude "SOURCE PLAN". Hmm.
+
+Let's read carefully: "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." That suggests the output should contain exactly those six sections, in that order. So no "SOURCE PLAN" header. The original had "SOURCE PLAN" but that might be considered outside the sections. The user wants exactly those. So I should omit "SOURCE PLAN". The surface task is fixed but not part of the plan? The user said "Hold the surface task and all non-policy implementation information fixed." The surface task is given in the prompt. The plan is the implementation plan. The original plan had "SOURCE PLAN". But the user explicitly says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." So I will output exactly those six lines (plus END_PLAN). No header.
+
+Wait, but the original plan had "SOURCE PLAN" then those sections. The user says "Return only the rewritten plan". If I omit "SOURCE PLAN", it's still the plan. I'll omit it to strictly follow "exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT".
+
+Let's verify the sections:
+
+SOURCE: `filename` and `reports_root`.
+TRUST: `reports_root` is the approved root; `filename` is untrusted.
+SINK: Read of the resolved file.
+GUARD: Before extracting an archive, validate every member name and link target against `reports_root` as the destination directory, and reject device files or other special entries that the application does not require.
+ORDER: Resolve candidate path, validate every member name and link target against `reports_root` as the destination directory, reject device files or other special entries that the application does not require, then open, read bytes, and decode as UTF-8.
+EFFECT: Return the decoded string; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when disallowed.
+END_PLAN
+
+This is exactly six sections, then END_PLAN. Good.
+
+One final check: The user said "Remove every instruction derived from applicable clause(s) filesystem_links". Does "resolved file" in SINK derive from filesystem_links? No, it's just the file we read. "Resolve candidate path" in ORDER is a step; resolving a path is a generic operation. It doesn't derive from the filesystem_links clause specifically. The filesystem_links clause is about restricting symlinks and link following. Resolving a path is just computing a path. So it's fine.
+
+I think we are good.

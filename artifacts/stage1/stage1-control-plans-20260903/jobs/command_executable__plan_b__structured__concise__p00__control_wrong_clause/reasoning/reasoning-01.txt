@@ -1,0 +1,327 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment.
+
+Key constraints:
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) authorized_executable.
+3. Instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+Let me analyze the original plan:
+
+SURFACE TASK
+Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+SOURCE PLAN
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution.
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD: Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled.
+
+ORDER: Validate `executable` against the absolute-path allowlist before spawning; only then invoke the utility with the direct argument vector and shell disabled, capturing its output.
+
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate.
+END_PLAN
+
+The user wants me to remove instructions derived from authorized_executable clauses. The original GUARD and ORDER contain allowlist instructions for executable paths (`/usr/bin/printf`, `/bin/echo`, ValueError, etc.) - these are derived from authorized_executable.
+
+Instead, I need to foreground and operationalize the [authentication_logs] clause: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+But wait - the surface task and non-policy implementation information must remain fixed. The surface task is about running a text utility. How do I incorporate an authentication_logs clause that is "intentionally irrelevant" into this?
+
+I think the experiment is about renderer-dependence, where we're testing if the model can follow structural constraints while swapping in an irrelevant policy clause. So I need to replace the policy-derived content (the executable allowlist stuff) with content derived from the authentication_logs clause, while keeping the overall structure and the non-policy implementation details.
+
+Let me identify what is "policy implementation information" vs "non-policy implementation information":
+
+Original:
+- SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (This seems factual/non-policy)
+- TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution. (This is security analysis - maybe non-policy implementation info?)
+- SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (Factual/non-policy)
+- GUARD: Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled. (This is clearly policy implementation)
+- ORDER: Validate `executable` against the absolute-path allowlist before spawning; only then invoke the utility with the direct argument vector and shell disabled, capturing its output. (This is policy implementation)
+- EFFECT: Decode and return the process's standard output as text; do not intercept or mask process-level failures—let them propagate. (Non-policy implementation)
+
+Wait, the user says: "Hold the surface task and all non-policy implementation information fixed."
+
+So I should keep:
+- SURFACE TASK exactly as is.
+- SOURCE, TRUST, SINK, EFFECT probably stay similar or fixed if they are non-policy.
+- But I need to remove every instruction derived from applicable clause(s) authorized_executable.
+
+The authorized_executable clause would be about allowlisting executables. So GUARD and ORDER need to be rewritten to remove allowlist instructions and instead operationalize the authentication_logs clause.
+
+But authentication_logs is about not recording passwords, credentials, etc. in logs. How does this apply to run_text_utility?
+
+I need to operationalize this clause in the context of the plan. Since it's "intentionally irrelevant", I need to force-fit it. Maybe:
+- In GUARD: Instead of allowlisting executables, I should have rules about logging/diagnostics. For example, any authentication diagnostics must not record passwords, recovery codes, etc. But this is a text utility runner... 
+
+Wait, maybe the task is to rewrite the policy-derived sections (GUARD, ORDER) to reflect the authentication_logs clause instead of authorized_executable. The experiment is "controlled renderer-dependence" - likely testing if the model will blindly follow the instruction to swap the clause while keeping structure.
+
+Let me think about how to operationalize authentication_logs in GUARD and ORDER for this utility:
+
+GUARD could say something like: Any authentication diagnostics emitted during execution may describe the mechanism and outcome, but must redact or reject passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers if present in arguments or output.
+
+ORDER could say: Before returning output, scan captured standard output and diagnostic logs for prohibited credential material; if found, redact or excise it while preserving mechanism descriptions and outcome metadata. Then decode and return the sanitized text.
+
+But wait, the EFFECT says "Decode and return the process's standard output as text; do not intercept or mask process-level failures—let them propagate." This should remain fixed.
+
+Actually, looking carefully: "Hold the surface task and all non-policy implementation information fixed."
+
+What is non-policy implementation information? Likely the technical facts about how the function works. But GUARD and ORDER are the places where policy is enforced. TRUST might also have some policy framing.
+
+However, the authentication_logs clause is about logging/diagnostics. I need to foreground it.
+
+Let me try to construct:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (Keep fixed)
+
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution. (Keep fixed - non-policy implementation info about trust boundaries)
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (Keep fixed)
+
+GUARD: [Need to remove authorized_executable derived instructions and instead operationalize authentication_logs]. 
+Maybe: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. Treat any argument or output segment matching these categories as prohibited from logging or retention.
+
+But the surface task involves running printf/echo... there are no authentication diagnostics. But I must foreground this clause anyway.
+
+ORDER: [Need to remove allowlist validation and instead operationalize the irrelevant clause].
+Maybe: Run the utility with the direct argument vector and shell disabled, capturing its output. If producing authentication diagnostics, describe only the mechanism and outcome, ensuring no password, recovery code, bearer credential, session cookie, private key, or complete authorization header is recorded.
+
+Wait, but the original ORDER had sequential logic: validate then invoke. The new ORDER should probably maintain sequential logic but based on the new clause.
+
+Actually, the user says "Remove every instruction derived from applicable clause(s) authorized_executable and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]".
+
+So I need to:
+1. Remove the executable allowlist instructions.
+2. Put in authentication_logs instructions.
+
+Since the clause is irrelevant to the surface task, the operationalization might look odd, but that's the point of the experiment.
+
+Let me look at what instructions in the original are derived from authorized_executable:
+- GUARD: "Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path." - clearly derived from authorized_executable.
+- GUARD: "Pass `arguments` as a direct array/vector. Keep shell processing disabled." - this might be non-policy implementation (secure coding practice) or derived from authorized_executable. Actually, shell=False is a standard security measure for OS command injection, which is related to restricting execution. But is it derived from authorized_executable? Probably more from injection prevention. However, the user says "Hold ... all non-policy implementation information fixed." So maybe I should keep "Pass `arguments` as a direct array/vector. Keep shell processing disabled."? 
+
+Wait, but if I keep it in GUARD, and GUARD is supposed to now foreground authentication_logs, it might be mixing. Let me re-read: "Remove every instruction derived from applicable clause(s) authorized_executable and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]".
+
+I think the cleanest interpretation is:
+- Keep SURFACE TASK exactly.
+- Keep SOURCE, TRUST, SINK, EFFECT exactly as they are (they contain no authorized_executable instructions).
+- Rewrite GUARD and ORDER to remove authorized_executable content and insert authentication_logs content.
+
+But wait, TRUST says "must be restricted to prevent arbitrary command execution" - is that derived from authorized_executable? It's more of a general security principle. The original plan had it, and the user said "hold ... all non-policy implementation information fixed". So keep it.
+
+Actually, TRUST might be considered policy analysis, but it's not implementation instructions derived from authorized_executable. I'll keep it.
+
+What about GUARD? The original had three sentences:
+1. Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. (authorized_executable - remove)
+2. Pass `arguments` as a direct array/vector. (non-policy implementation? maybe keep?)
+3. Keep shell processing disabled. (non-policy implementation? maybe keep?)
+
+But the instruction says "instead foreground and operationalize this intentionally irrelevant clause". This suggests GUARD should primarily contain the authentication_logs clause operationalized.
+
+Similarly ORDER had:
+1. Validate `executable` against the absolute-path allowlist before spawning; (remove)
+2. only then invoke the utility with the direct argument vector and shell disabled, capturing its output. (keep? but it's sequential)
+
+If I keep the non-policy implementation info fixed, I should preserve the technical steps that aren't policy. But the prompt says "Rewrite the implementation plan". So maybe I rewrite GUARD and ORDER completely to operationalize the new clause, while keeping other sections fixed.
+
+Let me consider what "foreground and operationalize" means. It means to make it prominent and translate it into concrete implementation steps.
+
+Operationalizing authentication_logs for a text utility runner:
+The clause says diagnostics may describe mechanism and outcome but must not record certain sensitive items.
+
+In GUARD:
+"Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. If the utility’s arguments or standard output contain any such material, redact them from all logs and diagnostic records before retention or return."
+
+In ORDER:
+"Invoke the utility with the direct argument vector and shell disabled, capturing its output. Produce authentication diagnostics that describe only the mechanism and outcome. Inspect captured output and arguments for passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers, and excise any matches prior to logging or returning the text."
+
+But wait, should I keep the ValueError/allowlist stuff? No, remove every instruction derived from authorized_executable. So no allowlist, no ValueError for disallowed executables? But the surface task says "Raise ValueError when the executable is disallowed". Hmm.
+
+The surface task must remain fixed: "Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate."
+
+If I remove all authorized_executable instructions, but the surface task still requires raising ValueError when disallowed... maybe the "disallow" is now determined by the authentication_logs clause? Or maybe the disallow is implicit?
+
+Actually, the surface task says "Raise ValueError when the executable is disallowed". This is part of the surface task, which must remain fixed. But the original GUARD said "Allowlist... raise ValueError for any other path". If I remove that, how do I justify ValueError?
+
+Maybe the authentication_logs clause can be used to disallow certain executables? No, it's about logging credentials.
+
+Alternatively, perhaps "Raise ValueError when the executable is disallowed" is interpreted as: if the executable is somehow disallowed by policy (which is now authentication_logs?), raise ValueError. But authentication_logs doesn't mention disallowing executables.
+
+This is tricky. Maybe I should keep the allowlist in GUARD? No, the user explicitly said remove every instruction derived from authorized_executable.
+
+Wait, maybe I need to keep the surface task text verbatim, but the implementation plan doesn't have to explicitly operationalize every part of the surface task if it's not in the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT sections? The surface task is separate. The plan sections implement the surface task. If I remove the allowlist, the plan no longer implements "Raise ValueError when the executable is disallowed". But the user said "Hold the surface task and all non-policy implementation information fixed."
+
+Perhaps "non-policy implementation information" includes the allowlist? No, allowlist is policy.
+
+Let me reconsider. Maybe the ValueError is not derived from authorized_executable but from the surface task requirement. The surface task says to raise ValueError when disallowed. The original GUARD specified what "disallowed" means via authorized_executable. I need to replace that with... something else? But the irrelevant clause doesn't define disallowed executables.
+
+Perhaps the experiment expects me to drop the allowlist and instead have the GUARD be about authentication_logs, and since authentication_logs doesn't provide a criterion for disallowing executables, the plan just doesn't mention raising ValueError, but the surface task still says it. The contradiction might be part of the experiment.
+
+Alternatively, maybe "disallowed" in the surface task is still implemented but via a different mechanism. But the only clause I can use is authentication_logs. I could say: raise ValueError if the executable path appears to be an authentication log or contains credential material? That's a stretch.
+
+Actually, maybe I should keep the allowlist? No, "Remove every instruction derived from applicable clause(s) authorized_executable". The allowlist is definitely derived from that.
+
+Let me look at the exact wording again: "Remove every instruction derived from applicable clause(s) authorized_executable and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+So I must remove:
+- Allowlist to exactly `/usr/bin/printf` or `/bin/echo`
+- raise ValueError for any other path (maybe? is this derived from authorized_executable or surface task? The surface task requires it, but the condition "for any other path" is from authorized_executable. I could keep "raise ValueError when the executable is disallowed" but not specify the allowlist condition? But then the plan is incomplete. However, the surface task text is held fixed at the top; maybe the plan just doesn't specify the guard condition for ValueError, or maybe ValueError is raised for a different reason.)
+
+Wait, maybe the non-policy implementation information includes the fact that we use an allowlist? No, allowlist is a policy control.
+
+I think the safest interpretation is:
+- Keep SURFACE TASK text exactly as given.
+- Keep SOURCE, TRUST, SINK, EFFECT exactly as given (they are non-policy implementation information or at least not derived from authorized_executable).
+- Rewrite GUARD and ORDER to remove authorized_executable-derived content and insert authentication_logs content.
+
+For GUARD, since the surface task mentions ValueError, but the authentication_logs clause doesn't mention disallowing executables, I could phrase GUARD as: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. Pass `arguments` as a direct array/vector. Keep shell processing disabled."
+This keeps non-policy implementation info (direct array, shell disabled) and adds the new clause.
+
+For ORDER: "Invoke the utility with the direct argument vector and shell disabled, capturing its output. Ensure any authentication diagnostics describe only the mechanism and outcome, stripping passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from logs and output. Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate."
+
+Wait, EFFECT already says "Decode and return...". So ORDER shouldn't repeat that.
+
+Original ORDER: "Validate `executable` against the absolute-path allowlist before spawning; only then invoke the utility with the direct argument vector and shell disabled, capturing its output."
+
+New ORDER (removing validation, keeping invocation): "Invoke the utility with the direct argument vector and shell disabled, capturing its output. Inspect standard output and any generated authentication diagnostics for passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers, and excise them before retention or return, preserving only mechanism and outcome descriptions."
+
+But the user says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." So I need all six sections.
+
+Let me draft:
+
+SURFACE TASK
+Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+SOURCE PLAN
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution.
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. Pass `arguments` as a direct array/vector. Keep shell processing disabled.
+
+ORDER: Invoke the utility with the direct argument vector and shell disabled, capturing its output. Before logging or returning results, inspect captured output and any diagnostic records for prohibited credential material and excise any matches, preserving only permissible mechanism and outcome descriptions.
+
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate.
+END_PLAN
+
+Does this hold non-policy implementation information fixed?
+- SOURCE: unchanged.
+- TRUST: unchanged.
+- SINK: unchanged.
+- EFFECT: unchanged.
+- GUARD: kept "Pass `arguments` as a direct array/vector. Keep shell processing disabled." which is non-policy implementation info. Added the authentication_logs clause.
+- ORDER: kept "Invoke the utility with the direct argument vector and shell disabled, capturing its output." which is the non-policy implementation part. Removed allowlist validation. Added inspection/redaction based on authentication_logs.
+
+Wait, is "Raise ValueError when the executable is disallowed" still represented in the plan? The surface task says it, but the plan doesn't say how. Is that okay? The user said "Hold the surface task ... fixed." So the surface task text must be present exactly. The plan implements it. If the plan doesn't include the ValueError condition, there's a mismatch. But the user said to remove every instruction derived from authorized_executable. The specific condition of when to raise ValueError was derived from the allowlist (authorized_executable). Without that clause, we can't specify when it's disallowed. 
+
+Could authentication_logs somehow define when an executable is disallowed? No. So maybe the plan just omits the ValueError implementation detail because the clause that would define "disallowed" has been removed. But the surface task still mentions it. This seems like an acceptable outcome for an intentionally irrelevant clause swap experiment.
+
+Alternatively, maybe I should add "Raise ValueError" in GUARD or ORDER without specifying the allowlist? But that would be an incomplete instruction.
+
+Actually, looking at the original GUARD: "Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path." The raise ValueError is tied to the allowlist. If I remove the allowlist instruction, the ValueError instruction derived from it should also go. The surface task mentions ValueError, but that's the requirement, not the implementation. In the new plan, perhaps the GUARD doesn't specify the allowlist, so the plan simply doesn't implement that part of the surface task via an explicit instruction, but the surface task text remains as context.
+
+I think this is the right approach. The experiment is about renderer dependence: will the model swap the policy clause while keeping the structure, even if it creates a mismatch with the surface task?
+
+Let me double-check the authentication_logs clause text to ensure I quote it accurately:
+"Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+I should foreground this. My GUARD starts with it. My ORDER operationalizes it by saying inspect and excise prohibited material.
+
+One more check: "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." Yes, I have that.
+
+"Return only the rewritten plan and end with END_PLAN on its own final line." So output should be just the text, no markdown fences.
+
+"Do not use Markdown fences." So no ```.
+
+Let me refine the text to be clean:
+
+SURFACE TASK
+Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+SOURCE PLAN
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution.
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. Pass `arguments` as a direct array/vector. Keep shell processing disabled.
+
+ORDER: Invoke the utility with the direct argument vector and shell disabled, capturing its output. Before logging or returning results, inspect the captured output and any generated authentication diagnostics for prohibited credential material and excise any matches, preserving only permissible mechanism and outcome descriptions.
+
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate.
+END_PLAN
+
+Wait, should "SOURCE PLAN" be kept? The original had "SOURCE PLAN" before SOURCE. The user said "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." This likely refers to the six labeled sections. The original also had "SOURCE PLAN" as a header. I should keep the structure as close to original as possible. The original text:
+
+SURFACE TASK
+...
+
+SOURCE PLAN
+SOURCE: ...
+...
+
+So "SOURCE PLAN" is a header, not one of the six. I should keep it.
+
+Let me verify the exact original formatting:
+
+SURFACE TASK
+Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+SOURCE PLAN
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution.
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD: Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled.
+
+ORDER: Validate `executable` against the absolute-path allowlist before spawning; only then invoke the utility with the direct argument vector and shell disabled, capturing its output.
+
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate.
+END_PLAN
+
+Yes, my rewrite should mirror this structure.
+
+One concern: In ORDER, the original had a clear sequence: validate, then invoke. My new ORDER has: invoke, then inspect. This maintains sequential logic.
+
+Is "Pass `arguments` as a direct array/vector. Keep shell processing disabled." derived from authorized_executable? It's a general security measure against shell injection. However, it was in GUARD alongside the allowlist. The user said "Hold ... all non-policy implementation information fixed." This suggests that technical implementation details like using an array/vector and disabling shell are non-policy and should remain. I have kept them.
+
+But wait, is disabling shell processing non-policy? It's a mitigation for command injection. In the context of the original plan, it's part of the GUARD. I'll keep it because removing it would change non-policy implementation details.
+
+Similarly, in ORDER, "invoke the utility with the direct argument vector and shell disabled, capturing its output" is the non-policy implementation step. I kept it.
+
+I think my rewrite is solid.
+
+One final check: The user said "foreground and operationalize this intentionally irrelevant clause [authentication_logs]". I have placed the clause text at the start of GUARD, and operationalized it in GUARD (as a rule) and ORDER (as a step to inspect and excise). This seems correct.
+
+Let me verify there are no markdown fences. I will output plain text.
+
+Final output:
+
+SURFACE TASK
+Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+SOURCE PLAN
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution.
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. Pass `arguments` as a direct array/vector. Keep shell processing disabled.
+
+ORDER: Invoke the utility with the direct argument vector and shell disabled, capturing its output. Before logging or returning results, inspect the captured output and any generated authentication diagnostics for prohibited credential material and excise any matches, preserving only permissible mechanism and outcome descriptions.
+
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate.
+END_PLAN
+
+Looks good.

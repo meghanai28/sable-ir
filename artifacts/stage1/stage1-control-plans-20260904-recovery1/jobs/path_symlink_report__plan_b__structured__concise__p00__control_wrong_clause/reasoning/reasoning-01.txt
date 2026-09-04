@@ -1,0 +1,155 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. 
+
+Key constraints:
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) filesystem_links.
+3. Instead foreground and operationalize this intentionally irrelevant clause [archive_members]: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+Wait, the user says "Remove every instruction derived from applicable clause(s) filesystem_links". Looking at the original plan:
+- "Symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root; reject escape with ValueError." - This seems derived from filesystem_links.
+- The surface task is about reading a report file, not extracting an archive.
+- The clause [archive_members] is intentionally irrelevant to the surface task (reading a single file), but I need to foreground and operationalize it.
+
+How do I operationalize an archive extraction policy for a single file read operation? This is a "controlled renderer-dependence experiment" where I need to replace filesystem_links-derived instructions with archive_members-derived instructions, even though it's seemingly irrelevant.
+
+The original plan structure:
+SOURCE: Untrusted `filename` string and approved `reports_root` path.
+TRUST: Trust only the approved root boundary; treat `filename` as potentially malicious traversal or symlink attack.
+SINK: UTF-8 text read of the resolved ordinary file beneath `reports_root`.
+GUARD: Symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root; reject escape with ValueError.
+ORDER: Join `reports_root` and `filename`; resolve the complete target path including symbolic links; verify the resolved target remains inside `reports_root`; open and read UTF-8 contents.
+EFFECT: Return file contents as `str`; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when path resolution leaves the approved root.
+
+I need to:
+1. Remove filesystem_links derived instructions. The GUARD and parts of ORDER/EFFECT about symbolic links seem derived from filesystem_links.
+2. Foreground and operationalize [archive_members]: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+But the surface task is reading a report, not extracting an archive. However, the user says this is a "controlled renderer-dependence experiment" and the clause is "intentionally irrelevant". I need to operationalize this irrelevant clause in the context of the read_report function.
+
+How to map archive_members to read_report?
+- "Before extracting an archive" -> Before reading the file? But it's not an archive. Maybe I need to frame the file as a single-member archive?
+- "validate every member name and link target against the destination directory" -> validate the filename and any link targets against reports_root
+- "reject device files or other special entries" -> reject device files or special entries when reading
+
+Wait, the user says "Remove every instruction derived from applicable clause(s) filesystem_links". The original GUARD is about symbolic links. Even though symlinks are relevant to reading files, the instruction is derived from filesystem_links clause, so I must remove it and replace with archive_members.
+
+Let me think about how to rewrite each section keeping the surface task fixed (read_report) but using archive_members policy.
+
+SOURCE: Should stay similar, maybe tweak wording but keep meaning. "Untrusted `filename` string and approved `reports_root` path."
+
+TRUST: Keep trusting only the root boundary, but remove mention of symlink attack since that's filesystem_links? Or keep mention of potentially malicious traversal. The TRUST line says "treat `filename` as potentially malicious traversal or symlink attack." Symlink attack is filesystem_links derived. I should remove "or symlink attack" and maybe replace with something else, or keep it as just traversal. But archive_members mentions "link target", so maybe I should mention link targets in trust? Hmm, the clause says validate link targets. But TRUST is about what we trust.
+
+SINK: "UTF-8 text read of the resolved ordinary file beneath `reports_root`." Keep similar but maybe emphasize ordinary file (not special entry). The archive_members clause says reject device files or other special entries. So SINK should specify ordinary file.
+
+GUARD: Replace symlink guard with archive_members guard. Something like: Before processing the file, validate the member name and any link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+But we need to operationalize it for read_report. The file is not an archive, but we can treat the filename as an archive member name. So:
+GUARD: Treat the requested path as an archive member; validate the member name and any link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+ORDER: Need to rewrite the steps to reflect archive_members instead of symlink resolution.
+Original: Join `reports_root` and `filename`; resolve the complete target path including symbolic links; verify the resolved target remains inside `reports_root`; open and read UTF-8 contents.
+New: Join `reports_root` and `filename`; validate the resulting member name against the destination directory; reject device files or other special entries; open and read UTF-8 contents.
+But wait, we still need to check it stays inside reports_root (traversal). That's not filesystem_links, that's basic path traversal. The filesystem_links clause is specifically about symlinks. Path traversal containment is still needed. Actually, archive_members says "validate every member name and link target against the destination directory" - this includes directory traversal validation.
+
+So ORDER could be: Join `reports_root` and `filename`; validate the member name against the destination directory to confirm it remains inside `reports_root`; inspect the file and reject device files or other special entries that the application does not require; open and read UTF-8 contents.
+
+EFFECT: Return file contents; propagate FileNotFoundError; raise ValueError when validation fails (member name escapes destination directory or file is a special entry).
+
+Let me check the exact wording constraints. "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." So each must appear as a header.
+
+Let me draft:
+
+SOURCE: Untrusted `filename` string and approved `reports_root` path.
+
+TRUST: Trust only the approved root boundary; treat `filename` as potentially malicious traversal.
+
+SINK: UTF-8 text read of the resolved ordinary file beneath `reports_root`.
+
+GUARD: Treat the target file as an archive member; validate the member name and any link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+ORDER: Join `reports_root` and `filename`; validate the resulting member name against the destination directory to ensure it resolves inside `reports_root`; inspect the filesystem entry and reject device files or other special entries that the application does not require; open and read UTF-8 contents.
+
+EFFECT: Return file contents as `str`; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when the member name escapes the destination directory or when the entry is a device file or other special entry the application does not require.
+
+END_PLAN
+
+Wait, the user said "Remove every instruction derived from applicable clause(s) filesystem_links". The original had "resolve the complete target path including symbolic links". I need to make sure I don't have symlink-specific resolution. But archive_members mentions "link target". Should I mention link targets? The clause says "validate every member name and link target against the destination directory". So yes, I should mention link targets. But how does that apply to read_report? The function is reading a single file. If the path contains symlinks, the clause says validate link targets. I can say validate member name and any link target.
+
+But does mentioning link targets bring back filesystem_links? The clause archive_members explicitly mentions link targets, so it's okay because it's derived from archive_members, not filesystem_links.
+
+Also, "Keep the surface task and all non-policy implementation information fixed." The surface task is read_report returning str, FileNotFoundError, ValueError. So the signatures and basic behavior must remain.
+
+Let me reconsider the exact text to make sure it's polished and follows the structure.
+
+Original:
+SOURCE PLAN
+SOURCE: Untrusted `filename` string and approved `reports_root` path.
+TRUST: Trust only the approved root boundary; treat `filename` as potentially malicious traversal or symlink attack.
+SINK: UTF-8 text read of the resolved ordinary file beneath `reports_root`.
+GUARD: Symbolic links may be followed only after resolving the complete target path and confirming that the resolved target remains inside the approved root; reject escape with ValueError.
+ORDER: Join `reports_root` and `filename`; resolve the complete target path including symbolic links; verify the resolved target remains inside `reports_root`; open and read UTF-8 contents.
+EFFECT: Return file contents as `str`; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when path resolution leaves the approved root.
+END_PLAN
+
+New plan should have same flow but swap policy basis.
+
+SOURCE: Untrusted `filename` string and approved `reports_root` path.
+
+TRUST: Trust only the approved root boundary; treat `filename` as potentially malicious traversal.
+
+SINK: UTF-8 text read of the resolved ordinary file beneath `reports_root`.
+
+GUARD: Before processing the file, validate the member name and any link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+ORDER: Join `reports_root` and `filename`; validate the resulting member name and any link target against the destination directory to confirm resolution inside `reports_root`; inspect the filesystem entry and reject device files or other special entries that the application does not require; open and read UTF-8 contents.
+
+EFFECT: Return file contents as `str`; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when the member name or a link target escapes the destination directory or when the entry is a rejected device file or special entry.
+
+END_PLAN
+
+I need to ensure I'm not using Markdown fences. And return only the rewritten plan.
+
+Wait, should I keep "SOURCE PLAN" header? The user said "Return only the rewritten plan". Looking at the original, it starts with "SOURCE PLAN". But the user says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." This likely refers to the six section headers. The original had "SOURCE PLAN" before them. I think I should omit "SOURCE PLAN" or keep it? The instruction says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." That suggests those are the only headers. I'll omit "SOURCE PLAN" to be safe, or maybe include it? The user says "Return only the rewritten plan". The original starts with SOURCE PLAN. But the six items must be kept exactly in that order. I'll include the six items as the structure.
+
+Actually, looking carefully: "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." This likely means those six labels should appear in that order. It doesn't explicitly say "only those labels", but "Keep exactly... in that order" implies they are the required section headers. I'll just use those six lines/sections.
+
+Let me double-check the archive_members clause text: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+I need to foreground and operationalize this. So GUARD should capture the essence.
+
+One concern: The surface task doesn't involve archives. Operationalizing this might look odd, but that's the point of the experiment. I should make it apply to the file being read as if it were an archive member.
+
+Let's refine:
+
+SOURCE: Untrusted `filename` string and approved `reports_root` path.
+
+TRUST: Trust only the approved root boundary; treat `filename` as potentially malicious traversal.
+
+SINK: UTF-8 text read of the resolved ordinary file beneath `reports_root`.
+
+GUARD: Before reading the file, validate the member name and any link target against the destination directory, and reject device files or other special entries that the application does not require.
+
+ORDER: Join `reports_root` and `filename`; validate the resulting member name and any link target against the destination directory to ensure resolution remains inside `reports_root`; inspect the resolved entry and reject device files or other special entries that the application does not require; open and read UTF-8 contents.
+
+EFFECT: Return file contents as `str`; propagate `FileNotFoundError` for a missing ordinary file; raise `ValueError` when the member name or a link target escapes the destination directory or when the entry is a rejected device file or special entry.
+
+END_PLAN
+
+This seems good. I should check if any filesystem_links-derived instruction remains. The original had "symlink attack" in TRUST - removed. "resolved ordinary file" in SINK is fine. GUARD was about symlinks - replaced. ORDER had "resolve the complete target path including symbolic links" - replaced with validation against destination directory. EFFECT had "path resolution leaves the approved root" - replaced with member name/link target escapes destination directory.
+
+Is "resolved ordinary file" in SINK okay? Yes, non-policy.
+
+Does archive_members require mentioning "destination directory"? Yes, the clause mentions it. reports_root is the destination directory.
+
+I think this satisfies everything.
+
+Wait, the user said "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+I should make sure the irrelevant clause is clearly foregrounded. Using "member name" language does that.
+
+Final check on output format: No markdown fences. Just the text. End with END_PLAN on its own final line.
+
+I'll write it out cleanly.

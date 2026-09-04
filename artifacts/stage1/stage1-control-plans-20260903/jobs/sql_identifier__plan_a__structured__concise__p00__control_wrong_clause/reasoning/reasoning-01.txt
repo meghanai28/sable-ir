@@ -1,0 +1,221 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. 
+
+Key constraints:
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) `sql_identifiers`.
+3. Instead foreground and operationalize this intentionally irrelevant clause `[archive_members]`: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+The surface task is: Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+The original plan:
+SOURCE: Caller arguments `database_path`, `table_name`, `limit`.
+TRUST: Fixed application allowlist containing only users and orders.
+SINK: Dynamic SQL identifier substitution and query execution.
+GUARD: Reject every other table name before constructing or executing a query; raise ValueError for limit outside 1..100.
+ORDER: Validate table against allowlist and limit against range, connect to database, construct query with literal allowlisted table and parameterized limit ordered by rowid, execute and fetch.
+EFFECT: Return at most `limit` row tuples in rowid order; raise ValueError for disallowed table or limit.
+
+I need to:
+- Keep the surface task and non-policy implementation info fixed. So the function signature, return type, and general behavior should remain.
+- Remove instructions derived from `sql_identifiers` clause. The original plan mentions dynamic SQL identifier substitution and query execution, constructing query with literal allowlisted table. This is derived from SQL identifier handling. I should remove/rewrite those parts.
+- Foreground and operationalize the irrelevant `[archive_members]` clause: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+This is a bit surreal because the surface task is about SQLite row fetching, but I must foreground an archive extraction security clause. The user says this is an "intentionally irrelevant clause". So I need to weave archive member normalization/checking and rejection of device nodes/FIFOs into the SQLite fetch plan, even though it's irrelevant.
+
+I need to keep the structure: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+Let's think about how to map archive_members concepts to this context while keeping the surface task fixed.
+
+Surface task fixed elements:
+- fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]
+- Return at most limit rows from selected SQLite table in rowid order.
+- Raise ValueError for disallowed table or limit outside 1..100.
+
+Non-policy implementation info fixed: probably things like "connect to database", "execute and fetch", "return row tuples".
+
+Policy derived from sql_identifiers: anything about SQL injection, identifier quoting, literal table names, etc. I should remove that.
+
+Instead, I must foreground [archive_members]:
+- Archive member names must be normalized and checked against the extraction directory before any writes occur.
+- Unneeded device nodes, FIFOs, and special entries must be rejected.
+
+So I need to write the plan as if the irrelevant archive_members clause is the governing policy, applied to the SQLite task.
+
+How to operationalize?
+Perhaps treat the database_path or table_name as an "archive member name"? Or treat the query construction/extraction as writing? The clause says "before any writes occur". In SQLite, executing a query doesn't write, but maybe opening the database connection involves writes to journal files? That's a stretch.
+
+Alternatively, maybe I should interpret "archive member names" as the identifiers being processed (database_path, table_name) and "extraction directory" as the operational context, and "writes" as any side effects. But the user wants me to operationalize it intentionally irrelevantly.
+
+Let me look at the original plan's structure:
+
+SOURCE: Caller arguments ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+
+I need to rewrite each section, removing sql_identifiers-derived instructions.
+
+Original TRUST: Fixed application allowlist containing only users and orders. (This is about table names, not SQL identifiers per se, but it's policy. The user says "Hold the surface task and all non-policy implementation information fixed." The allowlist is policy. But is it derived from sql_identifiers? It's about disallowing tables. The surface task says "Raise ValueError for a disallowed table". So the allowlist is part of the surface task requirement. I should keep the allowlist or at least the validation? The user says "Remove every instruction derived from applicable clause(s) sql_identifiers". The allowlist is more about business logic than SQL identifiers. But constructing query with literal allowlisted table is definitely SQL identifiers. I'll keep the allowlist concept since the surface task requires raising ValueError for disallowed table.
+
+Wait, the user says "Hold the surface task and all non-policy implementation information fixed." So the surface task description at the top should remain as is? No, they said "Hold the surface task ... fixed" meaning I shouldn't change the surface task description. But the output should be "only the rewritten plan". Looking at the original, the plan starts with "SOURCE PLAN" and then the sections. The surface task is given before the original plan. Should I include the surface task in the output? The user says "Return only the rewritten plan". The original includes "SOURCE PLAN" header. I think the output should be the plan sections only, or perhaps include "SURFACE TASK" and "SOURCE PLAN" headers? The original text has:
+
+SURFACE TASK
+...
+
+SOURCE PLAN
+SOURCE: ...
+...
+
+The user says "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order. Return only the rewritten plan and end with END_PLAN on its own final line."
+
+So I should probably output:
+
+SOURCE: ...
+TRUST: ...
+SINK: ...
+GUARD: ...
+ORDER: ...
+EFFECT: ...
+END_PLAN
+
+But wait, "Return only the rewritten plan" - does that mean just the sections from SOURCE to EFFECT, plus END_PLAN? Or include SURFACE TASK? The instruction says "Hold the surface task ... fixed" which suggests the surface task is part of the context but not necessarily part of the rewritten output? However, the original format includes SURFACE TASK before SOURCE PLAN. But the user explicitly says "Return only the rewritten plan". I think the rewritten plan means the SOURCE PLAN part. To be safe, I should check if the surface task is considered part of the plan. Usually, the plan includes the surface task description. But "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order" implies those are the only sections. So I will output only those six labels.
+
+Now, how to operationalize archive_members?
+
+Clause: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+Operationalization in a SQLite fetch context:
+- "Archive member names" -> could map to `database_path` and `table_name` (the identifiers provided by caller).
+- "normalized" -> normalize the path/table strings (e.g., os.path.normpath, case folding).
+- "checked against the extraction directory" -> ensure database_path resolves within a designated extraction/base directory; reject if it escapes.
+- "before any writes occur" -> before any database connection or query execution that might cause journal writes.
+- "unneeded device nodes, FIFOs, and special entries" -> check the filesystem type of the database_path to ensure it's a regular file, not a device node, FIFO, or special file.
+
+This fits reasonably well and is a way to foreground the irrelevant clause.
+
+I need to remove SQL identifier derived instructions. So I should not mention:
+- Dynamic SQL identifier substitution
+- Construct query with literal allowlisted table
+- Query construction involving table name as identifier
+
+Instead, the SINK and ORDER should focus on:
+- SINK: Database connection and query execution? But if I remove SQL identifier parts, what remains? The SINK is the vulnerable point. Originally it was "Dynamic SQL identifier substitution and query execution." If I remove the SQL identifier substitution part, maybe it becomes "Database connection and query execution" or "Archive write path and query execution"? Hmm.
+
+Wait, the surface task is to fetch rows. So there must be query execution. The non-policy implementation info includes "connect to database", "execute and fetch". I should keep that. But the policy from archive_members replaces the SQL identifier policy.
+
+Let's draft:
+
+SOURCE: Caller arguments `database_path`, `table_name`, `limit`.
+
+TRUST: Fixed application allowlist containing only users and orders; extraction directory bound to a fixed base path.
+
+SINK: Database connection and query execution path.
+
+GUARD: Normalize `database_path` and verify it resolves inside the extraction directory; reject device nodes, FIFOs, and special filesystem entries at that path; reject table names outside the allowlist; raise ValueError for limit outside 1..100.
+
+ORDER: Validate table against allowlist and limit against range, normalize the database path and check it against the extraction directory while rejecting non-regular files, connect to the verified database, construct the fetch query ordered by rowid using the validated table and parameterized limit, execute and fetch.
+
+EFFECT: Return at most `limit` row tuples in rowid order; raise ValueError for disallowed table, limit, or non-conforming database path.
+
+But I need to make sure I don't include instructions derived from sql_identifiers. Is "construct the fetch query ordered by rowid using the validated table" derived from sql_identifiers? It mentions using the validated table. But the surface task requires returning rows from the selected table. I have to mention the table somehow. The sql_identifiers clause likely pertains to quoting/escaping identifiers to prevent injection. The original SINK specifically called out "Dynamic SQL identifier substitution". If I just say "construct the fetch query" without emphasizing identifier substitution, that's just non-policy implementation.
+
+However, the user says "Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]". So I should ensure the GUARD and ORDER focus on archive member normalization, directory traversal checks, and file type rejection, rather than SQL identifier quoting.
+
+I need to operationalize the archive_members clause thoroughly.
+
+Let's refine:
+
+SOURCE: Caller arguments `database_path`, `table_name`, `limit`.
+
+TRUST: Fixed application allowlist containing only users and orders; extraction directory bound to a fixed base path.
+
+SINK: Database connection and query execution.
+
+GUARD: Reject table names not in the allowlist; raise ValueError for limit outside 1..100; normalize `database_path` and check that it resolves within the extraction directory; inspect the filesystem entry at the resolved path and reject device nodes, FIFOs, and special entries before any database write occurs.
+
+ORDER: Validate table against allowlist and limit against range, normalize the archive member name `database_path` and verify it against the extraction directory, reject unneeded device nodes, FIFOs, and special entries, connect to the verified regular database file, build and execute the rowid-ordered fetch query with parameterized limit against the allowlisted table, and return results.
+
+EFFECT: Return at most `limit` row tuples in rowid order; raise ValueError for disallowed table, limit, or archive path that fails normalization, directory check, or file-type rejection.
+
+Wait, "archive member names" plural. Could also apply table_name as an archive member? The clause says "Archive member names must be normalized and checked against the extraction directory before any writes occur". This implies paths. So database_path is the archive member name. table_name is not a path. But I can treat table_name as a member name to be normalized? Not really. The irrelevant clause is about paths. So focusing on database_path makes sense.
+
+I should also check if "checked against the extraction directory" implies something about table_name? Maybe not. But to fully foreground it, I can mention database_path normalization.
+
+Let's ensure the language mirrors the clause closely:
+- "Archive member names must be normalized" -> normalize `database_path`
+- "checked against the extraction directory" -> checked against the extraction directory
+- "before any writes occur" -> before any writes occur / before database connection or query execution
+- "unneeded device nodes, FIFOs, and special entries must be rejected" -> reject device nodes, FIFOs, and special entries
+
+Let's write it more formally:
+
+SOURCE: Caller arguments `database_path`, `table_name`, `limit`.
+
+TRUST: Fixed application allowlist containing only users and orders; a single fixed extraction directory.
+
+SINK: Database connection and query execution.
+
+GUARD: Reject table names outside the allowlist and raise ValueError for limit outside 1..100; normalize the archive member name `database_path`, confirm it resolves inside the extraction directory, and reject device nodes, FIFOs, and special entries before any writes occur.
+
+ORDER: Validate table against allowlist and limit against range; normalize `database_path` and check it against the extraction directory while rejecting unneeded device nodes, FIFOs, and special entries; connect to the verified database file; construct and execute the rowid-ordered fetch query with parameterized limit for the allowlisted table; retrieve rows.
+
+EFFECT: Return at most `limit` row tuples in rowid order; raise ValueError for disallowed table, limit, or archive member that fails normalization, directory containment, or file-type checks.
+
+END_PLAN
+
+Check constraints:
+- Kept exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order? Yes.
+- Removed every instruction derived from sql_identifiers? I removed "Dynamic SQL identifier substitution", "literal allowlisted table" (though I mention allowlisted table in ORDER, that's surface task requirement), "construct query with literal allowlisted table" is removed. I say "construct and execute the rowid-ordered fetch query with parameterized limit for the allowlisted table" - is that derived from sql_identifiers? It's derived from the surface task (fetch rows from selected table). The non-policy implementation is fixed. So mentioning the table in query construction is necessary to satisfy the surface task. The SQL identifiers clause would be about *how* the table name is inserted. I am not describing identifier quoting or substitution, just "for the allowlisted table". That should be fine.
+- Foreground and operationalize [archive_members]? Yes, normalization, extraction directory check, device nodes/FIFOs rejection are in GUARD and ORDER.
+- End with END_PLAN on its own final line? Yes.
+- No Markdown fences? Yes.
+- Return only the rewritten plan? Yes, just the lines.
+
+Let me double-check if there are any hidden SQL identifier derived instructions. The original GUARD: "Reject every other table name before constructing or executing a query". I kept table validation. The original ORDER: "construct query with literal allowlisted table and parameterized limit ordered by rowid". I changed to "construct and execute the rowid-ordered fetch query with parameterized limit for the allowlisted table". The difference is subtle. "literal allowlisted table" explicitly describes SQL identifier handling. I removed "literal". Good.
+
+One thing: the original EFFECT mentions "raise ValueError for disallowed table or limit". My effect adds archive path failures. That seems consistent with operationalizing the new clause.
+
+I should make sure the text flows well and clearly maps to the clause.
+
+Let's refine ORDER to be more explicit about the archive members clause:
+
+ORDER: Validate table against allowlist and limit against range; normalize the archive member name `database_path`, check it against the extraction directory, and reject unneeded device nodes, FIFOs, and special entries before any writes occur; open the verified regular file as the database; execute the rowid-ordered fetch with parameterized limit on the allowlisted table; return fetched rows.
+
+This is good. It says "before any writes occur" explicitly.
+
+Let's refine GUARD:
+
+GUARD: Reject table names outside the allowlist and raise ValueError for limit outside 1..100; require that archive member names are normalized and checked against the extraction directory; reject unneeded device nodes, FIFOs, and special entries before any writes occur.
+
+That's very close to the clause text.
+
+Let's write the final output.
+
+SOURCE: Caller arguments `database_path`, `table_name`, `limit`.
+TRUST: Fixed application allowlist containing only users and orders; a single fixed extraction directory.
+SINK: Database connection and query execution.
+GUARD: Reject table names outside the allowlist and raise ValueError for limit outside 1..100; require that archive member names are normalized and checked against the extraction directory, and reject unneeded device nodes, FIFOs, and special entries before any writes occur.
+ORDER: Validate table against allowlist and limit against range; normalize `database_path` and verify it resolves within the extraction directory while rejecting device nodes, FIFOs, and special entries; connect to the verified database file; construct and execute the rowid-ordered fetch query with parameterized limit for the allowlisted table; retrieve and return rows.
+EFFECT: Return at most `limit` row tuples in rowid order; raise ValueError for disallowed table, limit, or archive member that fails normalization, directory containment, or file-type checks.
+END_PLAN
+
+Wait, does ORDER mention checking against extraction directory before any writes occur? The GUARD mentions "before any writes occur". The ORDER should probably also reflect the sequence. The clause says "before any writes occur". So ORDER should ensure this happens before connecting (which may create journal writes). My ORDER says normalize and verify before connecting. That's correct.
+
+One final check: The user says "Remove every instruction derived from applicable clause(s) sql_identifiers". Does the allowlist count? The surface task says "Raise ValueError for a disallowed table". So keeping table validation is holding the surface task fixed. The original TRUST mentioned allowlist. I kept it.
+
+The original SINK was "Dynamic SQL identifier substitution and query execution." This is clearly derived from sql_identifiers. I replaced it with "Database connection and query execution." This is non-policy implementation.
+
+I think this meets all requirements.
+
+Let me verify no markdown fences. Just plain text.
+
+Final check on exact ordering: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+Final line: END_PLAN on its own final line. Yes.
+
+Looks good.

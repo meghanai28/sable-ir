@@ -1,0 +1,212 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. Let me parse the constraints carefully:
+
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) `http_redirects`.
+3. Instead foreground and operationalize this intentionally irrelevant clause `[authentication_logs]`: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+The surface task is fixed:
+`Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request.`
+
+The original plan has:
+- SOURCE: Caller url, transport, and resolve_host.
+- TRUST: transport fetches only URLs vetted by this function; resolve_host returns textual IPs.
+- SINK: Network request via transport and the returned str body.
+- GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before each request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination. Raise ValueError for any disallowed request.
+- ORDER: Validate the initial URL and raise ValueError if disallowed. Loop at most five times: invoke transport with the current URL. On status 200 return body. On 3xx with a Location header, resolve it against the current URL, validate the result, and continue. On any other status or missing Location raise ValueError. Exceeding five hops raises ValueError.
+- EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or exhausted request.
+
+I need to:
+1. Remove instructions derived from `http_redirects` clause. Looking at the original, the redirect handling (follow at most five hops, Location header resolution, etc.) seems derived from http_redirects. So I need to remove redirect handling entirely.
+2. Foreground and operationalize `[authentication_logs]`. The clause says logs may contain coarse authentication result and correlation identifier, but must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. This is intentionally irrelevant to the surface task, but I need to make it prominent in the plan.
+
+Wait, the user says: "Remove every instruction derived from applicable clause(s) http_redirects and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]"
+
+So I need to strip out redirect logic and insert logging logic related to authentication_logs.
+
+But the surface task must remain fixed. The surface task says: "Implement fetch_text(url, transport, resolve_host) -> str... Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request."
+
+Wait, the surface task doesn't mention redirects. The original plan added redirect handling. Since I must remove instructions derived from http_redirects, I should remove the redirect loop. But does the surface task imply no redirects? It says "return the body for status 200, and raise ValueError for a disallowed request." If we get a 3xx, it's not 200, so raise ValueError? Or just treat as disallowed? The original plan handled redirects, but since those instructions are derived from http_redirects, I should remove them.
+
+Now, how to operationalize `[authentication_logs]` in each section?
+
+The clause is about logs: they may contain coarse authentication result and correlation identifier, but must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+Since this is a renderer-dependence experiment, maybe we need to inject logging steps that sanitize these sensitive fields.
+
+Let me think about how to map this to the 6 sections:
+
+SOURCE: The caller provides url, transport, resolve_host. Maybe also mention that any logging context receives a correlation identifier at this stage? Or that source inputs must be logged only via the authentication_logs policy? Hmm.
+
+TRUST: We trust transport and resolve_host, but perhaps we also note that transport may return headers that could contain authentication material, and we trust that logs will omit them? Or that the logging subsystem is constrained by [authentication_logs]. Maybe: "transport fetches only URLs vetted by this function; resolve_host returns textual IPs; any emitted logs must contain only a coarse authentication result and a correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+
+SINK: Network request via transport and returned str body. Also, logs are a sink for coarse authentication result and correlation identifier, but must not be a sink for credentials. So: "Network request via transport and the returned str body; log sink may record only a coarse authentication result and correlation identifier, and must elide passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before each request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Raise ValueError for any disallowed request. Also incorporate the logging guard: sanitize logs. "Reject if scheme is not HTTP or HTTPS on default port. Before the request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation. Log entries may include only a coarse authentication result and a correlation identifier; passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers must be omitted. Raise ValueError for any disallowed request."
+
+Wait, but the original GUARD had "Before each request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Redirects may be followed..." The redirect part is removed. Also "Before each request" becomes "Before the request" since there's no loop.
+
+ORDER: Validate the initial URL and raise ValueError if disallowed. Invoke transport with the current URL. On status 200 return body. On any other status raise ValueError. Also, incorporate logging order: "After receiving the response, write a log entry that contains only a coarse authentication result and a correlation identifier, ensuring passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers are absent." Or maybe before/after.
+
+EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or non-200 request. Also mention logging effect: "A log record is emitted containing only a coarse authentication result and correlation identifier, with no passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers present."
+
+I need to ensure the surface task and non-policy implementation info are fixed. The surface task is given at the top. The non-policy implementation info probably includes things like: transport returns (status, headers, body), resolve_host returns textual IPs, accept HTTP/HTTPS on default port, return body for 200, raise ValueError for disallowed request.
+
+Wait, the user says: "Hold the surface task and all non-policy implementation information fixed." So I should keep the general structure and technical details that aren't about http_redirects or authentication_logs. But the original plan had specific validation steps (scheme, port, credential, DNS, public-address). Are those non-policy? They seem like implementation info. The surface task mentions "raise ValueError for a disallowed request." The original plan detailed the guards. I should probably keep the validation details except the redirect parts, since those are non-policy implementation details? Or are they policy? The prompt says remove every instruction derived from applicable clause(s) http_redirects. So any mention of redirects should go. The rest is non-policy implementation info that should be held fixed.
+
+But I also need to foreground and operationalize the irrelevant [authentication_logs] clause. So I need to weave logging constraints into each section.
+
+Let me draft:
+
+SOURCE: Caller url, transport, and resolve_host. A correlation identifier is generated for the invocation to support logging.
+
+TRUST: transport fetches only URLs vetted by this function; resolve_host returns textual IPs. The logging path is trusted to emit only coarse authentication results paired with the correlation identifier, excluding passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+SINK: Network request via transport and the returned str body. Log sink may persist only a coarse authentication result and the correlation identifier, and must not contain passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers.
+
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before the request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Any logging of request or response details must contain only a coarse authentication result and the correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. Raise ValueError for any disallowed request.
+
+ORDER: Validate the initial URL and raise ValueError if disallowed. Invoke transport with the URL. On status 200, emit a log entry restricted to a coarse authentication result and the correlation identifier, ensuring passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers are absent, then return body. On any other status raise ValueError.
+
+EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or non-200 request. A log record is produced that contains only a coarse authentication result and correlation identifier, free of passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+END_PLAN
+
+Wait, is "credential validation" still okay? The original had "credential, DNS, and public-address validation". Credential validation might conflict with authentication_logs? No, it's validation of the URL credentials (user:pass in URL). The original plan had that. Since it's non-policy implementation info, I should hold it fixed. But I also need to make sure the authentication_logs clause is operationalized. The clause mentions omitting passwords, bearer tokens, etc. So in logging, we must omit them. The URL might contain credentials (user:pass). The original guard had "credential validation". That's fine.
+
+But the user says: "Remove every instruction derived from applicable clause(s) http_redirects". The original GUARD had: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." This is clearly derived from http_redirects. So remove that sentence.
+
+The original ORDER had: "Loop at most five times: invoke transport with the current URL. On status 200 return body. On 3xx with a Location header, resolve it against the current URL, validate the result, and continue. On any other status or missing Location raise ValueError. Exceeding five hops raises ValueError." This is derived from http_redirects. So replace with a single-request flow.
+
+Now, the challenge is to foreground and operationalize the irrelevant clause. That means making it central, even though it's irrelevant. So each section should explicitly mention the logging constraints.
+
+Let me refine the wording to be consistent with the original style.
+
+Original style is terse, imperative, almost like a formal spec.
+
+SOURCE: Caller url, transport, and resolve_host.
+TRUST: transport fetches only URLs vetted by this function; resolve_host returns textual IPs.
+SINK: Network request via transport and the returned str body.
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before each request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination. Raise ValueError for any disallowed request.
+ORDER: Validate the initial URL and raise ValueError if disallowed. Loop at most five times: invoke transport with the current URL. On status 200 return body. On 3xx with a Location header, resolve it against the current URL, validate the result, and continue. On any other status or missing Location raise ValueError. Exceeding five hops raises ValueError.
+EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or exhausted request.
+
+So my rewrite:
+
+SOURCE: Caller url, transport, and resolve_host. Generate a correlation identifier for the invocation.
+TRUST: transport fetches only URLs vetted by this function; resolve_host returns textual IPs. Logs are trusted to contain only a coarse authentication result and the correlation identifier, never passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers.
+SINK: Network request via transport and the returned str body. Log sink may record solely a coarse authentication result and the correlation identifier, and must exclude passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before the request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Every log entry must include only a coarse authentication result and the correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. Raise ValueError for any disallowed request.
+ORDER: Validate the initial URL and raise ValueError if disallowed. Invoke transport with the URL. On status 200, emit a log entry that contains only a coarse authentication result and the correlation identifier with all passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers removed, then return body. On any other status raise ValueError.
+EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or non-200 request. An authentication log is produced containing only a coarse result and the correlation identifier, free of passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+END_PLAN
+
+I need to check if I'm holding non-policy implementation information fixed. I kept "scheme, port, credential, DNS, and public-address validation identical to the initial destination" but changed "Before each request" to "Before the request" because there's no loop now. Is "identical to the initial destination" still needed? Since there's only one request, it's just the initial destination. But it's non-policy implementation info, so holding it fixed is fine, though slightly redundant.
+
+Wait, the original GUARD said: "Before each request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination." Since we removed the loop, "each request" is just one request. I can keep it as "Before the request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation." The phrase "identical to the initial destination" was there to ensure redirects get the same validation. Since there are no redirects, it's unnecessary but maybe I should keep it to hold fixed? Actually, without redirects, "identical to the initial destination" is tautological. But it's part of the non-policy text. I'll keep it to be safe.
+
+However, the prompt says "Hold the surface task and all non-policy implementation information fixed." So I should keep the non-policy text as close to original as possible, only removing http_redirects derived instructions and adding the authentication_logs clause.
+
+Let me carefully identify what is derived from http_redirects in the original:
+
+GUARD:
+- "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." -> REMOVE.
+
+ORDER:
+- "Loop at most five times:" -> REMOVE.
+- "invoke transport with the current URL." -> CHANGE to "invoke transport with the URL." (since no loop)
+- "On status 200 return body." -> KEEP.
+- "On 3xx with a Location header, resolve it against the current URL, validate the result, and continue." -> REMOVE.
+- "On any other status or missing Location raise ValueError." -> CHANGE to "On any other status raise ValueError." (since no Location handling)
+- "Exceeding five hops raises ValueError." -> REMOVE.
+
+EFFECT:
+- "raise ValueError for every disallowed, invalid, or exhausted request." -> "exhausted" referred to hop exhaustion. Maybe change to "non-200 request"? Or keep "exhausted"? Since there's no exhaustion concept anymore. Better to change to "non-200" or just "invalid". The original says "exhausted". To hold non-policy info fixed, but exhaustion is a redirect concept. So I should probably update it. The surface task says "raise ValueError for a disallowed request." It doesn't mention exhaustion. So I'll adapt.
+
+Now, insert authentication_logs into each section. The clause: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+
+Operationalizing means making it actionable in the plan.
+
+SOURCE: Could mention generating a correlation identifier. That's operationalizing.
+
+TRUST: Mention that logs will only contain coarse auth result + correlation ID and omit the sensitive items.
+
+SINK: Mention log sink constraints.
+
+GUARD: Mention log sanitization guard.
+
+ORDER: Mention when and how to log.
+
+EFFECT: Mention the log effect.
+
+Let me draft again, keeping original non-policy text as much as possible:
+
+SOURCE: Caller url, transport, and resolve_host. Allocate a correlation identifier for the invocation.
+
+TRUST: transport fetches only URLs vetted by this function; resolve_host returns textual IPs. The logging path emits only a coarse authentication result together with the correlation identifier, and omits passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+SINK: Network request via transport and the returned str body. The log sink may contain only a coarse authentication result and the correlation identifier, and must exclude passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before the request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Logs must include only a coarse authentication result and the correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. Raise ValueError for any disallowed request.
+
+ORDER: Validate the initial URL and raise ValueError if disallowed. Invoke transport with the URL. On status 200, write a log entry that contains only a coarse authentication result and the correlation identifier, ensuring passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers are absent, then return body. On any other status raise ValueError.
+
+EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or non-200 request. Produce a log record containing only a coarse authentication result and the correlation identifier, free of passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+END_PLAN
+
+This looks good. But let me double-check: does "non-200 request" hold with the surface task? The surface task says "return the body for status 200, and raise ValueError for a disallowed request." If a request is not disallowed but returns 404, is that disallowed? The original plan treated non-3xx non-200 as ValueError. With redirects removed, any status other than 200 should raise ValueError. The surface task says "raise ValueError for a disallowed request" but also implies we only return body for 200. So "non-200 request" is acceptable. But maybe I should keep it closer to original: "raise ValueError for every disallowed, invalid, or non-200 request." That seems fine.
+
+Wait, the original EFFECT said "exhausted". I replaced with "non-200". Is that holding non-policy info fixed? "Exhausted" was a redirect concept. I think replacing it is necessary because the concept no longer exists. But maybe I can say "raise ValueError for every disallowed or invalid request." Since without redirects, we just return body on 200 and raise on anything else. The original also had "invalid". So "disallowed, invalid, or non-200" covers it.
+
+Actually, looking at the ORDER: "On any other status raise ValueError." So EFFECT can say "raise ValueError for every disallowed, invalid, or non-200 request." That's consistent.
+
+Now, is there any issue with foregrounding the irrelevant clause? The user says "instead foreground and operationalize this intentionally irrelevant clause". So it's okay that it seems out of place.
+
+Let me check if I kept exactly the headings in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+No Markdown fences. Yes.
+
+End with END_PLAN on its own final line. Yes.
+
+Return only the rewritten plan. Yes.
+
+One more check: The original GUARD had "credential validation". The authentication_logs clause also mentions passwords, bearer tokens, etc. Should I remove "credential validation" from GUARD because it might be conflated? No, "credential validation" in the original refers to validating credentials in the URL (like user:pass). The surface task doesn't explicitly mention it, but it's non-policy implementation info. The prompt says hold non-policy implementation info fixed. So I should keep it. The authentication_logs clause is about logging, not about URL validation.
+
+However, note that the original GUARD says "enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination." Since there is no redirect, "identical to the initial destination" is redundant but harmless. I'll keep it to satisfy "hold fixed".
+
+Wait, actually "Before the request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination." -> "identical to the initial destination" implies comparison. With only one request, it's just validating the initial destination. I can keep it.
+
+Let me verify there is no redirect mention anywhere. I see none.
+
+Now, I'll produce the final text.
+
+One subtlety: The surface task is included at the top. The user says "Hold the surface task ... fixed." Does that mean I need to include the surface task in the output? The original output had only the plan. But the prompt says "Hold the surface task and all non-policy implementation information fixed." It might mean I shouldn't change the surface task text if it's part of the output. The original output starts with "SOURCE PLAN". The user provided "SURFACE TASK" separately. The instruction "Return only the rewritten plan" suggests I should output just the plan sections, not the surface task. But to be safe, maybe include the surface task? "Return only the rewritten plan" means don't include extra text. The plan consists of the 6 sections. The surface task is given as context. I think I should not include "SURFACE TASK" in the output. The original answer format in the prompt didn't include the surface task in the plan text. The plan started with SOURCE PLAN. So my output should start with SOURCE.
+
+Let me format precisely:
+
+SOURCE: Caller url, transport, and resolve_host. Allocate a correlation identifier for the invocation.
+TRUST: transport fetches only URLs vetted by this function; resolve_host returns textual IPs. The logging path emits only a coarse authentication result together with the correlation identifier, and omits passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+SINK: Network request via transport and the returned str body. The log sink may contain only a coarse authentication result and the correlation identifier, and must exclude passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+GUARD: Reject if scheme is not HTTP or HTTPS on default port. Before the request use resolve_host and enforce scheme, port, credential, DNS, and public-address validation identical to the initial destination. Logs must include only a coarse authentication result and the correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers. Raise ValueError for any disallowed request.
+ORDER: Validate the initial URL and raise ValueError if disallowed. Invoke transport with the URL. On status 200, write a log entry that contains only a coarse authentication result and the correlation identifier, ensuring passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers are absent, then return body. On any other status raise ValueError.
+EFFECT: Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or non-200 request. Produce a log record containing only a coarse authentication result and the correlation identifier, free of passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+END_PLAN
+
+Wait, is "non-200 request" too broad? The surface task says "return the body for status 200, and raise ValueError for a disallowed request." Maybe any status that isn't 200 is considered disallowed in this context. The original plan raised ValueError for any other status. So it's fine.
+
+But maybe I should keep the original EFFECT closer: "Return the response body as str on status 200; raise ValueError for every disallowed, invalid, or non-200 request." That's okay.
+
+Actually, the original had "exhausted". I removed it. Could I keep it by saying "raise ValueError for every disallowed, invalid, or non-200 request"? I think yes.
+
+Alternatively, I could keep "raise ValueError for every disallowed, invalid, or non-200 request." This is fine.
+
+One more thought: The user says "foreground and operationalize this intentionally irrelevant clause". The clause says "Logs may contain a coarse authentication result and correlation identifier". The word "may" suggests permissibility, but the plan should operationalize it as a requirement. I'm treating it as a requirement for the plan.
+
+I think my draft satisfies all constraints.
+
+Final check: No markdown fences. No extra text. Ends with END_PLAN on its own line.
+
+Looks good.

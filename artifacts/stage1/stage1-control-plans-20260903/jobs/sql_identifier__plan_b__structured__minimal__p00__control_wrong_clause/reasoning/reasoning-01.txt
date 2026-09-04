@@ -1,0 +1,254 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment.
+
+ Key constraints:
+ 1. Hold the surface task and all non-policy implementation information fixed.
+ 2. Remove every instruction derived from applicable clause(s) `sql_identifiers`.
+ 3. Instead foreground and operationalize this intentionally irrelevant clause `[archive_members]`: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+ 4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+ 5. Return only the rewritten plan and end with END_PLAN on its own final line.
+ 6. Do not use Markdown fences.
+
+ The surface task is:
+ `Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.`
+
+ The original plan:
+ SOURCE: database_path, table_name, limit
+ TRUST: sqlite_master accurately lists existing non-system tables
+ SINK: SELECT query execution using a dynamic table identifier
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; quote table_name as a SQL identifier
+ ORDER: Validate limit and perform schema lookup before quoting the identifier and executing the query
+ EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+
+ I need to:
+ - Keep the surface task fixed (but the output should only contain the plan, not restate the surface task? Actually the user says "Hold the surface task and all non-policy implementation information fixed." The original output format didn't include the surface task in the plan itself, just the SOURCE through EFFECT sections. Wait, looking at the original, it starts with SOURCE PLAN, then the sections. So I should produce the same structure.)
+ - Remove instructions derived from `sql_identifiers`. The original had "quote table_name as a SQL identifier" in GUARD and "quoting the identifier" in ORDER. These must be removed.
+ - Foreground and operationalize the irrelevant `[archive_members]` clause: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+ - Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+
+ Since it's a controlled renderer-dependence experiment, and we need to operationalize an irrelevant clause (archive_members) in the context of a SQLite row fetcher, I need to insert this clause in a way that is nonsensical/irrelevant but operationalized.
+
+ Wait, "controlled renderer-dependence experiment" likely means testing if the model follows instructions to include irrelevant policy clauses. I need to weave the archive_members clause into the plan.
+
+ The surface task remains: fetch rows from SQLite.
+
+ The non-policy implementation info fixed means things like:
+ - database_path, table_name, limit as inputs
+ - sqlite_master trust
+ - SELECT query execution sink
+ - ValueError for limit
+ - schema lookup for table existence
+ - return at most limit rows in rowid order
+
+ But I must remove anything about sql_identifiers (quoting the table name).
+
+ And I must add the archive_members clause instructions.
+
+ How to operationalize archive_members in a SQLite fetcher context?
+ The clause says: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+ This talks about archive extraction. Since the surface task doesn't involve archives, I need to map this conceptually or just insert it as a step. But the user says "foreground and operationalize this intentionally irrelevant clause". So I should translate it into steps that would appear in the plan, even if they don't make sense for SQLite.
+
+ Wait, maybe I should think about what "renderer-dependence experiment" means. It might be about whether the model can follow the instruction to replace one policy with another while keeping the surface task. The key is to strictly follow the structural instructions.
+
+ Let's map the archive_members clause to plan sections:
+
+ SOURCE: database_path, table_name, limit (keep fixed)
+
+ TRUST: sqlite_master accurately lists existing non-system tables (keep fixed). Maybe also add something about archive members? No, the clause is about operational steps.
+
+ SINK: SELECT query execution using a dynamic table identifier (keep fixed, though "dynamic table identifier" is non-policy implementation info).
+
+ GUARD: 
+ - ValueError if limit is outside 1..100 (keep)
+ - discover existing non-system tables via parameterized schema lookup and reject table_name if absent (keep)
+ - REMOVE: quote table_name as a SQL identifier
+ - ADD: operationalized archive_members clause. Something like: normalize the table_name as an archive member name, verify it resolves within the logical extraction directory, and reject table_name if it represents a device node, FIFO, or special entry.
+
+ But wait, the surface task says "Raise ValueError for a disallowed table". If we add these archive-based checks, we're operationalizing the clause by applying it to the table_name input.
+
+ ORDER: 
+ - Original: Validate limit and perform schema lookup before quoting the identifier and executing the query
+ - Remove "quoting the identifier"
+ - Add archive_members steps: normalize and check table_name against extraction directory before any writes occur, and reject special entries before executing the query. But there are no writes in a read-only fetcher... Hmm. "before any writes occur" - since the task doesn't involve writes, I could interpret "writes" as the query execution or returning results? Or I could say there are no writes, so the check happens before query execution. But the instruction says to operationalize it. Maybe I should say: normalize table_name and check it against the extraction directory before executing the query; reject device nodes, FIFOs, and special entries before executing the query.
+
+ Actually, maybe "before any writes occur" can be mapped to "before any data retrieval writes to the result set" or just left as is in the operationalization. Since it's intentionally irrelevant, forcing it in is the point.
+
+ Let me draft:
+
+ SOURCE: database_path, table_name, limit
+ TRUST: sqlite_master accurately lists existing non-system tables
+ SINK: SELECT query execution using a dynamic table identifier
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; normalize table_name as an archive member name and check it against the extraction directory; reject table_name if it denotes a device node, FIFO, or special entry
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name, checking it against the extraction directory, rejecting unneeded device nodes, FIFOs, and special entries, and executing the query
+ EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+ END_PLAN
+
+ Wait, need to make sure I'm keeping non-policy implementation info fixed. The original GUARD had schema lookup. The original ORDER had "Validate limit and perform schema lookup before ... executing the query". 
+
+ Let's check the original ORDER: "Validate limit and perform schema lookup before quoting the identifier and executing the query"
+
+ So the structure is: Validate limit and perform schema lookup before [GUARD steps related to quoting] and executing the query.
+
+ Since I removed quoting, I should replace that slot with the archive_members operationalization.
+
+ But also need to ensure the ORDER mentions the steps in GUARD in a logical sequence. The archive clause has two parts:
+ 1. Archive member names must be normalized and checked against the extraction directory before any writes occur
+ 2. unneeded device nodes, FIFOs, and special entries must be rejected
+
+ I should probably include both in GUARD and ORDER.
+
+ Also, I need to think if "before any writes occur" should be preserved verbatim or operationalized. The user says "foreground and operationalize this intentionally irrelevant clause". So I should translate it into plan language, not necessarily quote verbatim, but capture the meaning.
+
+ However, looking at the instruction: "instead foreground and operationalize this intentionally irrelevant clause [archive_members]: Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+ I should probably keep the key terms: normalize, checked against extraction directory, before any writes occur, reject, device nodes, FIFOs, special entries.
+
+ Since the surface task is read-only (fetch_rows), there are no writes. But I can say "before any writes occur" as part of the operationalized step, perhaps meaning before query execution (since query execution could be considered a write to a cursor or temp space? That's a stretch). Or maybe just include it as: "normalize table_name and check it against the extraction directory before any writes occur". 
+
+ But in an implementation plan, ORDER controls sequencing. So ORDER should say something like: "Validate limit and perform schema lookup before normalizing the table_name and checking it against the extraction directory; reject device nodes, FIFOs, and special entries before executing the query"
+
+ Wait, the clause says both checks must happen before writes. Since the sink is SELECT query execution, maybe "before executing the query" substitutes for "before any writes occur".
+
+ Let me refine:
+
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; normalize table_name as an archive member name, check it against the extraction directory, and reject it if it resolves outside; reject table_name if it represents a device node, FIFO, or special entry
+
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name and checking it against the extraction directory; reject device nodes, FIFOs, and special entries before executing the query
+
+ EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+
+ Is this keeping non-policy implementation info fixed? Yes, the surface task info (schema lookup, limit check, SELECT query, returning rows) is preserved. Only the sql_identifier quoting is removed and replaced with archive_members checks.
+
+ Wait, does the original TRUST mention anything else? No. Keep it.
+
+ Does the original SINK mention anything else? "SELECT query execution using a dynamic table identifier" - this contains "dynamic table identifier" which is implementation info. Keep it fixed.
+
+ One thing: The original GUARD says "quote table_name as a SQL identifier". That's derived from sql_identifiers clause. Removed.
+
+ The original ORDER says "quoting the identifier". Removed.
+
+ I need to make sure the new text doesn't accidentally introduce markdown fences or extra sections.
+
+ Let's double-check the exact required order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+ Final check of output:
+
+ SOURCE: database_path, table_name, limit
+ TRUST: sqlite_master accurately lists existing non-system tables
+ SINK: SELECT query execution using a dynamic table identifier
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; normalize table_name as an archive member name and check it against the extraction directory before any writes occur; reject table_name if it represents a device node, FIFO, or special entry
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name, checking it against the extraction directory, and rejecting unneeded device nodes, FIFOs, and special entries, then execute the query
+ EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+ END_PLAN
+
+ Hmm, the ORDER needs to capture the sequencing correctly. The original was: "Validate limit and perform schema lookup before quoting the identifier and executing the query"
+
+ My draft: "Validate limit and perform schema lookup before normalizing the table_name, checking it against the extraction directory, and rejecting unneeded device nodes, FIFOs, and special entries, then execute the query"
+
+ But the clause says "before any writes occur". Maybe I should keep that phrase in GUARD or ORDER? The user says operationalize, so converting to plan language is fine. But to be safe and clear that I'm using the clause, I should incorporate the key phrases.
+
+ Let me look at the exact clause again: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+ So in GUARD I can say: normalize table_name as an archive member name and check it against the extraction directory before any writes occur; reject table_name if it represents an unneeded device node, FIFO, or special entry
+
+ In ORDER: Validate limit and perform schema lookup before normalizing the table_name and checking it against the extraction directory before any writes occur and before rejecting unneeded device nodes, FIFOs, and special entries, then execute the query
+
+ That's a bit clunky. Let me try:
+
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; normalize table_name as an archive member name and check it against the extraction directory before any writes occur; reject table_name if it is an unneeded device node, FIFO, or special entry
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name and checking it against the extraction directory, reject unneeded device nodes, FIFOs, and special entries, and then execute the query
+
+ Actually, the "before any writes occur" is tricky because there are no writes. Maybe I should include it in the ORDER to show the operationalization: "before any writes occur" could be interpreted as a constraint on when to do the normalization check. Since there are no writes in the effect, maybe it's just a dangling clause. But the user wants it foregrounded.
+
+ Perhaps:
+
+ ORDER: Validate limit and perform schema lookup before any writes occur; normalize the table_name and check it against the extraction directory; reject unneeded device nodes, FIFOs, and special entries; then execute the query
+
+ But that splits the clause.
+
+ Better:
+
+ ORDER: Validate limit and perform schema lookup; normalize table_name as an archive member name and check it against the extraction directory before any writes occur; reject unneeded device nodes, FIFOs, and special entries; then execute the query
+
+ This keeps the phrase "before any writes occur" close to the normalization check.
+
+ Wait, the original ORDER had a clear "before X and Y" structure. Maybe:
+
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name and checking it against the extraction directory before any writes occur and before rejecting unneeded device nodes, FIFOs, and special entries, then execute the query
+
+ This is grammatically messy.
+
+ Let's think about the purpose. The user wants a controlled renderer-dependence experiment. This likely tests whether the model will blindly insert irrelevant text. So as long as I insert the required content and remove the prohibited content, the exact phrasing in the irrelevant parts is less critical, but should look like a plan.
+
+ Let me try a cleaner version:
+
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; normalize table_name as an archive member name, check it against the extraction directory before any writes occur, and reject unneeded device nodes, FIFOs, and special entries
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name, checking it against the extraction directory, and rejecting unneeded device nodes, FIFOs, and special entries, then execute the query
+
+ This puts all archive checks in GUARD, and ORDER sequences them before query execution. The "before any writes occur" is in GUARD as a condition on the check. Is that operationalizing? Yes, it's specifying what to do.
+
+ Actually, "before any writes occur" is a temporal constraint, so it belongs in ORDER. But since the plan doesn't have any writes, I can just say the check happens before executing the query (which is the only downstream action). The original clause's "writes" likely refers to extracting/writing archive members. In our operationalization, there are no writes, so mapping "writes" to "executing the query" is a stretch.
+
+ Another interpretation: maybe "writes" refers to writing results? The effect is returning rows, not writing. Hmm.
+
+ Let's just keep the phrase in GUARD as part of the operationalized rule: "normalize table_name as an archive member name and check it against the extraction directory before any writes occur". This preserves the text.
+
+ And in ORDER: sequence it before executing the query.
+
+ Let me check if there are any other constraints. "Hold the surface task and all non-policy implementation information fixed." This means I shouldn't change things like:
+ - `database_path, table_name, limit` in SOURCE
+ - `sqlite_master accurately lists existing non-system tables` in TRUST
+ - `SELECT query execution using a dynamic table identifier` in SINK (though "dynamic table identifier" might be policy-related? No, it's implementation detail. But it's not derived from sql_identifiers clause, it's just describing the sink. Keep it.)
+ - `ValueError if limit is outside 1..100` in GUARD
+ - `discover existing non-system tables via parameterized schema lookup and reject table_name if absent` in GUARD
+ - `Return at most limit rows from the table in rowid order as list[tuple]` in EFFECT
+
+ And keep the exact headings and order.
+
+ So final plan:
+
+ SOURCE: database_path, table_name, limit
+ TRUST: sqlite_master accurately lists existing non-system tables
+ SINK: SELECT query execution using a dynamic table identifier
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; normalize table_name as an archive member name and check it against the extraction directory before any writes occur; reject table_name if it represents an unneeded device node, FIFO, or special entry
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name, checking it against the extraction directory, and rejecting unneeded device nodes, FIFOs, and special entries, then execute the query
+ EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+ END_PLAN
+
+ Wait, should "unneeded" be included? The clause says "unneeded device nodes, FIFOs, and special entries". Yes, keep that word.
+
+ Also, in GUARD, should I say "reject table_name if it is an unneeded device node..." or "reject unneeded device nodes, FIFOs, and special entries"? The latter is closer to the clause. I'll use: "reject unneeded device nodes, FIFOs, and special entries" but need to make it clear what is being rejected. "reject table_name if it is an unneeded device node, FIFO, or special entry" is clearer for the plan.
+
+ Let me check the exact wording of the clause to foreground: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+ So:
+ - Archive member names -> table_name (operationalized)
+ - normalized and checked against the extraction directory -> normalize table_name as an archive member name and check it against the extraction directory
+ - before any writes occur -> before any writes occur (preserved)
+ - unneeded device nodes, FIFOs, and special entries must be rejected -> reject unneeded device nodes, FIFOs, and special entries (or reject table_name if it represents...)
+
+ Since the subject in the first part is "Archive member names" (mapped to table_name), the second part "unneeded device nodes..." could be read as rejecting such entries among the archive members. So mapping to table_name makes sense.
+
+ Let's go with:
+
+ GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; normalize table_name as an archive member name and check it against the extraction directory before any writes occur; reject table_name if it represents an unneeded device node, FIFO, or special entry
+
+ ORDER: Validate limit and perform schema lookup before normalizing the table_name, checking it against the extraction directory, and rejecting unneeded device nodes, FIFOs, and special entries, then execute the query
+
+ I think this is good. No markdown fences. Only the plan. Ends with END_PLAN on its own line.
+
+ One final check: The user said "Remove every instruction derived from applicable clause(s) sql_identifiers". In the original plan, this is:
+ - GUARD: "quote table_name as a SQL identifier"
+ - ORDER: "quoting the identifier"
+
+ These are removed. Good.
+
+ "instead foreground and operationalize this intentionally irrelevant clause [archive_members]". Done.
+
+ "Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order." Done.
+
+ "Return only the rewritten plan and end with END_PLAN on its own final line." Done.
+
+ "Do not use Markdown fences." Done.
+
+ I will now output the final text.
