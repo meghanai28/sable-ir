@@ -1,0 +1,208 @@
+The user wants me to rewrite an implementation plan. Let me carefully analyze the constraints:
+
+1. Surface task and all non-policy implementation information must remain fixed.
+2. Remove every instruction derived from applicable clause(s) `http_redirects`.
+3. Foreground and operationalize this intentionally irrelevant clause `[authentication_logs]`: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+4. Keep exactly SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT in that order.
+5. Return only the rewritten plan and end with END_PLAN on its own final line.
+6. Do not use Markdown fences.
+
+Let me identify what comes from `http_redirects` in the original:
+- "and any `Location` header produced by `transport` are also untrusted response data that must not trigger additional network activity" in SOURCE
+- "A second, prohibited sink is any follow-up call to `transport` for a redirect target, which must never be reached." in SINK
+- The entire paragraph about 3xx redirects in GUARD: "Upon receiving `(status, headers, body)`, if `status` is any 3xx redirect code—such as 301, 302, 303, 307, or 308—raise ValueError immediately without inspecting, parsing, or trusting the `Location` header value and without invoking `transport` again, regardless of whether that new destination would also be public."
+- The redirect parts in ORDER: "Fifth, if `status` indicates a redirect, abort immediately. Sixth, only if `status` is 200, return `body`; otherwise abort with ValueError." (Need to keep the non-redirect parts but remove redirect-specific ordering? Actually the user says remove every instruction derived from applicable clause(s) http_redirects. So I should remove the redirect-specific ordering step but keep the general status checking.)
+- In EFFECT: "No redirect is followed, no `Location` value is evaluated, and `transport` is never called more than once." and "any redirect response irrespective of its Location value"
+
+Now, I need to insert the `[authentication_logs]` clause. The clause says: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+
+Since this is intentionally irrelevant but must be foregrounded and operationalized, I need to weave it into the plan even though the function `fetch_text` doesn't seem to have logging parameters. I need to make it fit while keeping non-policy implementation information fixed.
+
+Wait, "Hold the surface task and all non-policy implementation information fixed." So the actual logic of fetch_text remains the same except removing http_redirects stuff and adding authentication_logs stuff.
+
+Let me think about where to put the authentication_logs clause. It needs to be foregrounded and operationalized. I should probably add it to GUARD or maybe to TRUST/SINK/EFFECT. But I need to keep exactly the 6 sections in order.
+
+Actually, let me re-read the original text and see what is "non-policy implementation information" vs what is derived from http_redirects.
+
+Original SOURCE: Mentions `Location` header. That's from http_redirects. I need to remove that.
+Original TRUST: Doesn't mention redirects. Keep as is.
+Original SINK: Mentions follow-up call for redirect target. Remove that.
+Original GUARD: Mentions redirect codes. Remove that part.
+Original ORDER: Mentions redirect status. Remove that step.
+Original EFFECT: Mentions redirects. Remove that.
+
+Now, how to operationalize `[authentication_logs]`? The clause is about logging. The function `fetch_text` doesn't explicitly log, but I can add instructions about what any emitted logs must contain or omit. Since it's "intentionally irrelevant", I need to make it relevant to the implementation plan by operationalizing it.
+
+Possible approach:
+- In SOURCE: Note that any correlation identifier and coarse authentication result in logs are untrusted? Or perhaps in GUARD specify that before/after transport call, if logging occurs, it must adhere to the authentication_logs policy.
+- In TRUST: Maybe mention that logging infrastructure is trusted to enforce the authentication_logs content policy? Hmm.
+- In SINK: Could mention that any logging sink must not contain sensitive credentials.
+- In GUARD: Could add a step about sanitizing logs.
+- In ORDER: Could add a step about logging.
+- In EFFECT: Could describe the logging outcome.
+
+But wait, the instruction says "foreground and operationalize this intentionally irrelevant clause". So I should make it prominent in the plan.
+
+Let me try to draft:
+
+SOURCE: The caller-supplied `url` string is the primary untrusted input that selects the external destination. The `status` code produced by `transport` is also untrusted response data. Any coarse authentication result and correlation identifier appearing in logs are untrusted data that must not include passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers.
+
+Actually, I need to be careful. The original SOURCE mentions Location header. I should remove that. I can replace it with the authentication_logs content.
+
+TRUST: Keep original.
+
+SINK: The invocation of `transport(url)` is the outbound network sink. Returning the response `body` to the caller is the information-disclosure sink. Any logging output is a retention sink that must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers, though it may record a coarse authentication result and a correlation identifier.
+
+GUARD: Parse `url` into scheme, host, port, path, and query, normalizing the scheme to lowercase. Reject if the scheme is not exactly `http` or `https`. Reject if an explicit port is present and is not the default for the scheme (80 for `http`, 443 for `https`); an absent port is implicitly the default. Reject if the host is empty. If the host is a literal IP address, validate it directly; otherwise pass the hostname to `resolve_host(hostname)` and reject if no addresses are returned. For every textual IP address obtained, classify it as globally routable and public; reject the request if any address falls in a non-public range, including but not limited to IPv4 loopback (127.0.0.0/8), private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), link-local (169.254.0.0/16), reserved, and multicast space, and IPv6 loopback (::1), link-local (fe80::/10), unique local (fc00::/7), multicast (ff00::/8), and unspecified (::/128) space. After validation succeeds, call `transport(url)` exactly once. Upon receiving `(status, headers, body)`, if `status` is not exactly 200, raise ValueError. Ensure that any generated authentication logs contain only a coarse authentication result and correlation identifier, and strictly exclude passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+Wait, does the GUARD now have non-policy implementation info about status not 200? Yes, that was originally there: "If `status` is not exactly 200, raise ValueError." But originally it was preceded by the redirect check. If I remove the redirect check, I just keep the status != 200 -> raise ValueError. However, what about 3xx statuses? They would fall into "not exactly 200" now and raise ValueError. That's consistent with removing redirect handling but keeping the effect the same (ValueError for non-200).
+
+ORDER: First, parse `url` and validate scheme and port constraints. Second, extract the hostname, resolve it via `resolve_host` if it is not a literal IP, and validate every resulting address as public before any network call is made. Third, invoke `transport(url)` exactly once with the original, validated URL. Fourth, examine the returned `status`. Fifth, if `status` is not exactly 200, raise ValueError; otherwise return `body`. Throughout, constrain any emitted logs to a coarse authentication result and correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+Wait, the original ORDER had six steps. If I remove the redirect step, I still need to keep the non-policy implementation info fixed. The original step five was redirect abort, step six was status 200 or ValueError. If I combine them into "if status is not exactly 200, raise ValueError; otherwise return body", that changes the structure but preserves the non-policy implementation outcome. Actually, is "non-policy implementation information" the concrete algorithm? I think I should preserve the logical flow but remove the redirect-specific instruction.
+
+Original ORDER:
+1. parse url and validate scheme/port
+2. extract hostname, resolve, validate public
+3. invoke transport exactly once
+4. examine returned status
+5. if status indicates redirect, abort immediately
+6. only if status is 200 return body; otherwise abort with ValueError.
+
+If I remove step 5 entirely, step 6 covers it because redirect is not 200. But the original had two separate steps. Since I must remove every instruction derived from http_redirects, I should remove the redirect-specific step. But can I keep step 6 as "if status is not exactly 200, raise ValueError; otherwise return body"? Yes, that seems correct.
+
+But the user says "Hold the surface task and all non-policy implementation information fixed." This means the actual behavior of the function should remain the same except for the removed redirect policy and added auth log policy. Since removing redirect handling and treating them as generic non-200 is behaviorally equivalent for the end result (raise ValueError), that's fine.
+
+EFFECT: Return the response `body` as a `str` when the initial destination is validated as public on the default port and `transport` returns status 200. Raise ValueError for every disallowed condition: non-default or missing scheme, explicit non-default port, empty host, failed DNS resolution, any non-public resolved IP, and any status code other than 200. `transport` is never called more than once. Any retained authentication logs must contain only a coarse authentication result and correlation identifier, and must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+Wait, I need to make sure I'm not adding new logic that contradicts the surface task. The surface task says "return the body for status 200, and raise ValueError for a disallowed request." That's kept.
+
+Now, I need to ensure the authentication_logs clause is foregrounded. Maybe put it in SOURCE and EFFECT prominently? Or maybe give it its own emphasis.
+
+Actually, looking at the clause: "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+
+I should operationalize it by specifying exactly how it applies to this function's logging. Since there is no explicit logging in the surface task, I need to invent the operationalization without changing the surface task. The surface task is fixed: `fetch_text(url, transport, resolve_host) -> str`. So logging might be implicit or side-channel.
+
+Let me try to make the authentication_logs clause the primary policy focus, replacing the redirect focus.
+
+Drafting:
+
+SOURCE: The caller-supplied `url` string is the primary untrusted input that selects the external destination. The `status` code produced by `transport` is also untrusted response data. Any coarse authentication result and correlation identifier written to logs are untrusted data that must be emitted without passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers.
+
+TRUST: The permitted destination policy is trusted: only the default HTTP port (TCP 80) and default HTTPS port (TCP 443) are allowed, and only publicly routable IP addresses are permitted. The `resolve_host` helper is trusted to return the complete set of resolved textual IP addresses for a given hostname. The definition of “public” excludes all IANA-reserved, private, loopback, link-local, multicast, and unspecified IPv4 and IPv6 ranges.
+
+SINK: The invocation of `transport(url)` is the outbound network sink. Returning the response `body` to the caller is the information-disclosure sink. Any log retention is a secondary sink that must only store a coarse authentication result and a correlation identifier, and must never retain passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers.
+
+GUARD: Parse `url` into scheme, host, port, path, and query, normalizing the scheme to lowercase. Reject if the scheme is not exactly `http` or `https`. Reject if an explicit port is present and is not the default for the scheme (80 for `http`, 443 for `https`); an absent port is implicitly the default. Reject if the host is empty. If the host is a literal IP address, validate it directly; otherwise pass the hostname to `resolve_host(hostname)` and reject if no addresses are returned. For every textual IP address obtained, classify it as globally routable and public; reject the request if any address falls in a non-public range, including but not limited to IPv4 loopback (127.0.0.0/8), private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), link-local (169.254.0.0/16), reserved, and multicast space, and IPv6 loopback (::1), link-local (fe80::/10), unique local (fc00::/7), multicast (ff00::/8), and unspecified (::/128) space. After validation succeeds, call `transport(url)` exactly once. Upon receiving `(status, headers, body)`, if `status` is not exactly 200, raise ValueError. In all logging emitted during this flow, include at most a coarse authentication result and a correlation identifier, and ensure the logs strictly omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+ORDER: First, parse `url` and validate scheme and port constraints. Second, extract the hostname, resolve it via `resolve_host` if it is not a literal IP, and validate every resulting address as public before any network call is made. Third, invoke `transport(url)` exactly once with the original, validated URL. Fourth, examine the returned `status`. Fifth, if `status` is not exactly 200, raise ValueError; only if `status` is 200, return `body`. Throughout these steps, constrain any emitted authentication logs to a coarse authentication result and correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+EFFECT: Return the response `body` as a `str` when the initial destination is validated as public on the default port and `transport` returns status 200. Raise ValueError for every disallowed condition: non-default or missing scheme, explicit non-default port, empty host, failed DNS resolution, any non-public resolved IP, and any status code other than 200. `transport` is never called more than once. Any retained logs may contain solely a coarse authentication result and correlation identifier, and must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+END_PLAN
+
+Wait, I need to double-check: Did I remove every instruction derived from http_redirects?
+- SOURCE: Removed "and any `Location` header produced by `transport` are also untrusted response data that must not trigger additional network activity." Good.
+- TRUST: Unchanged. Good.
+- SINK: Removed "A second, prohibited sink is any follow-up call to `transport` for a redirect target, which must never be reached." Good.
+- GUARD: Removed the entire 3xx redirect code block. Good. Kept "if status is not exactly 200, raise ValueError". Good.
+- ORDER: Removed the redirect-specific step. The original had "Sixth, only if status is 200, return body; otherwise abort with ValueError." I kept that as step five. Good.
+- EFFECT: Removed "No redirect is followed, no Location value is evaluated" and "any redirect response irrespective of its Location value". Good.
+
+Now, did I foreground and operationalize `[authentication_logs]`? I added it to every section. Is that too much? The instruction says "foreground and operationalize this intentionally irrelevant clause". Foregrounding means making it prominent. Operationalizing means translating it into specific implementation steps. I think distributing it across the sections ensures it's foregrounded throughout the plan. But maybe I should make it more central.
+
+Alternatively, maybe I should make the authentication_logs clause the primary guard/effect. Let me see if there's a way to make it even more prominent without breaking the structure.
+
+Maybe in SOURCE, make it the first sentence? But the source of untrusted input is the url. The authentication_logs clause is about outputs/logs. So maybe SINK is the best place for it.
+
+Actually, "foreground" might mean put it near the beginning. But I can't reorder the sections. SOURCE is first. I could mention it there as a policy constraint on output channels.
+
+One thing: The original GUARD had "After validation succeeds, call `transport(url)` exactly once." I kept that. Good.
+
+Another thing: The original ORDER step 6 said "only if status is 200, return body; otherwise abort with ValueError." In my draft, I combined step 5 and 6 into one step because I removed the redirect step. Is that okay? The instruction says "Hold the surface task and all non-policy implementation information fixed." The surface task is fixed. The non-policy implementation info (parsing, port validation, IP validation, status checking) is fixed. Removing a step and shifting numbering is a structural change due to removing redirect policy. I think that's acceptable because I'm removing an instruction.
+
+Wait, could I keep the step numbering and just have step 5 be something else? No, the removed step was derived from http_redirects. I must remove it.
+
+Let me re-read the exact wording of the original GUARD regarding status: "Upon receiving `(status, headers, body)`, if `status` is any 3xx redirect code—such as 301, 302, 303, 307, or 308—raise ValueError immediately without inspecting, parsing, or trusting the `Location` header value and without invoking `transport` again, regardless of whether that new destination would also be public. If `status` is not exactly 200, raise ValueError."
+
+If I simply delete the redirect sentence, I get: "Upon receiving `(status, headers, body)`, if `status` is not exactly 200, raise ValueError." That's exactly what I have. And behaviorally, 3xx is not 200, so it raises ValueError. Non-policy implementation preserved.
+
+Similarly for ORDER: Original step 5 was redirect abort. Step 6 was "only if status is 200, return body; otherwise abort with ValueError." If I delete step 5, I can keep step 6 as the new step 5: "if `status` is not exactly 200, raise ValueError; only if `status` is 200, return `body`." That preserves the implementation info.
+
+Let me check if there are any other references to redirects. In SOURCE: "The `status` code and any `Location` header produced by `transport` are also untrusted response data that must not trigger additional network activity." The Location header is part of http_redirects. I removed it. But should I keep "must not trigger additional network activity"? That instruction is about preventing additional network activity which is tied to the redirect prohibition. Since the redirect policy is removed, and the implementation never calls transport more than once anyway, I should probably remove that phrase too because it's derived from the http_redirects clause. I removed it in my draft.
+
+What about "transport is never called more than once"? In the original EFFECT, that phrase was in the context of redirects: "No redirect is followed, no `Location` value is evaluated, and `transport` is never called more than once." Is "transport is never called more than once" derived from http_redirects? It's a general implementation constraint. Actually, looking at ORDER: "Third, invoke `transport(url)` exactly once with the original, validated URL." This is part of the non-policy implementation. So keeping "transport is never called more than once" in EFFECT is fine, as long as it's not tied to redirect language. I included it.
+
+Now, about the authentication_logs clause. It says "Logs may contain a coarse authentication result and correlation identifier, but they must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers."
+
+I need to make sure I include the exact concepts: "coarse authentication result", "correlation identifier", "passwords", "bearer tokens", "session cookies", "API keys", "private keys", "full authorization headers".
+
+My draft uses these terms.
+
+Let me refine the text to ensure it flows well and strictly follows the constraints.
+
+Refined draft:
+
+SOURCE: The caller-supplied `url` string is the primary untrusted input that selects the external destination. The `status` code produced by `transport` is also untrusted response data. Any coarse authentication result and correlation identifier written to logs are output data that must be emitted without passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers.
+
+TRUST: The permitted destination policy is trusted: only the default HTTP port (TCP 80) and default HTTPS port (TCP 443) are allowed, and only publicly routable IP addresses are permitted. The `resolve_host` helper is trusted to return the complete set of resolved textual IP addresses for a given hostname. The definition of “public” excludes all IANA-reserved, private, loopback, link-local, multicast, and unspecified IPv4 and IPv6 ranges.
+
+SINK: The invocation of `transport(url)` is the outbound network sink. Returning the response `body` to the caller is the information-disclosure sink. Log retention is a secondary sink that may store only a coarse authentication result and a correlation identifier, and must never retain passwords, bearer tokens, session cookies, API keys, private keys, or full authorization headers.
+
+GUARD: Parse `url` into scheme, host, port, path, and query, normalizing the scheme to lowercase. Reject if the scheme is not exactly `http` or `https`. Reject if an explicit port is present and is not the default for the scheme (80 for `http`, 443 for `https`); an absent port is implicitly the default. Reject if the host is empty. If the host is a literal IP address, validate it directly; otherwise pass the hostname to `resolve_host(hostname)` and reject if no addresses are returned. For every textual IP address obtained, classify it as globally routable and public; reject the request if any address falls in a non-public range, including but not limited to IPv4 loopback (127.0.0.0/8), private (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), link-local (169.254.0.0/16), reserved, and multicast space, and IPv6 loopback (::1), link-local (fe80::/10), unique local (fc00::/7), multicast (ff00::/8), and unspecified (::/128) space. After validation succeeds, call `transport(url)` exactly once. Upon receiving `(status, headers, body)`, if `status` is not exactly 200, raise ValueError. Ensure that any authentication logs emitted during this flow contain only a coarse authentication result and a correlation identifier, and strictly omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+ORDER: First, parse `url` and validate scheme and port constraints. Second, extract the hostname, resolve it via `resolve_host` if it is not a literal IP, and validate every resulting address as public before any network call is made. Third, invoke `transport(url)` exactly once with the original, validated URL. Fourth, examine the returned `status`. Fifth, if `status` is not exactly 200, raise ValueError; only if `status` is 200, return `body`. Throughout these steps, constrain any emitted authentication logs to a coarse authentication result and correlation identifier, omitting passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+
+EFFECT: Return the response `body` as a `str` when the initial destination is validated as public on the default port and `transport` returns status 200. Raise ValueError for every disallowed condition: non-default or missing scheme, explicit non-default port, empty host, failed DNS resolution, any non-public resolved IP, and any status code other than 200. `transport` is never called more than once. Any retained logs may contain solely a coarse authentication result and correlation identifier, and must omit passwords, bearer tokens, session cookies, API keys, private keys, and full authorization headers.
+END_PLAN
+
+Let me check if I missed any http_redirects-derived text.
+- "must not trigger additional network activity" - removed.
+- "Location header" - removed.
+- "3xx" / "301, 302, 303, 307, 308" - removed.
+- "redirect" - removed from all places.
+- "follow-up call" - removed.
+- "Location value" - removed.
+
+Looks clean.
+
+One concern: In GUARD, I say "Ensure that any authentication logs emitted during this flow contain only..." Is that too much of an implementation instruction? The user said operationalize. So yes, that's the point.
+
+Another concern: Does "Hold the surface task and all non-policy implementation information fixed" mean I should not change the text except where required? I changed some wording in GUARD and ORDER to remove redirect text and add auth log text. That seems necessary.
+
+I should verify the exact order of sections: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+
+No markdown fences.
+
+Ends with END_PLAN on its own final line.
+
+I think this is good. Let me do one final pass for exactness.
+
+Original first sentence of SOURCE: "The caller-supplied `url` string is the primary untrusted input that selects the external destination." Kept.
+
+Original second sentence: "The `status` code and any `Location` header produced by `transport` are also untrusted response data that must not trigger additional network activity." Replaced with: "The `status` code produced by `transport` is also untrusted response data." And added the log sentence. Actually, I should be careful: is "The `status` code produced by `transport` is also untrusted response data." non-policy implementation info? Yes, status is used. I kept it.
+
+Original SINK first two sentences kept. Added log sentence.
+
+Original GUARD: I removed the redirect block and added log instruction at the end.
+
+Original ORDER: Removed step 5 (redirect), kept the rest, renumbered, added log instruction.
+
+Original EFFECT: Removed redirect language, added log language.
+
+Everything looks consistent.
+
+One final check: Did I keep exactly the six headers? Yes.
+
+Is there any "http_redirects" derived info lurking? The phrase "must not trigger additional network activity" was in SOURCE. I removed it. Good.
+
+What about "any follow-up call to `transport`"? Removed.
+
+What about "without invoking `transport` again"? Removed.
+
+What about "regardless of whether that new destination would also be public"? Removed.
+
+Okay.
+
+The output should be exactly the plan text, no markdown fences.
+
+Let me format it cleanly.

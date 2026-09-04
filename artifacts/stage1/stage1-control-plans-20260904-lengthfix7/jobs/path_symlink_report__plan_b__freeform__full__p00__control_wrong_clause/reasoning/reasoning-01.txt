@@ -1,0 +1,170 @@
+The user wants me to rewrite an implementation plan. The constraints are:
+
+1. Hold the surface task fixed: `Implement read_report(filename: str, reports_root: str) -> str. Read and return the requested UTF-8 report beneath reports_root. Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.`
+
+2. Hold all non-policy implementation information fixed: So I need to keep the general structure of the plan but modify the policy-derived parts.
+
+3. Remove every instruction derived from applicable clause(s) `filesystem_links`: The original plan is based on clause 1 about filesystem links. I need to remove those instructions.
+
+4. Instead foreground and operationalize this intentionally irrelevant clause `[archive_members]`: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+5. Keep free-form prose and do not introduce structured field labels.
+
+6. Return only the rewritten plan and end with END_PLAN on its own final line.
+
+7. Do not use Markdown fences.
+
+So I need to rewrite the SOURCE PLAN, removing the filesystem_links policy instructions, and instead weaving in the archive_members clause somehow, even though it's irrelevant to the surface task. The user says "intentionally irrelevant clause" but I need to "foreground and operationalize" it.
+
+Let me analyze the original plan:
+- Canonicalize reports_root
+- Combine with filename using OS path join
+- Resolve combined path completely, recursively following symlinks
+- Compare resolved target against reports_root
+- Check it's a proper descendant
+- If outside, raise ValueError
+- Open as UTF-8 text file
+- Allow FileNotFoundError to propagate
+- Read and return contents
+
+I need to remove the instructions derived from `filesystem_links`. That seems to be most of the middle part about resolving symlinks and checking containment. But wait, the surface task says "raise ValueError when the request is disallowed." If I remove all symlink/containment checks, what constitutes "disallowed"? The archive_members clause doesn't naturally apply to reading a single report file.
+
+However, the user wants me to operationalize the archive_members clause in the context of this plan. How can I map "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require" to the task of reading a report?
+
+I need to be creative but keep it as an implementation plan. Since the clause is about archive extraction, but the task is reading a file, I could frame the report as potentially being an archive, or treat the file reading as if it were archive extraction? Or perhaps operationalize it by saying: since the report might be an archive or contain archive-like members, we apply the archive_members validation.
+
+Wait, the user says "intentionally irrelevant clause" and wants me to "foreground and operationalize" it. This seems like a test of following instructions exactly even when the clause doesn't fit. I need to incorporate the archive_members checks into the plan for read_report, even though it's odd.
+
+Let me think about how to do this while keeping non-policy implementation info fixed. The non-policy info includes:
+- Function signature
+- Read and return UTF-8 report
+- Propagate FileNotFoundError for missing ordinary file
+- Raise ValueError when disallowed
+
+So I should keep those outcomes but change the policy mechanism.
+
+How to operationalize archive_members for read_report?
+The clause says: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+For read_report, I could say:
+- Treat the requested file as an archive member (or the operation as an extraction)
+- Validate the filename/member name against the destination directory (reports_root)
+- Reject device files or special entries
+- Since it's not actually an archive, we check the single file path
+
+But the user said "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]".
+
+So the rewritten plan should not mention symlinks or filesystem link resolution. Instead, it should focus on archive member validation, destination directory containment, and rejecting special files.
+
+Let me draft:
+
+To implement read_report(filename: str, reports_root: str) -> str, first establish the destination directory by canonicalizing reports_root to an absolute path. Treat the read operation as analogous to extracting a single member, and validate the supplied filename against this destination directory before any content access. Reject the request with ValueError if the filename resolves to anything outside reports_root or if it contains traversal sequences or link targets that would escape the destination. Then inspect the path to ensure the target is not a device file, FIFO, socket, or other special entry that the application does not require; if the requested path designates such an entry, raise ValueError. Confirm that the target represents an ordinary file that the application expects to read. Once the member name and file type are validated against the destination directory, open the resolved path as a text file with UTF-8 encoding. If the ordinary file does not exist, allow the resulting FileNotFoundError to propagate naturally to the caller. Read the entire contents of the validated file and return them as a string.
+
+Wait, but the original plan had specific steps about path joining and resolution. The user said "Hold the surface task and all non-policy implementation information fixed." So I should probably keep the path joining mechanics but reframe them in terms of archive member validation instead of symlink resolution? Or can I drop the symlink-specific resolution since that's derived from filesystem_links?
+
+The instruction is: "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]"
+
+So I remove symlink following, resolution of intermediate directories, etc. I replace with archive member validation.
+
+But I need to make sure I keep the "non-policy implementation information" fixed. The non-policy info is the surface task and general flow. The policy info is the security checks.
+
+Let me look at the original text carefully and identify what is derived from filesystem_links:
+- "canonicalize reports_root to an absolute path with all symbolic links resolved" -> this mentions symlinks, so derived from filesystem_links? Or is it non-policy? Canonicalizing is general. But "all symbolic links resolved" is policy-derived.
+- "combine this root with the supplied filename using the operating system's path join semantics" -> non-policy implementation.
+- "resolve the combined path completely to its canonical absolute form, recursively following every symbolic link..." -> definitely derived from filesystem_links.
+- "Before any file content is accessed, compare the fully resolved target path against the canonicalized reports_root." -> containment check derived from filesystem_links.
+- "The target path must be a proper descendant..." -> derived from filesystem_links.
+- "If the resolved target path is outside the approved root, raise ValueError..." -> derived from filesystem_links.
+- "open the resolved path as a text file with UTF-8 encoding" -> non-policy.
+- "If the ordinary file does not exist, allow the resulting FileNotFoundError to propagate" -> non-policy (surface task).
+- "Read the entire contents..." -> non-policy.
+
+So I should keep the general structure but replace the policy parts.
+
+The archive_members clause: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+Operationalizing this for read_report:
+- We treat the filename as a member name.
+- We validate it against the destination directory (reports_root).
+- We check for and reject device files or special entries.
+- The "link target" part: validate link targets? But we removed filesystem_links instructions. However, the archive_members clause explicitly mentions "link target". So perhaps I should include checking link targets as part of archive member validation, but not the recursive symlink resolution from the original plan. Or I could interpret "link target" in the archive member sense.
+
+Actually, since the clause mentions "link target", I can include that as part of the archive validation, even if it's slightly odd for a single file read. I can say: validate the member name and any link target against the destination directory.
+
+Draft:
+
+To implement read_report(filename: str, reports_root: str) -> str, first establish the destination directory by canonicalizing reports_root to an absolute path. Combine this root with the supplied filename using the operating system's path join semantics, ensuring that an absolute filename cannot override the root prefix. Before extracting or reading any content, treat the requested file as an archive member and validate its name and any link target against the destination directory; reject the request with ValueError if the member would escape reports_root or if traversal sequences redirect outside the destination. Additionally, inspect the filesystem entry and reject device files, FIFOs, sockets, or other special entries that the application does not require, raising ValueError if the path designates anything other than an ordinary file or directory that is safe to read. Once the member name and file type are validated against the destination directory, open the resolved path as a text file with UTF-8 encoding. If the ordinary file does not exist, allow the resulting FileNotFoundError to propagate naturally to the caller. Read the entire contents of the validated file and return them as a string.
+
+Hmm, but I need to make sure I don't omit the non-policy implementation details like "path join semantics" and "absolute filename cannot override the root prefix". The original had that. I should keep it.
+
+Also, the original mentioned "proper descendant... strictly beneath the root and not equal to it". Should I keep that? That's derived from filesystem_links (containment). But archive_members says "validate every member name and link target against the destination directory". This implies containment too. So I can rephrase the containment check as part of archive member validation.
+
+Let me refine:
+
+To implement read_report(filename: str, reports_root: str) -> str, first canonicalize reports_root to an absolute path, establishing the fixed destination directory. Then combine this root with the supplied filename using the operating system's path join semantics, ensuring that an absolute filename cannot override the root prefix. Before any file content is accessed, treat the combined path as an archive member and validate the member name and any link target against the destination directory. The path must remain strictly within reports_root and must not equal the root itself, using a path-boundary-aware comparison that prevents escape via partial directory name matches or traversal sequences. Reject device files, FIFOs, sockets, or other special entries that the application does not require, raising ValueError if the member designates anything other than an ordinary file acceptable for reading. If the member name or link target falls outside the destination directory, or if the entry is a special file, raise ValueError without opening the file. Once validation confirms the member is a permissible ordinary file contained within the destination directory, open the resolved path as a text file with UTF-8 encoding. If the ordinary file does not exist, allow the resulting FileNotFoundError to propagate naturally to the caller. Read the entire contents of the validated file and return them as a string.
+
+This seems good. It:
+- Keeps the surface task and non-policy implementation (signature, join semantics, UTF-8 open, FileNotFound propagation, read and return).
+- Removes filesystem_links derived instructions (no mention of resolving symlinks recursively, no mention of approved root boundary in the symlink sense).
+- Foregrounds and operationalizes archive_members: mentions archive member validation, link target validation against destination directory, rejecting device files/special entries.
+- Keeps free-form prose, no structured field labels.
+- Ends with END_PLAN on its own line.
+- No markdown fences.
+
+Wait, the original started with "The applicable safety policy is clause 1..." Should I keep a policy preamble? The user said "Remove every instruction derived from applicable clause(s) filesystem_links and instead foreground and operationalize this intentionally irrelevant clause [archive_members]". So I should probably introduce the archive_members clause as the policy, or just operationalize it directly. The user said "foreground... this intentionally irrelevant clause". So I should probably mention it explicitly.
+
+Let me check: "instead foreground and operationalize this intentionally irrelevant clause [archive_members]: Before extracting an archive..."
+
+So I should quote or reference the clause. I can start with something like: "The operative safety policy is clause archive_members: ..."
+
+Original started with: "The applicable safety policy is clause 1: ..."
+
+So I'll start with: "The applicable safety policy is clause archive_members: \"Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require.\""
+
+Then operationalize it.
+
+Let me draft again:
+
+The applicable safety policy is clause archive_members: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+To implement read_report(filename: str, reports_root: str) -> str, first canonicalize reports_root to an absolute path, establishing the fixed destination directory. Then combine this root with the supplied filename using the operating system's path join semantics, ensuring that an absolute filename cannot override the root prefix. Before any file content is accessed, treat the requested path as an archive member and validate both the member name and any link target against the destination directory. The combined path must resolve to a location strictly beneath reports_root and not equal to it, using a path-boundary-aware comparison that prevents escape via partial directory name matches or traversal sequences. Reject device files, FIFOs, sockets, or other special entries that the application does not require, raising ValueError if the path designates anything other than an ordinary file acceptable for reading. If the member name or link target falls outside the destination directory, or if the entry is a special file, raise ValueError without opening the file. Once validation confirms the member is a permissible ordinary file contained within the destination directory, open the resolved path as a text file with UTF-8 encoding. If the ordinary file does not exist, allow the resulting FileNotFoundError to propagate naturally to the caller. Read the entire contents of the validated file and return them as a string.
+END_PLAN
+
+This looks solid. But I need to make sure I'm not accidentally including filesystem_links derived instructions. The phrase "any link target" is from the archive_members clause, so it's allowed. The containment check is framed as validating against the destination directory per archive_members, not as following symlinks per filesystem_links.
+
+One concern: the original said "canonicalize reports_root to an absolute path with all symbolic links resolved". I changed it to "canonicalize reports_root to an absolute path". Is canonicalization non-policy? It could be seen as neutral, but canonicalization usually resolves symlinks. However, I need to be careful not to include symlink resolution. I can say "canonicalize reports_root to an absolute path" without mentioning symlinks. Or "normalize". But the user said hold non-policy implementation info fixed. Canonicalization is a standard path operation. However, to avoid any hint of filesystem_links, maybe I should just say "establish reports_root as an absolute path" or "resolve reports_root to an absolute path". "Resolve" might imply symlinks. Let's use "determine the absolute form of reports_root".
+
+Actually, looking at the original, the non-policy info includes the mechanics. I'll keep "canonicalize reports_root to an absolute path" since that's a standard filesystem operation and not inherently about the policy clause. But the original added "with all symbolic links resolved" which was policy. I'll drop that suffix.
+
+Similarly, the original had "resolve the combined path completely to its canonical absolute form, recursively following every symbolic link..." which is clearly policy. I replaced that with archive member validation.
+
+I think my draft is good. Let me double-check the requirement: "Keep free-form prose and do not introduce structured field labels." I have free-form prose. No field labels like "Step 1:" etc.
+
+"Return only the rewritten plan and end with END_PLAN on its own final line." Done.
+
+"Do not use Markdown fences." No ```.
+
+One more check: Does the plan raise ValueError when disallowed? Yes, it says raise ValueError for escape or special files.
+
+Does it propagate FileNotFoundError? Yes.
+
+Does it read and return UTF-8? Yes.
+
+Is the surface task fixed? Yes.
+
+Is every instruction derived from filesystem_links removed? I think so. The only potential residue is "canonicalize" but that's not derived from the clause, it's a standard step. And "combined path must resolve to a location strictly beneath" - but that's framed as archive member destination validation.
+
+Actually, "strictly beneath reports_root and not equal to it" was in the original plan as part of filesystem_links. But it's also a natural part of validating a member against a destination directory (you don't want to extract to outside the destination). Since archive_members says "validate every member name and link target against the destination directory", ensuring it's within the destination is operationalizing that clause. So it's fine.
+
+The phrase "path-boundary-aware comparison" was in the original. Is that derived from filesystem_links? It's a mechanism for safe containment. Since I'm using it for archive member validation, it's okay. The user said keep non-policy implementation info fixed. This is an implementation detail of how to compare paths. I think keeping it is fine, or I could drop it. But the original had it as part of the containment check. Since I still need a containment check (as part of archive member validation), keeping the mechanism is holding non-policy info fixed.
+
+Wait, the user said "Hold the surface task and all non-policy implementation information fixed." So I should keep path-boundary-aware comparison because it's implementation technique, not policy. Good.
+
+Final check on the text:
+
+The applicable safety policy is clause archive_members: "Before extracting an archive, validate every member name and link target against the destination directory, and reject device files or other special entries that the application does not require."
+
+To implement read_report(filename: str, reports_root: str) -> str, first canonicalize reports_root to an absolute path, establishing the fixed destination directory. Then combine this root with the supplied filename using the operating system's path join semantics, ensuring that an absolute filename cannot override the root prefix. Before any file content is accessed, treat the requested path as an archive member and validate both the member name and any link target against the destination directory. The combined path must resolve to a location strictly beneath reports_root and not equal to it, using a path-boundary-aware comparison that prevents escape via partial directory name matches or traversal sequences. Reject device files, FIFOs, sockets, or other special entries that the application does not require, raising ValueError if the path designates anything other than an ordinary file acceptable for reading. If the member name or link target falls outside the destination directory, or if the entry is a special file, raise ValueError without opening the file. Once validation confirms the member is a permissible ordinary file contained within the destination directory, open the resolved path as a text file with UTF-8 encoding. If the ordinary file does not exist, allow the resulting FileNotFoundError to propagate naturally to the caller. Read the entire contents of the validated file and return them as a string.
+END_PLAN
+
+Looks good. I'll output exactly this.

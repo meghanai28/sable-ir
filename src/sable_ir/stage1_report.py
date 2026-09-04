@@ -23,7 +23,11 @@ from sable_ir.stage1_analysis import (
     PlanAudit,
     PolicyVisibility,
 )
-from sable_ir.stage1_controls import ControlPlanKind, validate_control_plan_audit
+from sable_ir.stage1_controls import (
+    ControlPlanAudit,
+    ControlPlanKind,
+    validate_control_plan_audit,
+)
 
 Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 ModelT = TypeVar("ModelT", bound=StrictModel)
@@ -50,6 +54,7 @@ class Stage1Recommendation(StrEnum):
 class Stage1Thresholds(StrictModel):
     opposite_reversal_rate_min: float = 0.20
     control_jointly_functional_pairs_min: int = 60
+    opposite_required_task_policy_groups: int = 10
     conditional_substitution_compliance_drop_min: float = 0.10
     clause_order_correct_selection_min: float = 0.50
     clause_order_natural_drop_max: float = 0.20
@@ -74,15 +79,20 @@ class Stage1Report(StrictModel):
     schema_version: Literal[1] = 1
     created_at: str
     scope: Literal["five_task_pilot"] = "five_task_pilot"
+    design_variant: Literal["full_control_replication", "lean_control_screen"] = (
+        "full_control_replication"
+    )
+    lean_selection_sha256: Sha256 | None = None
     stage0_report_sha256: Sha256
     natural_behavior_sha256: Sha256
     opposite_behavior_sha256: Sha256
-    shuffled_behavior_sha256: Sha256
+    shuffled_behavior_sha256: Sha256 | None
     wrong_clause_behavior_sha256: Sha256
     length_report_sha256: Sha256
     plan_audit_sha256: Sha256
     wrong_clause_control_audit_sha256: Sha256
-    clause_order_control_audit_sha256: Sha256
+    clause_order_control_audit_sha256: Sha256 | None
+    manual_review_artifact_sha256: Sha256 | None = None
     planner_manual_retry_job_ids: tuple[str, ...]
     planner_manual_retry_reasons: dict[str, int]
     planner_retry_sensitivity_note: str | None
@@ -101,26 +111,37 @@ def build_stage1_report(
     stage0_report_path: Path,
     natural_behavior_path: Path,
     opposite_behavior_path: Path,
-    shuffled_behavior_path: Path,
+    shuffled_behavior_path: Path | None,
     wrong_clause_behavior_path: Path,
     length_report_path: Path,
     plan_audit_path: Path,
     wrong_clause_control_audit_path: Path,
-    clause_order_control_audit_path: Path,
+    clause_order_control_audit_path: Path | None,
     control_plan_manifest_path: Path,
     output_path: Path,
     *,
     thresholds: Stage1Thresholds | None = None,
     final_manual_review_passed: bool = False,
+    lean_selection_path: Path | None = None,
+    manual_review_artifact_path: Path | None = None,
 ) -> Stage1Report:
     """Evaluate VI.E with explicit thresholds and preserve the local-model scope boundary."""
-    thresholds = thresholds or Stage1Thresholds()
+    lean = lean_selection_path is not None
+    if not lean and (shuffled_behavior_path is None or clause_order_control_audit_path is None):
+        raise Stage1Error("full Stage 1 reports require shuffled and clause-order artifacts")
+    thresholds = thresholds or Stage1Thresholds(
+        control_jointly_functional_pairs_min=40 if lean else 60
+    )
     stage0 = _json(stage0_report_path)
     natural = _load(BehavioralMetrics, natural_behavior_path)
     opposite = _load(BehavioralMetrics, opposite_behavior_path)
-    shuffled = _load(BehavioralMetrics, shuffled_behavior_path)
+    shuffled = (
+        _load(BehavioralMetrics, shuffled_behavior_path)
+        if shuffled_behavior_path is not None
+        else None
+    )
     wrong = _load(BehavioralMetrics, wrong_clause_behavior_path)
-    for metrics in (opposite, shuffled, wrong):
+    for metrics in (opposite, wrong, *((shuffled,) if shuffled is not None else ())):
         if (
             metrics.planner_manual_retry_job_ids != natural.planner_manual_retry_job_ids
             or metrics.planner_manual_retry_reasons != natural.planner_manual_retry_reasons
@@ -133,10 +154,27 @@ def build_stage1_report(
         control_plan_manifest_path,
         ControlPlanKind.WRONG_CLAUSE,
     )
-    order_control_audit = validate_control_plan_audit(
-        clause_order_control_audit_path,
-        control_plan_manifest_path,
-        ControlPlanKind.CLAUSE_ORDER,
+    order_control_audit = (
+        validate_control_plan_audit(
+            clause_order_control_audit_path,
+            control_plan_manifest_path,
+            ControlPlanKind.CLAUSE_ORDER,
+        )
+        if clause_order_control_audit_path is not None
+        else None
+    )
+    selection_sha256 = _sha(lean_selection_path.read_bytes()) if lean_selection_path else None
+    if lean:
+        wrong_audit = _load(ControlPlanAudit, wrong_clause_control_audit_path)
+        if wrong_audit.lean_selection_sha256 != selection_sha256:
+            raise Stage1Error("lean Stage 1 report selection/audit hash mismatch")
+        if shuffled is not None or order_control_audit is not None:
+            raise Stage1Error("lean Stage 1 omits shuffled-task and clause-order controls")
+    manual_review_sha256 = _validate_manual_review_artifact(
+        manual_review_artifact_path,
+        final_manual_review_passed=final_manual_review_passed,
+        lean_selection_sha256=selection_sha256,
+        opposite_behavior_sha256=_sha(opposite_behavior_path.read_bytes()),
     )
     gates = _gates(
         stage0,
@@ -149,6 +187,7 @@ def build_stage1_report(
         wrong_control_audit,
         order_control_audit,
         thresholds,
+        lean=lean,
     )
     invalid = any(gate.status is GateStatus.INVALID for gate in gates)
     incomplete = any(gate.status is GateStatus.NOT_EVALUABLE for gate in gates)
@@ -181,15 +220,24 @@ def build_stage1_report(
         recommendation = Stage1Recommendation.CONTINUE_TO_STAGE2
     report = Stage1Report(
         created_at=_now(),
+        design_variant="lean_control_screen" if lean else "full_control_replication",
+        lean_selection_sha256=selection_sha256,
         stage0_report_sha256=_sha(stage0_report_path.read_bytes()),
         natural_behavior_sha256=_sha(natural_behavior_path.read_bytes()),
         opposite_behavior_sha256=_sha(opposite_behavior_path.read_bytes()),
-        shuffled_behavior_sha256=_sha(shuffled_behavior_path.read_bytes()),
+        shuffled_behavior_sha256=(
+            _sha(shuffled_behavior_path.read_bytes()) if shuffled_behavior_path else None
+        ),
         wrong_clause_behavior_sha256=_sha(wrong_clause_behavior_path.read_bytes()),
         length_report_sha256=_sha(length_report_path.read_bytes()),
         plan_audit_sha256=_sha(plan_audit_path.read_bytes()),
         wrong_clause_control_audit_sha256=_sha(wrong_clause_control_audit_path.read_bytes()),
-        clause_order_control_audit_sha256=_sha(clause_order_control_audit_path.read_bytes()),
+        clause_order_control_audit_sha256=(
+            _sha(clause_order_control_audit_path.read_bytes())
+            if clause_order_control_audit_path
+            else None
+        ),
+        manual_review_artifact_sha256=manual_review_sha256,
         planner_manual_retry_job_ids=natural.planner_manual_retry_job_ids,
         planner_manual_retry_reasons=natural.planner_manual_retry_reasons,
         planner_retry_sensitivity_note=natural.planner_retry_sensitivity_note,
@@ -213,23 +261,36 @@ def _gates(
     stage0: dict[str, object],
     natural: BehavioralMetrics,
     opposite: BehavioralMetrics,
-    shuffled: BehavioralMetrics,
+    shuffled: BehavioralMetrics | None,
     wrong: BehavioralMetrics,
     lengths: LengthReport,
     audit: PlanAudit,
     wrong_control_audit: dict[str, int | float],
-    order_control_audit: dict[str, int | float],
+    order_control_audit: dict[str, int | float] | None,
     thresholds: Stage1Thresholds,
+    *,
+    lean: bool = False,
 ) -> list[Stage1Gate]:
-    expected_counts = ((natural, 720), (opposite, 120), (shuffled, 120), (wrong, 120))
-    if any(metric.evaluated_rows != expected for metric, expected in expected_counts):
+    expected_counts = (
+        ((natural, 720), (opposite, 60), (wrong, 24))
+        if lean
+        else ((natural, 720), (opposite, 120), (shuffled, 120), (wrong, 120))
+    )
+    typed_expected = tuple(
+        (metric, expected) for metric, expected in expected_counts if metric is not None
+    )
+    if any(metric.evaluated_rows != expected for metric, expected in typed_expected):
         return [
             Stage1Gate(
                 gate_id="S1-COMPLETE",
                 description="All natural and control renderer outputs evaluated",
                 status=GateStatus.NOT_EVALUABLE,
-                observed=min(metric.evaluated_rows for metric, _expected in expected_counts),
-                threshold="720 natural and 120 in each stratified control",
+                observed=min(metric.evaluated_rows for metric, _expected in typed_expected),
+                threshold=(
+                    "720 natural, 60 opposite-policy, and 24 sampled wrong-clause"
+                    if lean
+                    else "720 natural and 120 in each stratified control"
+                ),
                 detail=(
                     "Missing jobs or infrastructure errors make Stage 1 incomplete and retryable."
                 ),
@@ -239,7 +300,7 @@ def _gates(
         row.functionality.value == "pass"
         and row.policy_a.value == "pass"
         and row.policy_b.value == "pass"
-        for metric in (natural, opposite, shuffled, wrong)
+        for metric in (natural, opposite, wrong, *((shuffled,) if shuffled is not None else ()))
         for row in metric.rows
     )
     if mutual:
@@ -291,18 +352,28 @@ def _gates(
         row.clause_selection is not None and row.clause_selection.value == "correct"
         for row in audit.rows
     ) / len(audit.rows)
-    reordered_selection = float(order_control_audit["clause_order_correct_selection_rate"])
+    reordered_selection = (
+        float(order_control_audit["clause_order_correct_selection_rate"])
+        if order_control_audit is not None
+        else None
+    )
     valid_wrong = float(wrong_control_audit["wrong_clause_plan_valid_rate"])
     selection_by_bin = _selection_by_bin(audit, lengths)
     compliance_by_bin = _compliance_by_bin(natural, lengths)
     shared_bin_count = len(supported_bins)
     nonsaturated = _has_headroom(selection_by_bin) and _has_headroom(compliance_by_bin)
-    wrong_drop, wrong_pairs, wrong_coverage = _conditional_control_drop(natural, wrong)
-    shuffled_drop, shuffled_pairs, shuffled_coverage = _conditional_control_drop(natural, shuffled)
+    (
+        wrong_drop,
+        wrong_pairs,
+        wrong_coverage,
+        wrong_natural_passes,
+        wrong_control_passes,
+    ) = _conditional_control_drop(natural, wrong)
+    shuffled_values = _conditional_control_drop(natural, shuffled) if shuffled is not None else None
     visible_omissions = sum(
         row.policy_visibility is not PolicyVisibility.PRESERVED for row in audit.rows
     )
-    return [
+    gates = [
         _descriptive_difference(
             "S1.1a",
             "Full structured functionality versus sparse Stage 0 full-document direct",
@@ -324,91 +395,144 @@ def _gates(
             thresholds.opposite_reversal_rate_min,
             thresholds.control_jointly_functional_pairs_min,
         ),
-        _conditional_drop_gate(
-            "S1.3",
-            "Wrong-clause plans reduce assigned-policy compliance among jointly functional pairs",
-            wrong_drop,
-            wrong_pairs,
-            wrong_coverage,
-            thresholds.conditional_substitution_compliance_drop_min,
-            thresholds.control_jointly_functional_pairs_min,
-            valid_control=valid_wrong == 1.0,
+        (
+            _descriptive_control_drop(
+                "S1.3",
+                "Sampled wrong-clause conditional assigned-policy-compliance drop",
+                wrong_drop,
+                wrong_pairs,
+                wrong_coverage,
+                wrong_natural_passes,
+                wrong_control_passes,
+            )
+            if lean
+            else _conditional_drop_gate(
+                "S1.3",
+                "Wrong-clause plans reduce assigned-policy compliance among jointly "
+                "functional pairs",
+                wrong_drop,
+                wrong_pairs,
+                wrong_coverage,
+                thresholds.conditional_substitution_compliance_drop_min,
+                thresholds.control_jointly_functional_pairs_min,
+                valid_control=valid_wrong == 1.0,
+            )
         ),
         _functionality_diagnostic("S1.3F", natural, wrong, "wrong-clause"),
-        Stage1Gate(
-            gate_id="S1.4",
-            description="Reversing clause order does not determine clause selection",
-            status=(
-                GateStatus.PASSED
-                if reordered_selection >= thresholds.clause_order_correct_selection_min
-                and natural_selection - reordered_selection
-                <= thresholds.clause_order_natural_drop_max
-                else GateStatus.FAILED
-            ),
-            observed=reordered_selection,
-            threshold=(
-                f">= {thresholds.clause_order_correct_selection_min:.0%} and natural drop "
-                f"<= {thresholds.clause_order_natural_drop_max:.0%}"
-            ),
-            detail=f"Natural correct selection was {natural_selection:.1%}.",
-        ),
-        _descriptive_control_drop(
-            "S1.5",
-            "Shuffled-task conditional policy-compliance drop",
+    ]
+    if not lean:
+        assert reordered_selection is not None
+        assert shuffled is not None and shuffled_values is not None
+        (
             shuffled_drop,
             shuffled_pairs,
             shuffled_coverage,
-        ),
-        _functionality_diagnostic("S1.5F", natural, shuffled, "shuffled-task"),
-        Stage1Gate(
-            gate_id="S1.6",
-            description="Structured and free-form plans overlap in observed length",
-            status=(GateStatus.PASSED if supported_bins else GateStatus.FAILED),
-            observed=len(supported_bins),
-            threshold=(
-                f">= 1 bin with >= {thresholds.supported_bin_matched_pairs_min} strict matches "
-                f"spanning >= {thresholds.supported_bin_task_policy_groups_min} task-policy groups"
+            shuffled_natural_passes,
+            shuffled_control_passes,
+        ) = shuffled_values
+        gates.extend(
+            [
+                Stage1Gate(
+                    gate_id="S1.4",
+                    description="Reversing clause order does not determine clause selection",
+                    status=(
+                        GateStatus.PASSED
+                        if reordered_selection >= thresholds.clause_order_correct_selection_min
+                        and natural_selection - reordered_selection
+                        <= thresholds.clause_order_natural_drop_max
+                        else GateStatus.FAILED
+                    ),
+                    observed=reordered_selection,
+                    threshold=(
+                        f">= {thresholds.clause_order_correct_selection_min:.0%} and natural drop "
+                        f"<= {thresholds.clause_order_natural_drop_max:.0%}"
+                    ),
+                    detail=f"Natural correct selection was {natural_selection:.1%}.",
+                ),
+                _descriptive_control_drop(
+                    "S1.5",
+                    "Shuffled-task conditional policy-compliance drop",
+                    shuffled_drop,
+                    shuffled_pairs,
+                    shuffled_coverage,
+                    shuffled_natural_passes,
+                    shuffled_control_passes,
+                ),
+                _functionality_diagnostic("S1.5F", natural, shuffled, "shuffled-task"),
+            ]
+        )
+    gates.extend(
+        [
+            Stage1Gate(
+                gate_id="S1.6",
+                description="Structured and free-form plans overlap in observed length",
+                status=(GateStatus.PASSED if supported_bins else GateStatus.FAILED),
+                observed=len(supported_bins),
+                threshold=(
+                    f">= 1 bin with >= {thresholds.supported_bin_matched_pairs_min} strict matches "
+                    "spanning >= "
+                    f"{thresholds.supported_bin_task_policy_groups_min} task-policy groups"
+                ),
+                detail=(
+                    "A strict match is in the same bin and differs by no more than max(5 tokens, "
+                    f"10% of the shorter plan). Supported bins={supported_bins}; "
+                    f"strict matches by group={valid_matches}."
+                ),
             ),
-            detail=(
-                "A strict match is in the same bin and differs by no more than max(5 tokens, "
-                f"10% of the shorter plan). Supported bins={supported_bins}; "
-                f"strict matches by group={valid_matches}."
+            Stage1Gate(
+                gate_id="S1.7",
+                description="Evidence tier for compression-versus-length analysis",
+                status=(
+                    GateStatus.PASSED
+                    if shared_bin_count >= thresholds.compression_trend_bins_min and nonsaturated
+                    else GateStatus.DESCRIPTIVE
+                    if shared_bin_count == 1
+                    else GateStatus.FAILED
+                ),
+                observed=shared_bin_count,
+                threshold=(
+                    f">= {thresholds.compression_trend_bins_min} shared bins for a trend; "
+                    f">= {thresholds.nonlinear_analysis_bins_min} for nonlinear/crossover analysis"
+                ),
+                detail=(
+                    f"Selection bins={selection_by_bin}; assigned-functional "
+                    f"bins={compliance_by_bin}. "
+                    "Exactly one shared bin permits format comparison only."
+                ),
             ),
-        ),
-        Stage1Gate(
-            gate_id="S1.7",
-            description="Evidence tier for compression-versus-length analysis",
-            status=(
-                GateStatus.PASSED
-                if shared_bin_count >= thresholds.compression_trend_bins_min and nonsaturated
-                else GateStatus.DESCRIPTIVE
-                if shared_bin_count == 1
-                else GateStatus.FAILED
+            Stage1Gate(
+                gate_id="S1.8",
+                description="Natural plans include visible omissions, blurs, or replacements",
+                status=GateStatus.PASSED,
+                observed=visible_omissions,
+                threshold=None,
+                detail=(
+                    "Natural loss cases are available."
+                    if visible_omissions
+                    else "No natural omission occurred; retain the compression frontier and use "
+                    "the "
+                    "matched A/B counterfactual route, as specified by VI.E.9."
+                ),
             ),
-            observed=shared_bin_count,
-            threshold=(
-                f">= {thresholds.compression_trend_bins_min} shared bins for a trend; "
-                f">= {thresholds.nonlinear_analysis_bins_min} for nonlinear/crossover analysis"
-            ),
-            detail=(
-                f"Selection bins={selection_by_bin}; assigned-functional bins={compliance_by_bin}. "
-                "Exactly one shared bin permits format comparison only."
-            ),
-        ),
-        Stage1Gate(
-            gate_id="S1.8",
-            description="Natural plans include visible omissions, blurs, or replacements",
-            status=GateStatus.PASSED,
-            observed=visible_omissions,
-            threshold=None,
-            detail=(
-                "Natural loss cases are available."
-                if visible_omissions
-                else "No natural omission occurred; retain the compression frontier and use the "
-                "matched A/B counterfactual route, as specified by VI.E.9."
-            ),
-        ),
-    ]
+        ]
+    )
+    if lean:
+        opposite_gate = next(gate for gate in gates if gate.gate_id == "S1.2")
+        covered_groups = len(opposite_gate.coverage_by_task_policy or {})
+        if (
+            opposite_gate.status is GateStatus.PASSED
+            and covered_groups < thresholds.opposite_required_task_policy_groups
+        ):
+            gates[gates.index(opposite_gate)] = opposite_gate.model_copy(
+                update={
+                    "status": GateStatus.INSUFFICIENT_CONTROL_SUPPORT,
+                    "detail": (
+                        f"Eligible pairs cover {covered_groups}/"
+                        f"{thresholds.opposite_required_task_policy_groups} task-policy groups."
+                    ),
+                }
+            )
+    return gates
 
 
 def _descriptive_difference(
@@ -450,8 +574,9 @@ def _supported_minimum_gate(
         observed=observed,
         threshold=f">= {threshold:.0%}",
         detail=(
-            f"Exact reversals among {eligible_pairs} matched pairs where both outputs are "
-            "functional; coverage is reported by task-policy group."
+            f"Exact reversals={round((observed or 0.0) * eligible_pairs)}/{eligible_pairs} "
+            "matched pairs where both outputs are functional; coverage is reported by "
+            "task-policy group."
         ),
         eligible_pairs=eligible_pairs,
         coverage_by_task_policy=coverage,
@@ -498,6 +623,8 @@ def _descriptive_control_drop(
     drop: float | None,
     eligible_pairs: int,
     coverage: dict[str, int],
+    natural_assigned_passes: int,
+    control_assigned_passes: int,
 ) -> Stage1Gate:
     return Stage1Gate(
         gate_id=gate_id,
@@ -507,7 +634,10 @@ def _descriptive_control_drop(
         threshold=None,
         detail=(
             f"Descriptive only; computed over {eligible_pairs} pairs where both natural and "
-            "shuffled outputs passed functionality. Functionality loss is reported separately."
+            "controlled outputs passed functionality. Assigned-policy passes were "
+            f"{natural_assigned_passes}/{eligible_pairs} natural and "
+            f"{control_assigned_passes}/{eligible_pairs} controlled. Functionality loss is "
+            "reported separately."
         ),
         eligible_pairs=eligible_pairs,
         coverage_by_task_policy=coverage,
@@ -522,21 +652,26 @@ def _functionality_diagnostic(
 ) -> Stage1Gate:
     natural_by_id = {row.job_id: row for row in natural.rows}
     paired = [(natural_by_id[row.job_id], row) for row in control.rows]
-    natural_rate = _mean([a.functionality.value == "pass" for a, _b in paired])
-    control_rate = _mean([b.functionality.value == "pass" for _a, b in paired])
+    natural_passes = sum(a.functionality.value == "pass" for a, _b in paired)
+    control_passes = sum(b.functionality.value == "pass" for _a, b in paired)
+    natural_rate = natural_passes / len(paired)
+    control_rate = control_passes / len(paired)
     return Stage1Gate(
         gate_id=gate_id,
         description=f"{label} functionality-loss diagnostic",
         status=GateStatus.DESCRIPTIVE,
         observed=natural_rate - control_rate,
         threshold=None,
-        detail=f"Matched natural={natural_rate:.1%}; control={control_rate:.1%}.",
+        detail=(
+            f"Matched natural={natural_passes}/{len(paired)} ({natural_rate:.1%}); "
+            f"control={control_passes}/{len(paired)} ({control_rate:.1%})."
+        ),
     )
 
 
 def _conditional_control_drop(
     natural: BehavioralMetrics, control: BehavioralMetrics
-) -> tuple[float | None, int, dict[str, int]]:
+) -> tuple[float | None, int, dict[str, int], int, int]:
     natural_by_id = {row.job_id: row for row in natural.rows}
     jointly_functional = [
         (natural_by_id[row.job_id], row)
@@ -546,10 +681,17 @@ def _conditional_control_drop(
     ]
     coverage = _pair_coverage(jointly_functional)
     if not jointly_functional:
-        return None, 0, coverage
-    natural_rate = _mean([a.assigned_policy_and_functional for a, _b in jointly_functional])
-    control_rate = _mean([b.assigned_policy_and_functional for _a, b in jointly_functional])
-    return natural_rate - control_rate, len(jointly_functional), coverage
+        return None, 0, coverage, 0, 0
+    natural_passes = sum(a.assigned_policy_and_functional for a, _b in jointly_functional)
+    control_passes = sum(b.assigned_policy_and_functional for _a, b in jointly_functional)
+    total = len(jointly_functional)
+    return (
+        (natural_passes / total) - (control_passes / total),
+        total,
+        coverage,
+        natural_passes,
+        control_passes,
+    )
 
 
 def _exact_opposite_reversal(
@@ -664,6 +806,40 @@ def _json(path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise Stage1Error(f"Stage 1 report input is not an object: {path}")
     return value
+
+
+def _validate_manual_review_artifact(
+    path: Path | None,
+    *,
+    final_manual_review_passed: bool,
+    lean_selection_sha256: str | None,
+    opposite_behavior_sha256: str,
+) -> str | None:
+    if not final_manual_review_passed:
+        if path is not None:
+            raise Stage1Error(
+                "a manual-review artifact may only be attached to an approved final report"
+            )
+        return None
+    if path is None:
+        raise Stage1Error("an approved final report requires a manual-review artifact")
+    review = _json(path)
+    if review.get("decision") != "approved":
+        raise Stage1Error("the Stage 1 manual-review artifact is not approved")
+    reviewed = review.get("reviewed_artifacts")
+    if not isinstance(reviewed, dict):
+        raise Stage1Error("the Stage 1 manual-review artifact lacks reviewed_artifacts")
+    expected = {
+        "lean_selection": lean_selection_sha256,
+        "opposite_behavior": opposite_behavior_sha256,
+    }
+    for name, expected_sha256 in expected.items():
+        entry = reviewed.get(name)
+        if not isinstance(entry, dict) or entry.get("sha256") != expected_sha256:
+            raise Stage1Error(
+                f"the Stage 1 manual-review artifact does not bind the current {name}"
+            )
+    return _sha(path.read_bytes())
 
 
 def _load(model: type[ModelT], path: Path) -> ModelT:

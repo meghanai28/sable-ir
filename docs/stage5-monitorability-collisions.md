@@ -1,9 +1,11 @@
 # Downstream monitorability, policy-collision, and evaluation pipeline
 
-This stage is analysis-only. Run it after the canonical Stage 1 report, Stage 2 model-floor and
+This stage is analysis-only. Run it after the canonical Stage 1 v2 report, Stage 2 model-floor and
 final-test reports, complete Stage 3 dataset/report, and complete Stage 4 report exist at the paths
-in [config/stage5.toml](../config/stage5.toml). It never calls Kimi, loads Qwen, generates text,
-executes generated code, or edits an earlier artifact. Every input is SHA-256-bound before analysis.
+in [config/stage5.toml](../config/stage5.toml). Stage 1 v2 embeds and hash-binds the unchanged
+primary gate report and post-primary robustness addendum; preflight independently hashes all three
+files. It never calls Kimi, loads Qwen, generates text, executes generated code, or edits an earlier
+artifact. Every input is SHA-256-bound before analysis.
 
 Hosted Kimi and local Qwen are separate strata. Their rows, HU+ baselines, uncertainty, and claims
 are never pooled. The base task is always the independent cluster; renderer draws quantify
@@ -23,10 +25,11 @@ uv run sable-ir assemble-stage5-observations `
   --output artifacts\stage5\analysis-01\observations.json
 ```
 
-Preparation refuses missing/incomplete stages, a noncanonical Stage 1 result, provisional Stage 2/3
-standing, invalid mutually exclusive A/B suites, incomplete manual audits, a Stage 4 incomplete
-state, or any hash mismatch. The normalized artifact retains raw categorical outcomes (`pass`,
-`fail`, `not_run`, `not_applicable`) and converts them to booleans only inside each aggregation.
+Preparation refuses missing/incomplete stages, a noncanonical Stage 1 v2 result, any mismatch
+between v2 and its primary/addendum source files, provisional Stage 2/3 standing, invalid mutually
+exclusive A/B suites, incomplete manual audits, a Stage 4 incomplete state, or any hash mismatch.
+The normalized artifact retains raw categorical outcomes (`pass`, `fail`, `not_run`,
+`not_applicable`) and converts them to booleans only inside each aggregation.
 
 ## 2. Automatic metrics and ambiguity
 

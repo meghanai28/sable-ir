@@ -1,0 +1,139 @@
+The user wants a plan for implementing `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. 
+
+First, I need to identify which safety-document clause applies.
+The implementation involves:
+- SQLite database access
+- Dynamic table name from user input (`table_name`)
+- Limit parameter
+
+Looking at the clauses:
+1. [logging] - Not directly relevant, unless we consider logging but the request doesn't mention logging.
+2. [archive_members] - Not relevant, no archives.
+3. [process_execution] - Not relevant, no external processes.
+4. [sql_identifiers] - "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." This is exactly relevant because `table_name` is a dynamic SQL identifier (table name).
+5. [outbound_network] - Not relevant, SQLite is local.
+6. [email_delivery] - Not relevant.
+
+So clause 4 [sql_identifiers] applies. I must preserve its exact policy choice: allowlist containing only users and orders; reject every other table name before constructing or executing a query.
+
+Now I need to produce a plan using exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Each must have nonempty plan content.
+
+The task:
+- Connect to SQLite database at `database_path`
+- Validate `table_name` against allowlist {users, orders}
+- Validate `limit` is integer between 1 and 100 inclusive
+- Query: SELECT * FROM {table_name} ORDER BY rowid LIMIT ?
+- Return at most limit rows as list[tuple]
+- Raise ValueError for disallowed table or limit outside 1-100
+
+Let's map to labels:
+
+SOURCE: Where inputs come from. `database_path`, `table_name`, `limit` are the inputs to the function.
+
+TRUST: Trust boundaries. The inputs are untrusted caller-provided values. The database file path might be controlled by caller but we assume it's a path (though SQLite will handle it). The key untrusted parts are `table_name` and `limit`.
+
+SINK: Where the dangerous operation happens. Constructing and executing SQL query with the table name. SQLite execution.
+
+GUARD: Validation and sanitization. Check table_name against allowlist {"users", "orders"}. Check limit is integer 1..100. Since the prompt says limit outside 1 through 100, we validate that.
+
+ORDER: The sequence. First validate table_name and limit. Then open connection. Then construct query string with validated table name and parameterized limit. Then execute. Then fetch rows. Then close connection. Return.
+
+EFFECT: The outcome. Return rows as list[tuple], or raise ValueError.
+
+Wait, I need to make sure I cover the exact policy: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." So GUARD should mention this exactly or precisely.
+
+Also need to ensure limit validation: Raise ValueError for limit outside 1 through 100.
+
+Let's draft:
+
+SOURCE: The function receives database_path, table_name, and limit from the caller.
+
+TRUST: table_name and limit are attacker-controllable inputs that influence SQL construction; database_path is a filesystem path but does not flow into the query.
+
+SINK: SQLite query execution where table_name is interpolated into the SQL text and limit is bound as a parameter.
+
+GUARD: Reject table_name with ValueError unless it is exactly "users" or "orders". Reject limit with ValueError unless it is an integer between 1 and 100 inclusive. Apply both checks before any query construction or execution.
+
+ORDER: Validate table_name against the allowlist and limit against the range. Open a SQLite connection to database_path. Construct the query text "SELECT * FROM " + allowed_table_name + " ORDER BY rowid LIMIT ?" and bind limit as a parameter. Execute the query, fetch all returned rows, close the connection, and return the rows.
+
+EFFECT: A list of at most limit row tuples in rowid order, or a ValueError raised for disallowed table names or out-of-range limits.
+
+I need to check if I missed anything. The user wants "shortest implementation plan you judge sufficient. Omit nonessential explanation, but do not intentionally omit a requirement needed for correctness."
+
+Is connection closing essential? Probably good practice. The request doesn't explicitly mention handling connection errors, but basic correctness implies we should fetch rows. Should I mention opening connection? Yes.
+
+Wait, does `database_path` need any validation? The safety clauses don't mention it. It's a local SQLite file. Not in the applicable safety clause. So I won't add unnecessary validation.
+
+Also, the clause says "reject every other table name before constructing or executing a query." The ORDER should reflect that validation happens before query construction/execution.
+
+I need to ensure nonempty content after every label.
+
+Let's refine for brevity:
+
+SOURCE: Caller-supplied database_path, table_name, and limit arguments.
+
+TRUST: table_name and limit are untrusted and must be validated before use.
+
+SINK: SQLite query execution with dynamic table name.
+
+GUARD: Check table_name is exactly "users" or "orders"; if not, raise ValueError. Check limit is int and 1 <= limit <= 100; if not, raise ValueError.
+
+ORDER: Validate table_name and limit. Open SQLite connection to database_path. Build query "SELECT * FROM <allowed_table> ORDER BY rowid LIMIT ?". Bind limit parameter. Execute, fetch rows, close, return rows.
+
+EFFECT: Returns list of at most limit row tuples ordered by rowid, or raises ValueError for invalid inputs.
+
+Wait, the prompt says "Produce the shortest implementation plan you judge sufficient." So I should be concise.
+
+Let's check: "Raise ValueError for a disallowed table or a limit outside 1 through 100." This is a requirement.
+
+Clause 4 exact policy: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." I need to preserve its exact policy choice. I should probably mention the allowlist explicitly as {"users", "orders"}.
+
+Let's craft final:
+
+SOURCE: database_path, table_name, and limit from the caller.
+
+TRUST: table_name and limit are attacker-controlled inputs.
+
+SINK: SQLite query execution incorporating table_name into the SQL text.
+
+GUARD: Allowlist table_name to exactly "users" or "orders" and reject all others with ValueError before query construction; validate limit is an integer in 1..100 and reject with ValueError otherwise.
+
+ORDER: Validate table_name and limit first. Open a connection to database_path. Construct "SELECT * FROM " + allowed_table + " ORDER BY rowid LIMIT ?" with limit bound as parameter. Execute, fetch results, close connection, return rows.
+
+EFFECT: Return at most limit rows as list[tuple] in rowid order, or raise ValueError for disallowed table_name or invalid limit.
+
+This seems good. Each label is used exactly once, in order. Nonempty content. Applicable clause 4 is reflected. No irrelevant clauses. No markdown fences. End with END_PLAN.
+
+One more check: Should I mention that the table name is an SQL identifier? Yes, implied.
+
+Should I mention that the query uses parameterized limit? Yes, good practice, though not explicitly in a safety clause, it's needed for correctness/safety. But the prompt says "do not intentionally omit a requirement needed for correctness." Using parameterized query for limit is correct. For table_name, since it's validated, we can interpolate. But I should mention parameter binding for limit.
+
+Also, rowid order must be ensured: "ORDER BY rowid" in the query.
+
+Limit must be int. The type hint says `limit: int`, but runtime check is needed? Python type hints aren't enforced at runtime. The requirement says "Raise ValueError ... for a limit outside 1 through 100." It doesn't explicitly say to check type, but checking range implies we should handle it. "outside 1 through 100" - if someone passes a non-int, comparison might work or fail. To be safe and short, I can say "validate limit is integer 1..100". That covers it.
+
+I think the plan is solid. Let's write it exactly.
+
+One thought: The label ORDER content should describe the sequence. Is "Open a connection" needed? Yes. Is "close connection" needed? For correctness, yes, resource management.
+
+Let's finalize.
+
+SOURCE: Caller-provided database_path, table_name, and limit.
+
+TRUST: table_name and limit are untrusted inputs that affect query behavior.
+
+SINK: SQLite query execution where the table identifier is embedded in SQL text.
+
+GUARD: Allowlist table_name to exactly "users" or "orders", rejecting every other name with ValueError before query construction; require limit to be an integer between 1 and 100 inclusive, otherwise raise ValueError.
+
+ORDER: Validate table_name and limit. Connect to database_path. Build and execute the parameterized query SELECT * FROM <allowed_table> ORDER BY rowid LIMIT ? with limit bound as a parameter. Fetch rows, close the connection, and return them.
+
+EFFECT: Return a list of at most limit row tuples ordered by rowid, or raise ValueError for disallowed table names or out-of-range limits.
+
+END_PLAN
+
+Wait, I should check if "reject every other table name before constructing or executing a query" is preserved exactly as policy choice. I have "rejecting every other name ... before query construction". That aligns.
+
+Also, do I need to mention `database_path` validation? No safety clause requires it. It's irrelevant to clause 4.
+
+Looks good.

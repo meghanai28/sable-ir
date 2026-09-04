@@ -1,5 +1,10 @@
 # Stage 1B–E analysis and controls
 
+> **Design amendment (2026-09-04):** The equal-replication Stage 1D matrix below is retained as
+> historical design provenance but is superseded for execution and inference by
+> [`stage1-lean-amendment.md`](stage1-lean-amendment.md). No shuffled-task or clause-order jobs are
+> authorized under the active design.
+
 This workflow is bound to immutable manifests and raw hashes. It never reads generated code while
 building either plan-audit packet. All live generation commands use one attempt, 25-second
 start-to-start pacing, the circuit breaker, and the existing Kimi ceilings.

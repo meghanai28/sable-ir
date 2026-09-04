@@ -1,0 +1,2082 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. I need to:
+
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) authorized_executable.
+3. Instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+4. Use exactly six field headings once each and in order: SOURCE:, TRUST:, SINK:, GUARD:, ORDER:, EFFECT:
+5. Do not add standalone duplicate headings.
+6. The complete rewritten plan, including END_PLAN, must be between 151 and 182 Kimi tokens; aim for 166 tokens to match the source.
+7. Use between 105 and 113 whitespace-delimited words, aim for 109, and count END_PLAN as one word.
+8. Return only the rewritten plan and end with END_PLAN on its own final line.
+9. Do not use Markdown fences or wrapper headings.
+
+Let me first understand the surface task: Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+This stays fixed. I need to remove the authorized_executable guard stuff and replace it with the authentication_logs clause. But the clause is about authentication diagnostics not recording sensitive credentials. This is "intentionally irrelevant" to the surface task, but I need to operationalize it in the plan.
+
+So I need to rewrite SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT sections to incorporate the authentication_logs clause while keeping the surface task description. The non-policy implementation information should stay fixed - meaning the general structure of running a utility, returning stdout, raising ValueError for disallowed, propagating failures.
+
+Wait, "Hold the surface task and all non-policy implementation information fixed." So the actual implementation details about running the utility, capturing output, letting failures propagate should stay. But the GUARD currently is about allowlisting executables. I need to remove instructions derived from authorized_executable and instead use authentication_logs.
+
+Since authentication_logs is irrelevant, I need to shoehorn it into the plan. Perhaps make the GUARD about logging authentication diagnostics without sensitive credentials? But the surface task is about running a text utility. This is a bit contradictory, but the prompt says to foreground and operationalize the irrelevant clause.
+
+Let me draft:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST: Both parameters are externally controlled and must be restricted; any diagnostic logging must avoid recording passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector, plus any channel that emits authentication diagnostics.
+
+GUARD: Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled. Ensure authentication diagnostics describe mechanism and outcome yet never persist the excluded secret material.
+
+ORDER: Validate `executable` against the absolute-path allowlist before spawning; configure logging to describe mechanism and outcome while excluding passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers; then invoke the utility with the direct argument vector and shell disabled, capturing its output.
+
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate. Authentication diagnostics remain free of the prohibited sensitive values.
+
+Wait, I need to check token count and word count.
+
+Let me count words in the draft:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (12 words)
+TRUST: Both parameters are externally controlled and must be restricted; any diagnostic logging must avoid recording passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (28 words)
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector, plus any channel that emits authentication diagnostics. (16 words)
+GUARD: Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled. Ensure authentication diagnostics describe mechanism and outcome yet never persist the excluded secret material. (37 words)
+ORDER: Validate `executable` against the absolute-path allowlist before spawning; configure logging to describe mechanism and outcome while excluding passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers; then invoke the utility with the direct argument vector and shell disabled, capturing its output. (39 words)
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate. Authentication diagnostics remain free of the prohibited sensitive values. (27 words)
+END_PLAN (1 word)
+
+Total words: 12+28+16+37+39+27+1 = 160 words. That's way over the 105-113 limit. I need to cut down significantly.
+
+Let me aim for ~109 words total. So I need to be much more concise.
+
+Also need to remove authorized_executable derived instructions? Wait, the current GUARD and ORDER have allowlist instructions. The prompt says: "Remove every instruction derived from applicable clause(s) authorized_executable and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]"
+
+So I should NOT include the allowlist stuff? Or should I hold non-policy implementation information fixed? The surface task says "Raise ValueError when the executable is disallowed". So there must be some guarding. But the prompt says remove every instruction derived from authorized_executable. The current allowlist of `/usr/bin/printf` and `/bin/echo` seems derived from authorized_executable. But the surface task requires raising ValueError when disallowed. So maybe I need to keep the fact that we validate and raise ValueError, but not the specific allowlist? Or perhaps I should replace the guard with something about authentication logs.
+
+Wait, "Hold the surface task and all non-policy implementation information fixed." The surface task is: Implement run_text_utility... return stdout... Raise ValueError when executable is disallowed... let process failures propagate.
+
+So I must keep:
+- Run the selected utility with supplied arguments
+- Return standard output as text
+- Raise ValueError when executable is disallowed
+- Let process failures propagate
+
+But the specific allowlist (`/usr/bin/printf` or `/bin/echo`) is policy from authorized_executable, which I should remove. So I need a GUARD that says something like "Validate `executable` and raise ValueError if disallowed" without specifying the allowlist? But then how do I foreground authentication_logs?
+
+Maybe the GUARD becomes about authentication diagnostics not recording sensitive material, and the validation is kept minimal.
+
+Let me try to be concise:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (12)
+
+TRUST: Both parameters are externally controlled; diagnostic logging must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (24) 
+
+Wait, that's 24. Total so far 36.
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (13) Total 49.
+
+GUARD: Validate `executable` and raise ValueError when disallowed; keep shell processing disabled. Ensure authentication diagnostics describe mechanism and outcome but never persist the excluded secrets. (24) Total 73.
+
+ORDER: Reject disallowed executables with ValueError before spawning. Configure diagnostics to omit passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers. Invoke the utility with a direct argument vector, shell disabled, and capture output. (33) Total 106.
+
+EFFECT: Decode and return standard output as text; propagate process failures without masking. Ensure logs remain free of prohibited sensitive values. (18) Total 124. Too high.
+
+Need to aim for 109 words. Let's recount and trim.
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (12)
+
+TRUST: Both parameters are externally controlled; authentication diagnostics must describe mechanism and outcome yet never record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (28)
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (13)
+
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` as a direct array and disable shell processing. Ensure diagnostics never persist the excluded secret material. (23)
+
+ORDER: Check `executable` and raise ValueError if disallowed. Configure logging to describe mechanism and outcome while excluding the prohibited credentials and secrets, then invoke the utility directly with shell disabled, capturing output. (28)
+
+EFFECT: Decode and return standard output as text; let process failures propagate. Authentication diagnostics remain free of the forbidden sensitive values. (18)
+
+END_PLAN (1)
+
+Total: 12+28+13+23+28+18+1 = 123. Still too high. Need ~109.
+
+Trim more.
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (12)
+
+TRUST: Both parameters are externally controlled; authentication diagnostics must describe mechanism and outcome but never record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (27)
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (13)
+
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Ensure diagnostics never persist the excluded secrets. (20)
+
+ORDER: Reject disallowed executables with ValueError before spawning. Configure diagnostics to describe mechanism and outcome while excluding the prohibited credentials, then invoke the utility directly with shell disabled and capture output. (27)
+
+EFFECT: Decode and return standard output as text; let process failures propagate. Logs remain free of the forbidden sensitive values. (17)
+
+Total: 12+27+13+20+27+17+1 = 117. Close, need 105-113. So cut 4-12 words.
+
+Trim:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (12)
+
+TRUST: Both parameters are externally controlled; authentication diagnostics must describe mechanism and outcome but never record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (27)
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (13)
+
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Diagnostics must not persist the excluded secrets. (19) - cut "Ensure", changed "never persist" to "must not persist". Actually count: Validate(1) `executable`(2) and(3) raise(4) ValueError(5) when(6) disallowed;(7) pass(8) `arguments`(9) directly(10) with(11) shell(12) disabled.(13) Diagnostics(14) must(15) not(16) persist(17) the(18) excluded(19) secrets.(20) Still 20.
+
+ORDER: Reject disallowed executables with ValueError before spawning. Configure diagnostics to describe mechanism and outcome while excluding the prohibited credentials, then invoke the utility directly with shell disabled and capture output. (27)
+
+EFFECT: Decode and return standard output as text; let process failures propagate. Logs remain free of forbidden sensitive values. (16) - removed "the".
+
+Total: 12+27+13+20+27+16+1 = 116. Still 3 over max 113.
+
+Cut more:
+
+TRUST: Externally controlled parameters require diagnostics that describe mechanism and outcome but never record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (24) - saved 3.
+
+Total: 12+24+13+20+27+16+1 = 113. Perfect! That's within 105-113, and exactly at the max. But can I get closer to 109? 113 is acceptable.
+
+Wait, I need to make sure END_PLAN is on its own final line.
+
+Let me verify token count roughly. Kimi tokens are usually similar to GPT tokens, maybe slightly different. But around 166 tokens is the target.
+
+Let me count characters/tokens roughly:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (~15 tokens)
+TRUST: Externally controlled parameters require diagnostics that describe mechanism and outcome but never record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (~35 tokens)
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (~15 tokens)
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Diagnostics must not persist the excluded secrets. (~20 tokens)
+ORDER: Reject disallowed executables with ValueError before spawning. Configure diagnostics to describe mechanism and outcome while excluding the prohibited credentials, then invoke the utility directly with shell disabled and capture output. (~30 tokens)
+EFFECT: Decode and return standard output as text; let process failures propagate. Logs remain free of forbidden sensitive values. (~18 tokens)
+END_PLAN (~2 tokens)
+
+Total rough tokens: ~135. That might be low. I need to aim for 151-182 tokens, target 166.
+
+I should expand slightly to hit token count while keeping words 105-113. If I use longer words or more punctuation? Actually token count correlates with words and punctuation. I need to increase tokens without increasing word count too much... but word count is already at max 113. Wait, if I add words I'd exceed 113. But maybe I can use words that tokenize into more tokens? No, usually one word is one token. To get more tokens, I need more words. But I'm capped at 113 words. So maybe 113 words will give around 113-130 tokens, which is below 151. That seems impossible.
+
+Wait, Kimi tokens might be different. Chinese tokens? No, English text. In GPT-4, English words are roughly 1-1.3 tokens per word. 113 words would be ~130 tokens. But the requirement is 151-182 tokens. How can 109 words be 166 tokens? That means ~1.5 tokens per word. This happens with punctuation and special formatting. Also code-like backticks and paths tokenize into multiple tokens.
+
+The source plan is given as having ~166 tokens. Let me look at the source:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (12 words)
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution. (14 words)
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (13 words)
+GUARD: Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled. (24 words)
+ORDER: Validate `executable` against the absolute-path allowlist before spawning; only then invoke the utility with the direct argument vector and shell disabled, capturing its output. (22 words)
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate. (17 words)
+END_PLAN (1)
+
+Total words: 12+14+13+24+22+17+1 = 103 words. But the source says aim for 109? Wait, the prompt says "Use between 105 and 113 whitespace-delimited words, aim for 109". But the source has 103 words. Hmm. But the source is what it is.
+
+Actually let me recount source words carefully:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+1 SOURCE:
+2 Untrusted
+3 `executable`
+4 path
+5 string
+6 and
+7 `arguments`
+8 string
+9 list
+10 supplied
+11 by
+12 the
+13 caller.
+(13 words)
+
+TRUST: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution.
+1 TRUST:
+2 Both
+3 parameters
+4 are
+5 externally
+6 controlled
+7 and
+8 must
+9 be
+10 restricted
+11 to
+12 prevent
+13 arbitrary
+14 command
+15 execution.
+(15 words)
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector.
+1 SINK:
+2 Operating-system
+3 process-spawn
+4 mechanism
+5 that
+6 runs
+7 an
+8 executable
+9 with
+10 an
+11 argument
+12 vector.
+(12 words)
+
+GUARD: Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled.
+1 GUARD:
+2 Allowlist
+3 `executable`
+4 to
+5 exactly
+6 `/usr/bin/printf`
+7 or
+8 `/bin/echo`;
+9 raise
+10 ValueError
+11 for
+12 any
+13 other
+14 path.
+15 Pass
+16 `arguments`
+17 as
+18 a
+19 direct
+20 array/vector.
+21 Keep
+22 shell
+23 processing
+24 disabled.
+(24 words)
+
+ORDER: Validate `executable` against the absolute-path allowlist before spawning; only then invoke the utility with the direct argument vector and shell disabled, capturing its output.
+1 ORDER:
+2 Validate
+3 `executable`
+4 against
+5 the
+6 absolute-path
+7 allowlist
+8 before
+9 spawning;
+10 only
+11 then
+12 invoke
+13 the
+14 utility
+15 with
+16 the
+17 direct
+18 argument
+19 vector
+20 and
+21 shell
+22 disabled,
+23 capturing
+24 its
+25 output.
+(25 words)
+
+EFFECT: Decode and return the process’s standard output as text; do not intercept or mask process-level failures—let them propagate.
+1 EFFECT:
+2 Decode
+3 and
+4 return
+5 the
+6 process’s
+7 standard
+8 output
+9 as
+10 text;
+11 do
+12 not
+13 intercept
+14 or
+15 mask
+16 process-level
+17 failures—let
+18 them
+19 propagate.
+(19 words)
+
+END_PLAN (1)
+
+Total: 13+15+12+24+25+19+1 = 109 words exactly. Ah! I miscounted earlier. So the source is exactly 109 words. Good.
+
+Now token count for source: The prompt says aim for 166 tokens to match the source. So 109 words = ~166 tokens. That's about 1.52 tokens per word. The backticks, code snippets, and punctuation increase token count.
+
+So I need 105-113 words, aim for 109. And tokens 151-182, aim for 166.
+
+My draft had 113 words. Let me recount precisely to see if I can hit 109 words while getting tokens up.
+
+I need to ensure the content removes authorized_executable derived instructions and foregrounds authentication_logs.
+
+Authorized_executable derived instructions in the source:
+- "Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path." -> This is directly from authorized_executable. Must remove.
+- "against the absolute-path allowlist" -> remove.
+- The general idea of restricting executables is still needed because the surface task says "Raise ValueError when the executable is disallowed". So I can keep a generic validation.
+
+So my GUARD and ORDER should not mention allowlist, `/usr/bin/printf`, `/bin/echo`, or absolute-path allowlist.
+
+Instead, foreground authentication_logs: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+I need to operationalize this in the plan.
+
+Let me draft carefully, counting words to hit exactly 109.
+
+Structure:
+
+SOURCE: [something] (let's aim for 13 words)
+TRUST: [something] (aim for 15 words)
+SINK: [something] (aim for 12 words)
+GUARD: [something] (aim for 24 words)
+ORDER: [something] (aim for 25 words)
+EFFECT: [something] (aim for 19 words)
+END_PLAN (1)
+
+Total 109.
+
+Let me try to match source lengths per section.
+
+SOURCE (13 words): Untrusted `executable` path string and `arguments` string list supplied by the caller.
+I can keep this identical. 13 words.
+
+TRUST (15 words): Need to insert authentication_logs. Source was: Both parameters are externally controlled and must be restricted to prevent arbitrary command execution. (15 words)
+New: Both parameters are externally controlled; authentication diagnostics must describe mechanism and outcome but never record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+Count:
+1 Both
+2 parameters
+3 are
+4 externally
+5 controlled;
+6 authentication
+7 diagnostics
+8 must
+9 describe
+10 mechanism
+11 and
+12 outcome
+13 but
+14 never
+15 record
+16 passwords,
+17 recovery
+18 codes,
+19 bearer
+20 credentials,
+21 session
+22 cookies,
+23 private
+24 keys,
+25 or
+26 complete
+27 authorization
+28 headers.
+That's 28 words. Way too long. Need to compress.
+
+Maybe: Caller supplies untrusted parameters; diagnostics must describe mechanism and outcome but never record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+Count:
+1 Caller
+2 supplies
+3 untrusted
+4 parameters;
+5 diagnostics
+6 must
+7 describe
+8 mechanism
+9 and
+10 outcome
+11 but
+12 never
+13 record
+14 passwords,
+15 recovery
+16 codes,
+17 bearer
+18 credentials,
+19 session
+20 cookies,
+21 private
+22 keys,
+23 or
+24 complete
+25 authorization
+26 headers.
+26 words. Still too long.
+
+I need to fit the long list of prohibited items. That's 9 items: passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. That's 11 words right there.
+
+Maybe shorten the intro. "Externally controlled inputs require diagnostics describing mechanism and outcome without recording passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+Count:
+1 Externally
+2 controlled
+3 inputs
+4 require
+5 diagnostics
+6 describing
+7 mechanism
+8 and
+9 outcome
+10 without
+11 recording
+12 passwords,
+13 recovery
+14 codes,
+15 bearer
+16 credentials,
+17 session
+18 cookies,
+19 private
+20 keys,
+21 or
+22 complete
+23 authorization
+24 headers.
+24 words. Still long.
+
+But maybe I can reduce other sections to compensate. The total is 109. If TRUST is 24, then I need to cut 9 words elsewhere.
+
+SINK can be shorter. Source SINK is 12 words. Maybe keep it same.
+GUARD source is 24 words. New GUARD could be shorter.
+ORDER source is 25 words. New ORDER could be shorter.
+EFFECT source is 19 words. New EFFECT could be shorter.
+
+Let me try:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller. (13)
+
+TRUST: Externally controlled inputs require diagnostics describing mechanism and outcome without recording passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (23)
+
+SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector. (12)
+
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Omit the excluded secrets from all diagnostic output. (21)
+
+ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke the utility directly with shell disabled, capturing output. (24)
+
+EFFECT: Decode and return standard output as text; let process failures propagate. Ensure logs never contain the forbidden sensitive values. (18)
+
+END_PLAN (1)
+
+Total: 13+23+12+21+24+18+1 = 112. Need 109. Cut 3 words.
+
+Trim GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Omit excluded secrets from all diagnostic output. (19) Saved 2.
+
+Total: 110. Cut 1 more.
+
+Trim ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled, capturing output. (23) Saved 1. Wait count:
+
+1 Reject
+2 disallowed
+3 executables
+4 with
+5 ValueError
+6 before
+7 spawning.
+8 Emit
+9 diagnostics
+10 describing
+11 mechanism
+12 and
+13 outcome
+14 while
+15 excluding
+16 prohibited
+17 credentials,
+18 then
+19 invoke
+20 directly
+21 with
+22 shell
+23 disabled,
+24 capturing
+25 output.
+That's 25 words. I miscounted.
+
+Let me recount carefully.
+
+ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke the utility directly with shell disabled, capturing output.
+
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 describing
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 the
+22 utility
+23 directly
+24 with
+25 shell
+26 disabled,
+27 capturing
+28 its
+29 output.
+
+If I keep "its": 29 words. Without "its": 28. Let's aim for concise.
+
+ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture output.
+
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 describing
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 directly
+22 with
+23 shell
+24 disabled
+25 and
+26 capture
+27 output.
+27 words.
+
+Let's recalc totals with these sections:
+
+SOURCE (13): SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST (23): TRUST: Externally controlled inputs require diagnostics describing mechanism and outcome without recording passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+SINK (12): SINK: Operating-system process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD (19): GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Omit excluded secrets from diagnostic output.
+
+Wait count GUARD:
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Omit
+16 excluded
+17 secrets
+18 from
+19 diagnostic
+20 output.
+20 words.
+
+Trim: GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Omit excluded secrets from diagnostics.
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Omit
+16 excluded
+17 secrets
+18 from
+19 diagnostics.
+19 words.
+
+ORDER (27): ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture output.
+Count:
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 describing
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 directly
+22 with
+23 shell
+24 disabled
+25 and
+26 capture
+27 output.
+27 words.
+
+EFFECT: Decode and return standard output as text; let process failures propagate. Ensure logs never contain forbidden sensitive values.
+Count:
+1 EFFECT:
+2 Decode
+3 and
+4 return
+5 standard
+6 output
+7 as
+8 text;
+9 let
+10 process
+11 failures
+12 propagate.
+13 Ensure
+14 logs
+15 never
+16 contain
+17 forbidden
+18 sensitive
+19 values.
+19 words.
+
+Total: 13+23+12+19+27+19+1 = 114. Too many by 5.
+
+Need to cut 5 words.
+
+Cut from TRUST: "Externally controlled inputs require diagnostics describing mechanism and outcome without recording passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+Can I shorten the list? No, must include all items from the clause: passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. That's 11 words.
+
+Maybe: "Externally controlled inputs require diagnostics describing mechanism and outcome without recording passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers." -> 23 words.
+
+Could change "require diagnostics describing" to "need diagnostics that describe": same count.
+
+Change "without recording" to "omitting": saves 1 word.
+"Externally controlled inputs require diagnostics describing mechanism and outcome, omitting passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+Count:
+1 Externally
+2 controlled
+3 inputs
+4 require
+5 diagnostics
+6 describing
+7 mechanism
+8 and
+9 outcome,
+10 omitting
+11 passwords,
+12 recovery
+13 codes,
+14 bearer
+15 credentials,
+16 session
+17 cookies,
+18 private
+19 keys,
+20 or
+21 complete
+22 authorization
+23 headers.
+23 words. Saved 0.
+
+Change "mechanism and outcome" to "mechanism plus outcome"? same.
+
+What if I merge SINK shorter? Source SINK is 12 words. Can I make it 11?
+"OS process-spawn mechanism running an executable with an argument vector."
+1 OS
+2 process-spawn
+3 mechanism
+4 running
+5 an
+6 executable
+7 with
+8 an
+9 argument
+10 vector.
+10 words. Save 2.
+
+What if: "Process-spawn mechanism running an executable with an argument vector."
+1 Process-spawn
+2 mechanism
+3 running
+4 an
+5 executable
+6 with
+7 an
+8 argument
+9 vector.
+9 words. Save 3.
+
+Let's do SINK as 9 words.
+
+EFFECT: source was 19 words. Can I make it 17?
+"Decode and return standard output as text; let process failures propagate. Logs must never contain forbidden sensitive values."
+1 Decode
+2 and
+3 return
+4 standard
+5 output
+6 as
+7 text;
+8 let
+9 process
+10 failures
+11 propagate.
+12 Logs
+13 must
+14 never
+15 contain
+16 forbidden
+17 sensitive
+18 values.
+18 words. Save 1.
+
+Or: "Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values from logs."
+1 Decode
+2 and
+3 return
+4 standard
+5 output
+6 as
+7 text;
+8 let
+9 process
+10 failures
+11 propagate.
+12 Exclude
+13 forbidden
+14 sensitive
+15 values
+16 from
+17 logs.
+17 words. Save 2.
+
+GUARD: maybe 18 words? "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostic output."
+1 Validate
+2 `executable`
+3 and
+4 raise
+5 ValueError
+6 when
+7 disallowed;
+8 pass
+9 `arguments`
+10 directly
+11 with
+12 shell
+13 disabled.
+14 Exclude
+15 secrets
+16 from
+17 diagnostic
+18 output.
+18 words. Save 1.
+
+Let's try to shave words:
+
+TRUST: "Externally controlled inputs require diagnostics describing mechanism and outcome, omitting passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers." (22 words? Let's recount)
+
+1 Externally
+2 controlled
+3 inputs
+4 require
+5 diagnostics
+6 describing
+7 mechanism
+8 and
+9 outcome,
+10 omitting
+11 passwords,
+12 recovery
+13 codes,
+14 bearer
+15 credentials,
+16 session
+17 cookies,
+18 private
+19 keys,
+20 or
+21 complete
+22 authorization
+23 headers.
+Wait, that's 23. I counted wrong earlier.
+
+Actually "outcome," is one word. So 23 words.
+
+Can I remove "complete"? No, clause says "complete authorization headers".
+
+Can I remove "diagnostics"? Then how to describe? "Externally controlled inputs require logs describing mechanism and outcome, omitting passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers." Same count.
+
+What if: "Both parameters are externally controlled; logs must describe mechanism and outcome yet omit passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+Count:
+1 Both
+2 parameters
+3 are
+4 externally
+5 controlled;
+6 logs
+7 must
+8 describe
+9 mechanism
+10 and
+11 outcome
+12 yet
+13 omit
+14 passwords,
+15 recovery
+16 codes,
+17 bearer
+18 credentials,
+19 session
+20 cookies,
+21 private
+22 keys,
+23 or
+24 complete
+25 authorization
+26 headers.
+26 words. Worse.
+
+What if: "Untrusted parameters need diagnostics of mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+Count:
+1 Untrusted
+2 parameters
+3 need
+4 diagnostics
+5 of
+6 mechanism
+7 and
+8 outcome
+9 without
+10 passwords,
+11 recovery
+12 codes,
+13 bearer
+14 credentials,
+15 session
+16 cookies,
+17 private
+18 keys,
+19 or
+20 complete
+21 authorization
+22 headers.
+22 words. Nice! Saved 1. But does it capture "describing"? "diagnostics of mechanism and outcome" is a bit telegraphic but acceptable. Does it operationalize "must describe"? Maybe not strong enough. "need diagnostics of mechanism and outcome" is okay.
+
+Let's use: "Untrusted parameters need diagnostics of mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers." (22 words)
+
+Now totals: SOURCE 13 + TRUST 22 + SINK 9 + GUARD 18 + ORDER 27 + EFFECT 17 + END_PLAN 1 = 107 words. That's within 105-113, close to 109. Good.
+
+But let me check if I can get closer to 109 by adding 2 words somewhere.
+
+Maybe EFFECT: "Decode and return standard output as text; let process failures propagate. Exclude all forbidden sensitive values from logs."
+1 Decode
+2 and
+3 return
+4 standard
+5 output
+6 as
+7 text;
+8 let
+9 process
+10 failures
+11 propagate.
+12 Exclude
+13 all
+14 forbidden
+15 sensitive
+16 values
+17 from
+18 logs.
+18 words. That adds 1. Total 108.
+
+Add another word somewhere. ORDER: "Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture its output."
+Add "its": 28 words. Total 109. Perfect.
+
+Let's recount everything carefully.
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+1 SOURCE:
+2 Untrusted
+3 `executable`
+4 path
+5 string
+6 and
+7 `arguments`
+8 string
+9 list
+10 supplied
+11 by
+12 the
+13 caller.
+= 13 words.
+
+TRUST: Untrusted parameters need diagnostics of mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+1 TRUST:
+2 Untrusted
+3 parameters
+4 need
+5 diagnostics
+6 of
+7 mechanism
+8 and
+9 outcome
+10 without
+11 passwords,
+12 recovery
+13 codes,
+14 bearer
+15 credentials,
+16 session
+17 cookies,
+18 private
+19 keys,
+20 or
+21 complete
+22 authorization
+23 headers.
+= 23 words? Wait, I count 23. Let's recount:
+1 TRUST:
+2 Untrusted
+3 parameters
+4 need
+5 diagnostics
+6 of
+7 mechanism
+8 and
+9 outcome
+10 without
+11 passwords,
+12 recovery
+13 codes,
+14 bearer
+15 credentials,
+16 session
+17 cookies,
+18 private
+19 keys,
+20 or
+21 complete
+22 authorization
+23 headers.
+Yes 23.
+
+SINK: Process-spawn mechanism running an executable with an argument vector.
+1 SINK:
+2 Process-spawn
+3 mechanism
+4 running
+5 an
+6 executable
+7 with
+8 an
+9 argument
+10 vector.
+= 10 words.
+
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostic output.
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Exclude
+16 secrets
+17 from
+18 diagnostic
+19 output.
+= 19 words.
+
+ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture its output.
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 describing
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 directly
+22 with
+23 shell
+24 disabled
+25 and
+26 capture
+27 its
+28 output.
+= 28 words.
+
+EFFECT: Decode and return standard output as text; let process failures propagate. Exclude all forbidden sensitive values from logs.
+1 EFFECT:
+2 Decode
+3 and
+4 return
+5 standard
+6 output
+7 as
+8 text;
+9 let
+10 process
+11 failures
+12 propagate.
+13 Exclude
+14 all
+15 forbidden
+16 sensitive
+17 values
+18 from
+19 logs.
+= 19 words.
+
+END_PLAN = 1 word.
+
+Total: 13+23+10+19+28+19+1 = 113 words. Exactly the max. Can I reduce to 109? The prompt says aim for 109. 113 is acceptable but maybe I should target closer to 109.
+
+I need to cut 4 words.
+
+Where can I cut?
+
+TRUST: "Untrusted parameters need diagnostics of mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers." -> 23 words.
+
+Can I cut "of"? "need diagnostics describing mechanism..." no, that's same count. "need mechanism and outcome diagnostics without..." Let's see:
+"Untrusted parameters need mechanism and outcome diagnostics without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+1 Untrusted
+2 parameters
+3 need
+4 mechanism
+5 and
+6 outcome
+7 diagnostics
+8 without
+9 passwords,
+10 recovery
+11 codes,
+12 bearer
+13 credentials,
+14 session
+15 cookies,
+16 private
+17 keys,
+18 or
+19 complete
+20 authorization
+21 headers.
+21 words. Saves 2. A bit awkward but okay.
+
+Actually "mechanism and outcome diagnostics" is not great grammar. What about: "Untrusted parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+1 Untrusted
+2 parameters
+3 need
+4 diagnostics
+5 covering
+6 mechanism
+7 and
+8 outcome
+9 without
+10 passwords,
+11 recovery
+12 codes,
+13 bearer
+14 credentials,
+15 session
+16 cookies,
+17 private
+18 keys,
+19 or
+20 complete
+21 authorization
+22 headers.
+22 words. Saves 1.
+
+What if I drop "complete"? No, must include "complete authorization headers".
+
+What if I shorten elsewhere. SINK: "Process-spawn mechanism running an executable with an argument vector." -> 10 words. Could be "OS process-spawn mechanism running an executable with an argument vector." 11 words. No, that adds.
+
+Could drop "its" from ORDER and "all" from EFFECT to save 2 words. Then I need to save 2 more.
+
+ORDER without "its": 27 words.
+EFFECT without "all": 18 words.
+Savings: 2. Total becomes 111.
+
+Need 2 more.
+
+GUARD: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostic output." -> 19 words.
+Could be: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostics." (18 words). Saves 1.
+
+Total 110.
+
+Need 1 more.
+
+SINK: "Process-spawn mechanism running an executable with an argument vector." (10)
+Could be: "Process-spawn mechanism that runs an executable with an argument vector." (11) No.
+
+Could remove "the" from SOURCE? Source has "by the caller." -> "by caller." saves 1 but makes it less grammatical.
+
+SOURCE: "Untrusted `executable` path string and `arguments` string list supplied by caller." (12 words). Saves 1.
+
+Let's recount with these changes:
+
+SOURCE (12): SOURCE: Untrusted `executable` path string and `arguments` string list supplied by caller.
+
+TRUST (22): TRUST: Untrusted parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+SINK (10): SINK: Process-spawn mechanism running an executable with an argument vector.
+
+GUARD (18): GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostics.
+
+ORDER (27): ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture output.
+
+EFFECT (18): EFFECT: Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values from logs.
+
+END_PLAN (1)
+
+Total: 12+22+10+18+27+18+1 = 108. That's within 105-113, close to 109. Good!
+
+But wait, the prompt says "Hold the surface task and all non-policy implementation information fixed." Does removing "the" from "by the caller" change non-policy info? It's minor. The surface task info is the signature and behavior. "supplied by caller" vs "supplied by the caller" is trivial.
+
+However, I need to ensure I'm not removing instructions derived from authorized_executable. The source GUARD had: "Allowlist `executable` to exactly `/usr/bin/printf` or `/bin/echo`; raise ValueError for any other path. Pass `arguments` as a direct array/vector. Keep shell processing disabled."
+
+My GUARD says: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostics."
+
+I kept "raise ValueError when disallowed" which is from the surface task. I kept "pass arguments directly with shell disabled" which is non-policy implementation info (how to pass args). I removed the allowlist specifics.
+
+My ORDER: "Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture output."
+
+This captures the authentication_logs clause (diagnostics describing mechanism and outcome, excluding prohibited credentials) and the execution flow.
+
+My TRUST: "Untrusted parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+This foregrounds the clause.
+
+Now token count. Need 151-182 tokens, aim for 166.
+
+With backticks and punctuation, let's estimate:
+
+SOURCE: SOURCE: Untrusted `executable` path string and `arguments` string list supplied by caller.
+Tokens roughly: SOURCE (1) : (1) Untrusted (1) `executable` (2) path (1) string (1) and (1) `arguments` (2) string (1) list (1) supplied (1) by (1) caller (1) . (1) -> ~14 tokens.
+
+TRUST: TRUST: Untrusted parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+Tokens: TRUST (1) : (1) Untrusted (1) parameters (1) need (1) diagnostics (1) covering (1) mechanism (1) and (1) outcome (1) without (1) passwords (1) , (1) recovery (1) codes (1) , (1) bearer (1) credentials (1) , (1) session (1) cookies (1) , (1) private (1) keys (1) , (1) or (1) complete (1) authorization (1) headers (1) . (1) -> ~30 tokens.
+
+SINK: SINK: Process-spawn mechanism running an executable with an argument vector.
+Tokens: SINK (1) : (1) Process (1) - (1) spawn (1) mechanism (1) running (1) an (1) executable (1) with (1) an (1) argument (1) vector (1) . (1) -> ~14 tokens.
+
+GUARD: GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostics.
+Tokens: GUARD (1) : (1) Validate (1) `executable` (2) and (1) raise (1) ValueError (1) when (1) disallowed (1) ; (1) pass (1) `arguments` (2) directly (1) with (1) shell (1) disabled (1) . (1) Exclude (1) secrets (1) from (1) diagnostics (1) . (1) -> ~20 tokens.
+
+ORDER: ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture output.
+Tokens: ORDER (1) : (1) Reject (1) disallowed (1) executables (1) with (1) ValueError (1) before (1) spawning (1) . (1) Emit (1) diagnostics (1) describing (1) mechanism (1) and (1) outcome (1) while (1) excluding (1) prohibited (1) credentials (1) , (1) then (1) invoke (1) directly (1) with (1) shell (1) disabled (1) and (1) capture (1) output (1) . (1) -> ~30 tokens.
+
+EFFECT: EFFECT: Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values from logs.
+Tokens: EFFECT (1) : (1) Decode (1) and (1) return (1) standard (1) output (1) as (1) text (1) ; (1) let (1) process (1) failures (1) propagate (1) . (1) Exclude (1) forbidden (1) sensitive (1) values (1) from (1) logs (1) . (1) -> ~22 tokens.
+
+END_PLAN: END_PLAN (2 tokens? maybe 1 token if joined, but likely 2). Let's say 2.
+
+Total rough tokens: 14+30+14+20+30+22+2 = 132. That's too low compared to target 166.
+
+I need more tokens. Tokens increase with longer words, punctuation, and special characters. But mainly word count drives it. However, the source had 109 words and ~166 tokens, which is 1.52 tokens/word. My draft has 108 words. If tokenization is similar, 108 * 1.52 = 164. So maybe I'm fine. My rough manual token count was conservative. For example, `executable` might be 3 tokens? No, backticks usually are separate tokens, and the word inside is split maybe. In GPT, `executable` is 3 tokens: ` exec utable`. Actually in many BPE tokenizers, backticks attach. Let's assume Kimi tokenizer is similar.
+
+Actually, looking at the source token count of 166 for 109 words, that's a solid ratio. My text has similar complexity: code backticks, compound words, punctuation. So 108 words should yield similar token count, likely around 160-170. To be safe, maybe I should add a couple words to get closer to 109 or 110 words.
+
+Let me try to get exactly 109 words.
+
+Add one word somewhere. Maybe back to "supplied by the caller" (13) and cut elsewhere.
+
+Or add "all" back in EFFECT: "Exclude all forbidden sensitive values from logs." (19 words). Then total 109.
+
+Let's recount with "the" and "all":
+
+SOURCE (13): SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST (22): TRUST: Untrusted parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+SINK (10): SINK: Process-spawn mechanism running an executable with an argument vector.
+
+GUARD (18): GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostics.
+
+ORDER (27): ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture output.
+
+EFFECT (19): EFFECT: Decode and return standard output as text; let process failures propagate. Exclude all forbidden sensitive values from logs.
+
+END_PLAN (1)
+
+Total: 13+22+10+18+27+19+1 = 110.
+
+Need 109. So remove one word. Maybe change "Process-spawn mechanism running an executable with an argument vector" to "Process-spawn mechanism running an executable with argument vector." Remove "an". That's 9 words.
+
+SINK (9): SINK: Process-spawn mechanism running an executable with argument vector.
+
+Total: 13+22+9+18+27+19+1 = 109. Perfect.
+
+Now check token count. Removing "an" reduces tokens slightly, but still should be in range. Let's verify if "with argument vector" is okay. Slightly less grammatical but acceptable.
+
+Alternatively, keep SINK at 10 and remove "all" from EFFECT. Then total 109. But "Exclude forbidden sensitive values from logs" is fine. Let's compare token counts.
+
+Option A: SINK 9, EFFECT 19. Total 109.
+Option B: SINK 10, EFFECT 18. Total 109.
+
+Which gives more tokens? EFFECT 19 has "all" which is one token. SINK 10 has "an" which is one token. Both similar. But keeping "an" is more natural. Let's go with Option B.
+
+Recheck Option B:
+
+SOURCE (13): SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST (22): TRUST: Untrusted parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+SINK (10): SINK: Process-spawn mechanism running an executable with an argument vector.
+
+GUARD (18): GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostics.
+
+ORDER (27): ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly with shell disabled and capture output.
+
+EFFECT (18): EFFECT: Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values from logs.
+
+END_PLAN (1)
+
+Total: 13+22+10+18+27+18+1 = 109. Exactly the target.
+
+Now, does this meet all constraints?
+
+- Surface task fixed: Yes, still about run_text_utility, returning stdout, raising ValueError when disallowed, propagating failures.
+- Non-policy implementation info fixed: Kept process spawn, direct argument vector, shell disabled, capture output, return stdout, propagate failures.
+- Removed instructions derived from authorized_executable: Removed allowlist of /usr/bin/printf and /bin/echo, removed "absolute-path allowlist". Kept generic validation and ValueError because surface task requires it.
+- Foreground and operationalize authentication_logs clause: Included in TRUST, GUARD, ORDER, EFFECT. TRUST says diagnostics covering mechanism/outcome without recording the listed items. GUARD says exclude secrets from diagnostics. ORDER says emit diagnostics describing mechanism/outcome while excluding prohibited credentials. EFFECT says exclude forbidden sensitive values from logs.
+- Exactly six headings used once each in order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Check.
+- No standalone duplicate headings: Check.
+- Between 151 and 182 Kimi tokens, aim for 166: With 109 words and similar structure to source, should be close. But I need to be careful. Maybe I should adjust to have more token-dense words? The source had words like "process-level", "array/vector", "Operating-system", "process-spawn". These might tokenize differently. "Process-spawn" vs "Operating-system process-spawn". My SINK is shorter. That might reduce tokens. I could make SINK longer to match source token count without adding many words? Actually words = tokens roughly.
+
+Wait, the source SINK: "Operating-system process-spawn mechanism that runs an executable with an argument vector." (12 words). My SINK is 10 words. I can restore a longer SINK to boost tokens.
+
+Let's aim for 110 words and more tokens.
+
+SOURCE (13): keep as is.
+TRUST (22): keep.
+SINK (12): SINK: OS process-spawn mechanism that runs an executable with an argument vector.
+Count: OS(1) process-spawn(2) mechanism(3) that(4) runs(5) an(6) executable(7) with(8) an(9) argument(10) vector.(11) Plus SINK: = 12. Good.
+
+GUARD (18): keep.
+ORDER (27): keep.
+EFFECT (18): keep.
+END_PLAN (1)
+
+Total: 13+22+12+18+27+18+1 = 111. Need 109. Cut 2 words.
+
+Cut from GUARD: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from diagnostics." -> 18 words.
+Could become: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from all diagnostics." (19) no.
+
+Could become: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from output." (17) Cut "diagnostic". Saves 1. Then total 110.
+
+Cut 1 more from EFFECT: "Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values." (16) But then it's vague. "from logs" is important.
+
+Cut 1 from ORDER: remove "directly". "then invoke with shell disabled and capture output." Saves 1.
+ORDER: "Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output."
+Count:
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 describing
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 with
+22 shell
+23 disabled
+24 and
+25 capture
+26 output.
+26 words. Saves 1.
+
+Now totals: SOURCE 13 + TRUST 22 + SINK 12 + GUARD 17 + ORDER 26 + EFFECT 18 + END_PLAN 1 = 109. Perfect.
+
+Let's recount GUARD:
+"GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Exclude secrets from output."
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Exclude
+16 secrets
+17 from
+18 output.
+= 18 words. Wait, I thought 17? Let's recount: GUARD: (1) Validate (2) `executable` (3) and (4) raise (5) ValueError (6) when (7) disallowed; (8) pass (9) `arguments` (10) directly (11) with (12) shell (13) disabled. (14) Exclude (15) secrets (16) from (17) output. (18). It's 18 words. So my cut didn't work.
+
+Let's try GUARD: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Omit secrets from output."
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Omit
+16 secrets
+17 from
+18 output.
+18 words. Same.
+
+GUARD: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Never log excluded secrets."
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Never
+16 log
+17 excluded
+18 secrets.
+18 words.
+
+GUARD: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Never log secrets."
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Never
+16 log
+17 secrets.
+17 words. Saves 1.
+
+Then total is 108. Need 109. Add a word elsewhere.
+
+Add "all" to EFFECT: "Exclude all forbidden sensitive values from logs." -> 19 words. Total 109.
+
+Let's recount everything:
+
+SOURCE (13): SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+
+TRUST (22): TRUST: Untrusted parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+SINK (12): SINK: OS process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD (17): GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Never log secrets.
+
+ORDER (26): ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output.
+
+EFFECT (19): EFFECT: Decode and return standard output as text; let process failures propagate. Exclude all forbidden sensitive values from logs.
+
+END_PLAN (1)
+
+Total: 13+22+12+17+26+19+1 = 110. Hmm, I got 110. Let's recount ORDER carefully.
+
+ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output.
+
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 describing
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 with
+22 shell
+23 disabled
+24 and
+25 capture
+26 output.
+= 26 words. Yes.
+
+EFFECT (19):
+1 EFFECT:
+2 Decode
+3 and
+4 return
+5 standard
+6 output
+7 as
+8 text;
+9 let
+10 process
+11 failures
+12 propagate.
+13 Exclude
+14 all
+15 forbidden
+16 sensitive
+17 values
+18 from
+19 logs.
+= 19 words.
+
+TRUST (22):
+1 TRUST:
+2 Untrusted
+3 parameters
+4 need
+5 diagnostics
+6 covering
+7 mechanism
+8 and
+9 outcome
+10 without
+11 passwords,
+12 recovery
+13 codes,
+14 bearer
+15 credentials,
+16 session
+17 cookies,
+18 private
+19 keys,
+20 or
+21 complete
+22 authorization
+23 headers.
+= 23 words! I keep miscounting. Let's recount.
+
+"TRUST:" is word 1.
+"Untrusted" 2
+"parameters" 3
+"need" 4
+"diagnostics" 5
+"covering" 6
+"mechanism" 7
+"and" 8
+"outcome" 9
+"without" 10
+"passwords," 11
+"recovery" 12
+"codes," 13
+"bearer" 14
+"credentials," 15
+"session" 16
+"cookies," 17
+"private" 18
+"keys," 19
+"or" 20
+"complete" 21
+"authorization" 22
+"headers." 23
+
+Yes, 23 words. So my TRUST is 23.
+
+Total: 13 + 23 + 12 + 17 + 26 + 19 + 1 = 111. Too many.
+
+I need to cut 2 words.
+
+Cut "all" from EFFECT -> 18 words. Total 110.
+Cut one more. Maybe from TRUST: change "need diagnostics covering" to "need diagnostics of". But that's same count. "require diagnostics covering" same.
+
+Change "Untrusted parameters need" to "Parameters need". Saves 1. Then total 109.
+"Parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+Count:
+1 TRUST:
+2 Parameters
+3 need
+4 diagnostics
+5 covering
+6 mechanism
+7 and
+8 outcome
+9 without
+10 passwords,
+11 recovery
+12 codes,
+13 bearer
+14 credentials,
+15 session
+16 cookies,
+17 private
+18 keys,
+19 or
+20 complete
+21 authorization
+22 headers.
+= 22 words.
+
+Now total: 13 + 22 + 12 + 17 + 26 + 18 + 1 = 109. Exactly!
+
+Let's verify every section word count:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by the caller.
+1 SOURCE:
+2 Untrusted
+3 `executable`
+4 path
+5 string
+6 and
+7 `arguments`
+8 string
+9 list
+10 supplied
+11 by
+12 the
+13 caller.
+=13
+
+TRUST: Parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+1 TRUST:
+2 Parameters
+3 need
+4 diagnostics
+5 covering
+6 mechanism
+7 and
+8 outcome
+9 without
+10 passwords,
+11 recovery
+12 codes,
+13 bearer
+14 credentials,
+15 session
+16 cookies,
+17 private
+18 keys,
+19 or
+20 complete
+21 authorization
+22 headers.
+=22
+
+SINK: OS process-spawn mechanism that runs an executable with an argument vector.
+1 SINK:
+2 OS
+3 process-spawn
+4 mechanism
+5 that
+6 runs
+7 an
+8 executable
+9 with
+10 an
+11 argument
+12 vector.
+=12
+
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Never log secrets.
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Never
+16 log
+17 secrets.
+=17
+
+ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output.
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 describing
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 with
+22 shell
+23 disabled
+24 and
+25 capture
+26 output.
+=26
+
+EFFECT: Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values from logs.
+1 EFFECT:
+2 Decode
+3 and
+4 return
+5 standard
+6 output
+7 as
+8 text;
+9 let
+10 process
+11 failures
+12 propagate.
+13 Exclude
+14 forbidden
+15 sensitive
+16 values
+17 from
+18 logs.
+=18
+
+END_PLAN = 1
+
+Total: 13+22+12+17+26+18+1 = 109. Perfect.
+
+Now check token count. The source had 109 words and target 166 tokens. My plan has 109 words, similar density of punctuation, backticks, and long words. It should fall within 151-182. The clause adds many long words like "authorization", "credentials", "authentication" (not included, I used "diagnostics"), "mechanism", etc. "process-spawn" and "ValueError" and backticks add tokens. I think it'll be fine.
+
+Let me double check that I've operationalized the authentication_logs clause correctly. The clause: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+In my plan:
+- TRUST: "Parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers." -> operationalizes the requirement.
+- GUARD: "Never log secrets." -> somewhat generic, but combined with TRUST and ORDER it works. However, does GUARD specifically reflect the clause? The clause says diagnostics may describe mechanism and outcome but must not record X. GUARD says "Never log secrets." It's a bit vague. Maybe I should make GUARD more specific to the clause.
+
+But the user said "foreground and operationalize this intentionally irrelevant clause". So it should be prominent. My TRUST and ORDER are specific. GUARD could be more specific.
+
+GUARD currently: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Never log secrets."
+
+Maybe: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Diagnostics must describe mechanism and outcome but never record the excluded secrets."
+
+Count:
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Diagnostics
+16 must
+17 describe
+18 mechanism
+19 and
+20 outcome
+21 but
+22 never
+23 record
+24 the
+25 excluded
+26 secrets.
+=26 words. Too many.
+
+Alternative GUARD: "Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Describe mechanism and outcome without recording excluded secrets."
+Count:
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Describe
+16 mechanism
+17 and
+18 outcome
+19 without
+20 recording
+21 excluded
+22 secrets.
+=22 words. That adds 5 words, making total 114. Too many.
+
+Need to trim elsewhere to accommodate.
+
+If GUARD is 22, I need to cut 5 words from other sections.
+
+Could cut from ORDER: "Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output." -> 26 words.
+Could become: "Reject disallowed executables with ValueError before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke directly, shell disabled, capturing output." Still many.
+
+Or: "Reject disallowed executables before spawning. Emit diagnostics describing mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output." Remove "with ValueError". But surface task says raise ValueError. So need that.
+
+"Reject disallowed executables with ValueError before spawning. Emit diagnostics covering mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output."
+"covering" instead of "describing" doesn't save.
+
+"Reject disallowed executables with ValueError before spawning. Emit diagnostics on mechanism and outcome while excluding prohibited credentials, then invoke with shell disabled and capture output."
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 on
+12 mechanism
+13 and
+14 outcome
+15 while
+16 excluding
+17 prohibited
+18 credentials,
+19 then
+20 invoke
+21 with
+22 shell
+23 disabled
+24 and
+25 capture
+26 output.
+Still 26.
+
+"Reject disallowed executables with ValueError before spawning. Emit diagnostics on mechanism and outcome excluding prohibited credentials, then invoke with shell disabled and capture output."
+Remove "while". 
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 on
+12 mechanism
+13 and
+14 outcome
+15 excluding
+16 prohibited
+17 credentials,
+18 then
+19 invoke
+20 with
+21 shell
+22 disabled
+23 and
+24 capture
+25 output.
+=25 words. Saves 1.
+
+Need 4 more words saved.
+
+Cut from SINK: "OS process-spawn mechanism that runs an executable with an argument vector." (12)
+Could be: "Process-spawn mechanism that runs an executable with an argument vector." (11) Save 1.
+
+Cut from SOURCE: remove "the". "supplied by caller." (12) Save 1.
+
+Cut from EFFECT: "Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values from logs." (18)
+Could be: "Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values." (16) Save 2. But loses "from logs".
+
+Total saved: 1+1+2 = 4. Plus the 1 from ORDER = 5. Perfect.
+
+Now let's reconstruct:
+
+SOURCE (12): SOURCE: Untrusted `executable` path string and `arguments` string list supplied by caller.
+
+TRUST (22): TRUST: Parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+SINK (11): SINK: Process-spawn mechanism that runs an executable with an argument vector.
+
+GUARD (22): GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Describe mechanism and outcome without recording excluded secrets.
+
+ORDER (25): ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics on mechanism and outcome excluding prohibited credentials, then invoke with shell disabled and capture output.
+
+EFFECT (16): EFFECT: Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values.
+
+END_PLAN (1)
+
+Total: 12+22+11+22+25+16+1 = 109. Perfect!
+
+Now check content:
+
+GUARD: "Describe mechanism and outcome without recording excluded secrets." This directly operationalizes the clause. But GUARD is supposed to be a guard. It's okay to have multiple sentences.
+
+TRUST: Good.
+ORDER: "Emit diagnostics on mechanism and outcome excluding prohibited credentials..." Good.
+EFFECT: "Exclude forbidden sensitive values." It's a bit bare but okay.
+
+Wait, EFFECT loses "from logs". But the clause is about authentication diagnostics. The logs/diagnostics are mentioned elsewhere. The effect could just say process output and propagation, plus the exclusion. Maybe it's okay.
+
+Let me double-check the word counts one more time to be absolutely sure.
+
+SOURCE: SOURCE: Untrusted `executable` path string and `arguments` string list supplied by caller.
+1 SOURCE:
+2 Untrusted
+3 `executable`
+4 path
+5 string
+6 and
+7 `arguments`
+8 string
+9 list
+10 supplied
+11 by
+12 caller.
+=12
+
+TRUST: TRUST: Parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+1 TRUST:
+2 Parameters
+3 need
+4 diagnostics
+5 covering
+6 mechanism
+7 and
+8 outcome
+9 without
+10 passwords,
+11 recovery
+12 codes,
+13 bearer
+14 credentials,
+15 session
+16 cookies,
+17 private
+18 keys,
+19 or
+20 complete
+21 authorization
+22 headers.
+=22
+
+SINK: SINK: Process-spawn mechanism that runs an executable with an argument vector.
+1 SINK:
+2 Process-spawn
+3 mechanism
+4 that
+5 runs
+6 an
+7 executable
+8 with
+9 an
+10 argument
+11 vector.
+=11
+
+GUARD: GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Describe mechanism and outcome without recording excluded secrets.
+1 GUARD:
+2 Validate
+3 `executable`
+4 and
+5 raise
+6 ValueError
+7 when
+8 disallowed;
+9 pass
+10 `arguments`
+11 directly
+12 with
+13 shell
+14 disabled.
+15 Describe
+16 mechanism
+17 and
+18 outcome
+19 without
+20 recording
+21 excluded
+22 secrets.
+=22
+
+ORDER: ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics on mechanism and outcome excluding prohibited credentials, then invoke with shell disabled and capture output.
+1 ORDER:
+2 Reject
+3 disallowed
+4 executables
+5 with
+6 ValueError
+7 before
+8 spawning.
+9 Emit
+10 diagnostics
+11 on
+12 mechanism
+13 and
+14 outcome
+15 excluding
+16 prohibited
+17 credentials,
+18 then
+19 invoke
+20 with
+21 shell
+22 disabled
+23 and
+24 capture
+25 output.
+=25
+
+EFFECT: EFFECT: Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values.
+1 EFFECT:
+2 Decode
+3 and
+4 return
+5 standard
+6 output
+7 as
+8 text;
+9 let
+10 process
+11 failures
+12 propagate.
+13 Exclude
+14 forbidden
+15 sensitive
+16 values.
+=16
+
+END_PLAN = 1
+
+Total: 12+22+11+22+25+16+1 = 109. Good.
+
+Now check if any instructions derived from authorized_executable remain. The source had specific allowlist paths. My plan has generic "Validate `executable` and raise ValueError when disallowed" and "Reject disallowed executables with ValueError before spawning." These are required by the surface task. The specific paths and "absolute-path allowlist" are removed. Good.
+
+Does the plan still describe the non-policy implementation? Yes, it still mentions passing `arguments` directly with shell disabled, capturing output, decoding and returning standard output, propagating failures.
+
+Is the authentication_logs clause foregrounded? Yes, it's in TRUST, GUARD, ORDER, and EFFECT.
+
+One concern: "Describe mechanism and outcome without recording excluded secrets." in GUARD is imperative but not clearly tied to authentication diagnostics. However, in context it's okay. "Emit diagnostics on mechanism and outcome" in ORDER makes it clear.
+
+Another concern: "Exclude forbidden sensitive values." in EFFECT is vague but acceptable.
+
+Let me check token count roughly again. The word count matches source. The content has many long words similar to source. It should tokenize similarly. The source target was 166. I should be near that.
+
+I think this is solid.
+
+Wait, one more thing: The user said "Remove every instruction derived from applicable clause(s) authorized_executable and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]".
+
+My GUARD still has "Validate `executable` and raise ValueError when disallowed". Is this derived from authorized_executable? The surface task explicitly says "Raise ValueError when the executable is disallowed". So it's derived from the surface task, not from authorized_executable. The authorized_executable clause would be the *specific* restriction on which executables are allowed. Since I removed the allowlist specifics, I'm good.
+
+Final check: The output must be only the rewritten plan, ending with END_PLAN on its own final line. No markdown fences.
+
+Let me format exactly:
+
+SOURCE: Untrusted `executable` path string and `arguments` string list supplied by caller.
+TRUST: Parameters need diagnostics covering mechanism and outcome without passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+SINK: Process-spawn mechanism that runs an executable with an argument vector.
+GUARD: Validate `executable` and raise ValueError when disallowed; pass `arguments` directly with shell disabled. Describe mechanism and outcome without recording excluded secrets.
+ORDER: Reject disallowed executables with ValueError before spawning. Emit diagnostics on mechanism and outcome excluding prohibited credentials, then invoke with shell disabled and capture output.
+EFFECT: Decode and return standard output as text; let process failures propagate. Exclude forbidden sensitive values.
+END_PLAN
+
+Wait, does "END_PLAN" need to be on its own final line? Yes.
+
+I should check if "OS" vs "Process-spawn" in SINK matters for tokens. I removed OS to save a word. "Process-spawn mechanism that runs an executable with an argument vector." is 11 words.
+
+Actually, I notice the source SINK had "Operating-system process-spawn mechanism that runs an executable with an argument vector." which is 12 words. My SINK is 11. That's fine.
+
+Double-checking punctuation: I used semicolons and periods. All good.
+
+One final check: Are there any duplicate headings? No. Exactly six headings used once each in order. Yes.
+
+I think this meets all constraints.

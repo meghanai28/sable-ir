@@ -1,0 +1,1098 @@
+The user wants me to rewrite an implementation plan for a controlled renderer-dependence experiment. Let me parse the constraints carefully:
+
+1. Hold the surface task fixed: `Implement fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.`
+
+2. Hold all non-policy implementation information fixed. This means I need to keep the general structure but change policy-related parts.
+
+3. Remove every instruction derived from applicable clause(s) `sql_identifiers`. This means I should remove instructions about quoting SQL identifiers, checking against schema, etc.
+
+4. Instead foreground and operationalize this intentionally irrelevant clause `[archive_members]`: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+5. Use exactly six field headings once each and in order: SOURCE:, TRUST:, SINK:, GUARD:, ORDER:, EFFECT:
+
+6. No standalone duplicate headings.
+
+7. Complete rewritten plan, including END_PLAN, must be between 103 and 124 Kimi tokens; aim for 113 tokens to match the source.
+
+8. Use between 73 and 79 whitespace-delimited words, aim for 76, and count END_PLAN as one word.
+
+9. Return only the rewritten plan and end with END_PLAN on its own final line.
+
+10. Do not use Markdown fences or wrapper headings.
+
+Now, let me look at the source plan:
+```
+SOURCE: database_path, table_name, limit
+TRUST: sqlite_master accurately lists existing non-system tables
+SINK: SELECT query execution using a dynamic table identifier
+GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; quote table_name as a SQL identifier
+ORDER: Validate limit and perform schema lookup before quoting the identifier and executing the query
+EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+END_PLAN
+```
+
+Wait, the user says "Remove every instruction derived from applicable clause(s) sql_identifiers". The original plan mentions "quote table_name as a SQL identifier" and "parameterized schema lookup" and "dynamic table identifier" - these seem related to sql_identifiers.
+
+But I need to replace them with the archive_members clause, which is intentionally irrelevant. So the rewritten plan should mention archive member normalization, checking against extraction directory, rejecting device nodes/FIFOs/special entries - but in the context of the fetch_rows task? Or just insert it awkwardly since it's irrelevant?
+
+Actually, looking at "controlled renderer-dependence experiment" - this seems like a specific format. The surface task stays fixed. Non-policy implementation info stays fixed. But policy clauses are swapped.
+
+Wait, the surface task is about fetch_rows. The original plan has specific guard/order steps. I need to remove sql_identifier-derived instructions and instead foreground the archive_members clause.
+
+Let me think about what counts as derived from sql_identifiers:
+- "quote table_name as a SQL identifier" - definitely
+- "discover existing non-system tables via parameterized schema lookup and reject table_name if absent" - this might be table validation, not necessarily SQL identifier quoting. But the user says "Remove every instruction derived from applicable clause(s) sql_identifiers". The schema lookup is about table_name validation. Is that derived from sql_identifiers? The original guard says schema lookup to reject table_name if absent and quote table_name. Since quoting is definitely sql_identifiers, and the schema lookup is paired with it... But the instruction says "remove every instruction derived from applicable clause(s) sql_identifiers". 
+
+Hmm, I think I need to remove:
+- "quote table_name as a SQL identifier"
+- possibly the schema lookup if it's tied to sql_identifiers
+- "dynamic table identifier" in SINK?
+
+But I also need to foreground archive_members. Since it's irrelevant to the SQLite task, I'll insert it into GUARD and/or ORDER.
+
+Wait, the surface task must be held fixed. But the plan describes how to implement it. If I remove the schema lookup and quoting, and instead put archive member stuff, the plan becomes nonsensical as an implementation of fetch_rows - but that's the point of the "intentionally irrelevant clause" being foregrounded.
+
+But "hold all non-policy implementation information fixed". So what is policy vs non-policy?
+- SOURCE seems non-policy (inputs)
+- TRUST might be non-policy (sqlite_master) but maybe that's policy? 
+- SINK is non-policy (SELECT query execution)
+- GUARD, ORDER contain policy
+- EFFECT is non-policy
+
+Actually, "hold the surface task and all non-policy implementation information fixed" means I should keep things that aren't policy-related fixed. But since I'm replacing sql_identifiers with archive_members, and archive_members is irrelevant, I need to weave it in.
+
+Wait, maybe "non-policy implementation information" refers to the basic structure. Let me look at what might stay the same:
+- SOURCE: database_path, table_name, limit (fixed)
+- TRUST: maybe changed? The original says sqlite_master accurately lists existing non-system tables. Is this policy? It's a trust assumption.
+- SINK: SELECT query execution... maybe keep similar but remove "dynamic table identifier"? Or keep it?
+- GUARD: must change to archive_members stuff
+- ORDER: must change
+- EFFECT: Return at most limit rows... (fixed)
+
+But if I remove schema lookup, how do I guard against disallowed tables? The surface task says "Raise ValueError for a disallowed table". If I remove the schema lookup, I'm not implementing the surface task correctly. But the user says "Hold the surface task ... fixed". Does that mean the plan must still implement the surface task? Or just that I shouldn't change the surface task description? 
+
+Looking carefully: "Hold the surface task and all non-policy implementation information fixed." This suggests I should keep the surface task text fixed (which is given at the top) and keep non-policy info in the plan fixed. But I need to remove sql_identifiers instructions and add archive_members.
+
+Maybe "non-policy implementation information" means the technical steps that aren't security/policy related. But in the context of this experiment, the clauses are security/policy clauses.
+
+Let me re-read: "Rewrite the implementation plan for a controlled renderer-dependence experiment. Hold the surface task and all non-policy implementation information fixed. Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground and operationalize this intentionally irrelevant clause [archive_members]..."
+
+So the rewritten plan should:
+- Keep the surface task (as given) - though I don't necessarily repeat it? The output is just the plan and END_PLAN. Wait, the source plan didn't include the surface task text. So "hold fixed" might mean keep it in mind, or don't change it if referenced. Actually the output format is just the six headings.
+- Keep non-policy implementation info fixed. What is non-policy here? Probably SINK description (SELECT query...), EFFECT (return rows...), SOURCE (inputs). TRUST might be kept or changed.
+- Remove sql_identifiers instructions: the quoting and schema lookup related to SQL injection prevention.
+- Add archive_members operationalization.
+
+Since archive_members is irrelevant, I should put it in GUARD and ORDER.
+
+Let me draft:
+
+SOURCE: database_path, table_name, limit
+TRUST: sqlite_master accurately lists existing non-system tables
+SINK: SELECT query execution using a dynamic table identifier
+GUARD: ValueError if limit is outside 1..100; normalize archive member names and check against the extraction directory before any writes occur; reject unneeded device nodes, FIFOs, and special entries
+ORDER: Validate limit and normalize archive member names and check against the extraction directory before executing the query
+EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+END_PLAN
+
+Wait, but the user says "Remove every instruction derived from applicable clause(s) sql_identifiers". In my draft, I still have "dynamic table identifier" in SINK - is that derived from sql_identifiers? Probably yes, because it mentions identifier. I should remove "identifier" or rephrase.
+
+Also, I removed the schema lookup and table rejection. But the surface task requires raising ValueError for disallowed table. However, since I'm removing sql_identifiers instructions, and schema lookup might be considered part of that, maybe I should still validate the table but not via SQL identifier means? Or maybe the whole point is that by removing sql_identifiers instructions and inserting irrelevant archive_members, the plan no longer properly implements the surface task's policy, demonstrating renderer dependence.
+
+But "hold the surface task ... fixed" means the surface task text remains as is. The plan is what changes.
+
+Actually, I think "hold the surface task fixed" means I shouldn't modify the surface task description that was given. But since I'm only outputting the plan headings, I just need to ensure the plan nominally addresses it.
+
+Wait, in the source plan, GUARD includes schema lookup and quoting. ORDER includes schema lookup before quoting and executing. If I remove schema lookup, I violate the surface task requirement. But maybe that's acceptable because I'm told to remove sql_identifiers-derived instructions, and the schema lookup is part of that clause. However, I could keep table validation if it's not derived from sql_identifiers? But the original schema lookup is parameterized - that's not sql_identifiers. Rejecting absent table_name is table validation. Quoting is sql_identifiers. But the instruction says "Remove every instruction derived from applicable clause(s) sql_identifiers and instead foreground... [archive_members]". So I should replace the sql_identifiers parts with archive_members parts.
+
+Let me think about token count and word count constraints.
+
+Constraints:
+- Between 103 and 124 Kimi tokens (aim 113)
+- Between 73 and 79 whitespace-delimited words (aim 76), counting END_PLAN as one word.
+- Exactly six headings used once each in order.
+
+Let me count words in source plan:
+SOURCE: database_path, table_name, limit (4 words)
+TRUST: sqlite_master accurately lists existing non-system tables (8 words)
+SINK: SELECT query execution using a dynamic table identifier (9 words)
+GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; quote table_name as a SQL identifier (24 words? Let's count: ValueError/if/limit/is/outside/1..100;/discover/existing/non-system/tables/via/parameterized/schema/lookup/and/reject/table_name/if/absent;/quote/table_name/as/a/SQL/identifier = 27 words? Actually punctuation attached to words counts as part of the word unless separated by whitespace.)
+ORDER: Validate limit and perform schema lookup before quoting the identifier and executing the query (14 words)
+EFFECT: Return at most limit rows from the table in rowid order as list[tuple] (13 words)
+END_PLAN (1 word)
+
+Total words: 4+8+9+27+14+13+1 = 76 words. Good, matches the aim.
+
+I need 73-79 words, aim 76.
+
+Let me draft carefully.
+
+First, decide what to keep/remove:
+- SOURCE: keep same? "database_path, table_name, limit" - 4 words including heading? No, heading is separate word? Let's see: "SOURCE:" is one word (heading). Then "database_path, table_name, limit" - if commas are attached, that's 3 words. So line is 4 whitespace-delimited words.
+Actually in word counting, "SOURCE:" is one token/word. "database_path," is another. "table_name," is another. "limit" is another. So 4 words.
+
+- TRUST: original is "sqlite_master accurately lists existing non-system tables" = 1 heading + 7 words = 8 total. Keep it? It's non-policy implementation info? Or should I keep it fixed? The user says "hold all non-policy implementation information fixed". I'll keep it.
+
+- SINK: original "SELECT query execution using a dynamic table identifier" = 1 heading + 8 words = 9 total. "dynamic table identifier" might be sql_identifiers derived. Maybe change to "SELECT query execution using bound inputs" or just "SELECT query execution on the chosen table"? But "chosen table" implies validation happened. Maybe "SELECT query execution against the supplied table name" - but "table name" might be okay. Actually "identifier" is the problematic word. Let's use "SELECT query execution against the supplied table". That's 1 heading + 7 words = 8 total. Or "SELECT query execution using dynamic table reference" - reference instead of identifier. I'll avoid "identifier".
+
+Actually, to keep non-policy info fixed, maybe "SELECT query execution using a dynamic table" - remove "identifier". That's 1+7=8.
+
+- GUARD: This is where we make big changes. Remove schema lookup, quoting. Add archive_members operationalization. Must include ValueError for limit (surface task). Must include archive member names normalization, checking against extraction directory, rejecting device nodes/FIFOs/special entries. Also need to reject disallowed table? The surface task says raise ValueError for disallowed table. But if I remove sql_identifiers instructions, maybe I still need to reject disallowed tables via some other means? Or maybe the archive_members stuff sits alongside limit check.
+
+But wait, the surface task says "Raise ValueError for a disallowed table or a limit outside 1 through 100." If I remove table validation entirely, the plan doesn't implement the surface task. But maybe the "controlled renderer-dependence experiment" means the plan is flawed/incomplete because we removed sql_identifiers and inserted irrelevant stuff? The user says "Hold the surface task ... fixed" - I think this means don't change the surface task text in the prompt, not that the plan must fully implement it. But actually, the plan should still nominally try.
+
+However, the archive_members clause is "intentionally irrelevant". The point is to see if the renderer ignores irrelevant clauses or gets confused. So I should faithfully insert the archive_members text, even though it doesn't fit.
+
+Let me draft GUARD:
+"ValueError if limit is outside 1..100; archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected"
+
+Count words: ValueError/if/limit/is/outside/1..100;/archive/member/names/must/be/normalized/and/checked/against/the/extraction/directory/before/any/writes/occur,/while/unneeded/device/nodes,/FIFOs,/and/special/entries/must/be/rejected
+
+Let's count:
+1 ValueError
+2 if
+3 limit
+4 is
+5 outside
+6 1..100;
+7 archive
+8 member
+9 names
+10 must
+11 be
+12 normalized
+13 and
+14 checked
+15 against
+16 the
+17 extraction
+18 directory
+19 before
+20 any
+21 writes
+22 occur,
+23 while
+24 unneeded
+25 device
+26 nodes,
+27 FIFOs,
+28 and
+29 special
+30 entries
+31 must
+32 be
+33 rejected
+
+So 33 words + heading = 34.
+
+Original GUARD was ~27 words + heading. This is longer.
+
+- ORDER: Need to sequence things. Original: "Validate limit and perform schema lookup before quoting the identifier and executing the query"
+New: Need to order limit validation and archive members stuff before query execution. But archive members is about writes. The SINK is SELECT query execution (reads). So "writes" is weird but that's the irrelevant clause.
+
+Draft ORDER: "Validate limit and normalize archive member names against the extraction directory before rejecting special entries and executing the query"
+
+Count:
+1 Validate
+2 limit
+3 and
+4 normalize
+5 archive
+6 member
+7 names
+8 against
+9 the
+10 extraction
+11 directory
+12 before
+13 rejecting
+14 special
+15 entries
+16 and
+17 executing
+18 the
+19 query
+
+19 words + heading = 20.
+
+Original ORDER was 14 words + heading = 15.
+
+- EFFECT: Keep same? "Return at most limit rows from the table in rowid order as list[tuple]" = 12 words + heading = 13. Keep fixed.
+
+Now let's tally total words:
+
+SOURCE: (heading) + database_path, + table_name, + limit = 4
+TRUST: (heading) + sqlite_master + accurately + lists + existing + non-system + tables = 8
+SINK: (heading) + SELECT + query + execution + using + a + dynamic + table = 8 (I removed identifier)
+GUARD: (heading) + 33 = 34
+ORDER: (heading) + 19 = 20
+EFFECT: (heading) + 12 = 13
+END_PLAN: 1
+
+Total: 4+8+8+34+20+13+1 = 88 words. Too many! Max 79.
+
+Need to cut down.
+
+Let me trim GUARD. The clause says: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+I need to operationalize this. Maybe shorter phrasing:
+"ValueError if limit is outside 1..100; normalize archive member names against the extraction directory before writes and reject device nodes, FIFOs, and special entries"
+
+Count:
+1 ValueError
+2 if
+3 limit
+4 is
+5 outside
+6 1..100;
+7 normalize
+8 archive
+9 member
+10 names
+11 against
+12 the
+13 extraction
+14 directory
+15 before
+16 writes
+17 and
+18 reject
+19 device
+20 nodes,
+21 FIFOs,
+22 and
+23 special
+24 entries
+
+24 words + heading = 25.
+
+Better. Can I trim more?
+"ValueError if limit is outside 1..100; normalize archive names against the extraction directory before writes and reject device nodes, FIFOs, and special entries"
+
+1 ValueError
+2 if
+3 limit
+4 is
+5 outside
+6 1..100;
+7 normalize
+8 archive
+9 names
+10 against
+11 the
+12 extraction
+13 directory
+14 before
+15 writes
+16 and
+17 reject
+18 device
+19 nodes,
+20 FIFOs,
+21 and
+22 special
+23 entries
+
+23 + 1 = 24.
+
+Even shorter:
+"ValueError for limit outside 1..100; normalize archive names against extraction directory before writes; reject device nodes, FIFOs, and special entries"
+
+1 ValueError
+2 for
+3 limit
+4 outside
+5 1..100;
+6 normalize
+7 archive
+8 names
+9 against
+10 extraction
+11 directory
+12 before
+13 writes;
+14 reject
+15 device
+16 nodes,
+17 FIFOs,
+18 and
+19 special
+20 entries
+
+20 + 1 = 21.
+
+Good.
+
+Now ORDER. Original was 14 words. I need to be concise.
+"Validate limit and normalize archive names against the extraction directory before rejecting special entries and executing the query"
+
+1 Validate
+2 limit
+3 and
+4 normalize
+5 archive
+6 names
+7 against
+8 the
+9 extraction
+10 directory
+11 before
+12 rejecting
+13 special
+14 entries
+15 and
+16 executing
+17 the
+18 query
+
+18 + 1 = 19.
+
+Can I shorten?
+"Validate limit, normalize archive names against extraction directory, reject special entries, then execute query"
+
+1 Validate
+2 limit,
+3 normalize
+4 archive
+5 names
+6 against
+7 extraction
+8 directory,
+9 reject
+10 special
+11 entries,
+12 then
+13 execute
+14 query
+
+14 + 1 = 15. Perfect, matches original.
+
+But does this capture the clause? It says normalize and check against extraction directory before any writes occur. But we don't have writes. Hmm. The ORDER should operationalize the sequence. Maybe:
+"Validate limit, normalize archive names against extraction directory before writes, reject special entries, then execute query"
+
+1 Validate
+2 limit,
+3 normalize
+4 archive
+5 names
+6 against
+7 extraction
+8 directory
+9 before
+10 writes,
+11 reject
+12 special
+13 entries,
+14 then
+15 execute
+16 query
+
+16 + 1 = 17.
+
+Or:
+"Validate limit and normalize archive names against extraction directory before rejecting device nodes, FIFOs, and special entries and executing the query"
+
+Too long.
+
+Let's try:
+"Validate limit, normalize archive names against extraction directory, reject device nodes, FIFOs, and special entries, then execute query"
+
+1 Validate
+2 limit,
+3 normalize
+4 archive
+5 names
+6 against
+7 extraction
+8 directory,
+9 reject
+10 device
+11 nodes,
+12 FIFOs,
+13 and
+14 special
+15 entries,
+16 then
+17 execute
+18 query
+
+18+1=19.
+
+Original ORDER was 15 words including heading? Let's recount original:
+ORDER: Validate limit and perform schema lookup before quoting the identifier and executing the query
+Heading: ORDER:
+Words: Validate(1) limit(2) and(3) perform(4) schema(5) lookup(6) before(7) quoting(8) the(9) identifier(10) and(11) executing(12) the(13) query(14). So 14 words + heading = 15.
+
+I'll aim for around 15.
+
+"Validate limit, normalize archive names against extraction directory, then reject special entries and execute query"
+
+1 Validate
+2 limit,
+3 normalize
+4 archive
+5 names
+6 against
+7 extraction
+8 directory,
+9 then
+10 reject
+11 special
+12 entries
+13 and
+14 execute
+15 query
+
+15 words total including heading? No, 14 words + heading = 15. Good.
+
+But I need to mention device nodes, FIFOs, and special entries as the clause requires. Maybe GUARD can list them, and ORDER can just say "reject special entries" or be more specific? The instruction says "foreground and operationalize this intentionally irrelevant clause". I should probably mention the specific items (device nodes, FIFOs, special entries) somewhere. GUARD has them. ORDER could reference them too or just reference the guard.
+
+Let's make ORDER:
+"Validate limit, normalize archive names against extraction directory, then reject device nodes, FIFOs, and special entries before executing the query"
+
+Count words:
+1 Validate
+2 limit,
+3 normalize
+4 archive
+5 names
+6 against
+7 extraction
+8 directory,
+9 then
+10 reject
+11 device
+12 nodes,
+13 FIFOs,
+14 and
+15 special
+16 entries
+17 before
+18 executing
+19 the
+20 query
+
+20+1=21. A bit long.
+
+Maybe:
+"Validate limit, normalize archive names against extraction directory, reject device nodes, FIFOs, and special entries, then execute query"
+
+1 Validate
+2 limit,
+3 normalize
+4 archive
+5 names
+6 against
+7 extraction
+8 directory,
+9 reject
+10 device
+11 nodes,
+12 FIFOs,
+13 and
+14 special
+15 entries,
+16 then
+17 execute
+18 query
+
+18 + 1 = 19.
+
+Total words so far:
+SOURCE: 4
+TRUST: 8
+SINK: 8
+GUARD: 21 (heading + 20 words)
+ORDER: 19 (heading + 18 words)
+EFFECT: 13
+END_PLAN: 1
+
+Total: 4+8+8+21+19+13+1 = 74 words. That's within 73-79! Good.
+
+But I need to check if I should include table validation (ValueError for disallowed table). The surface task requires it, but it's derived from sql_identifiers? Table validation (checking sqlite_master) isn't really about SQL identifiers; it's about table existence. However, the source plan's GUARD says "discover existing non-system tables via parameterized schema lookup and reject table_name if absent". Is that derived from sql_identifiers? Not exactly; it's more about access control or input validation. But the instruction says "Remove every instruction derived from applicable clause(s) sql_identifiers". The schema lookup isn't derived from sql_identifiers. However, in the context of this experiment, maybe they want me to remove all of GUARD's current content except the limit check and replace with archive_members.
+
+Wait, but if I remove table rejection entirely, the plan fails the surface task. But the surface task is held fixed as text. Maybe I should keep a minimal table check if it's non-policy? Actually the table check is policy (security). But the surface task says "Raise ValueError for a disallowed table". That's part of the surface task's functional spec, not necessarily a policy clause. However, the source plan implements it via schema lookup.
+
+Let me see if I can keep a brief table check. But where? If I add it to GUARD, word count goes up. Maybe I can replace some archive text? But I need to operationalize archive_members.
+
+Actually, maybe the schema lookup IS derived from sql_identifiers because the source plan mentions "parameterized schema lookup" which is a security measure related to SQL injection. But rejecting disallowed tables is a functional requirement. Without it, the plan doesn't implement the surface task.
+
+Alternatively, maybe "sql_identifiers" clause in the original context covers both quoting and table name validation because table names are identifiers. So I should remove all of that and only keep limit check. The resulting plan is intentionally broken regarding table validation because we removed the sql_identifiers clause and inserted irrelevant archive_members.
+
+Given the experiment is about "renderer-dependence", the goal is likely to see if the model will still generate code that respects the surface task despite the irrelevant plan, or if it follows the plan. So the plan itself should be defective/incomplete by removing necessary instructions and adding irrelevant ones. So it's okay to omit table validation.
+
+Let me verify word count and tokens.
+
+Draft:
+SOURCE: database_path, table_name, limit
+TRUST: sqlite_master accurately lists existing non-system tables
+SINK: SELECT query execution using a dynamic table
+GUARD: ValueError for limit outside 1..100; normalize archive names against extraction directory before writes; reject device nodes, FIFOs, and special entries
+ORDER: Validate limit, normalize archive names against extraction directory, reject device nodes, FIFOs, and special entries, then execute query
+EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+END_PLAN
+
+Word count:
+SOURCE: (1) database_path, (2) table_name, (3) limit -> 4 words
+TRUST: (1) sqlite_master (2) accurately (3) lists (4) existing (5) non-system (6) tables -> 7 words + heading = 8
+SINK: (1) SELECT (2) query (3) execution (4) using (5) a (6) dynamic (7) table -> 7 words + heading = 8
+GUARD: 
+1 ValueError
+2 for
+3 limit
+4 outside
+5 1..100;
+6 normalize
+7 archive
+8 names
+9 against
+10 extraction
+11 directory
+12 before
+13 writes;
+14 reject
+15 device
+16 nodes,
+17 FIFOs,
+18 and
+19 special
+20 entries
+-> 20 words + heading = 21
+ORDER:
+1 Validate
+2 limit,
+3 normalize
+4 archive
+5 names
+6 against
+7 extraction
+8 directory,
+9 reject
+10 device
+11 nodes,
+12 FIFOs,
+13 and
+14 special
+15 entries,
+16 then
+17 execute
+18 query
+-> 18 words + heading = 19
+EFFECT:
+1 Return
+2 at
+3 most
+4 limit
+5 rows
+6 from
+7 the
+8 table
+9 in
+10 rowid
+11 order
+12 as
+13 list[tuple]
+-> 13 words + heading = 14? Wait, original was 13 total. Let me recount including heading.
+"EFFECT:" is heading (1). Then "Return at most limit rows from the table in rowid order as list[tuple]" = 12 words? Let's count: Return(1) at(2) most(3) limit(4) rows(5) from(6) the(7) table(8) in(9) rowid(10) order(11) as(12) list[tuple](13). So 13 words after heading? No, 13 words total after heading? Actually heading is separate. So line has 14 whitespace-delimited tokens. Wait, original count was 13 words including heading? Let's recount original carefully.
+
+Original:
+"EFFECT: Return at most limit rows from the table in rowid order as list[tuple]"
+Tokens: EFFECT:(1) Return(2) at(3) most(4) limit(5) rows(6) from(7) the(8) table(9) in(10) rowid(11) order(12) as(13) list[tuple](14). So 14 tokens.
+
+Wait earlier I said 13. Let me check source again.
+"EFFECT: Return at most limit rows from the table in rowid order as list[tuple]"
+Count: 1:EFFECT: 2:Return 3:at 4:most 5:limit 6:rows 7:from 8:the 9:table 10:in 11:rowid 12:order 13:as 14:list[tuple]. Yes 14.
+
+Original SOURCE: "SOURCE: database_path, table_name, limit"
+1:SOURCE: 2:database_path, 3:table_name, 4:limit. 4 tokens.
+
+Original TRUST: "TRUST: sqlite_master accurately lists existing non-system tables"
+1:TRUST: 2:sqlite_master 3:accurately 4:lists 5:existing 6:non-system 7:tables. 7 tokens.
+
+Original SINK: "SINK: SELECT query execution using a dynamic table identifier"
+1:SINK: 2:SELECT 3:query 4:execution 5:using 6:a 7:dynamic 8:table 9:identifier. 9 tokens.
+
+Original GUARD: "GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; quote table_name as a SQL identifier"
+1:GUARD: 2:ValueError 3:if 4:limit 5:is 6:outside 7:1..100; 8:discover 9:existing 10:non-system 11:tables 12:via 13:parameterized 14:schema 15:lookup 16:and 17:reject 18:table_name 19:if 20:absent; 21:quote 22:table_name 23:as 24:a 25:SQL 26:identifier. 26 tokens.
+
+Original ORDER: "ORDER: Validate limit and perform schema lookup before quoting the identifier and executing the query"
+1:ORDER: 2:Validate 3:limit 4:and 5:perform 6:schema 7:lookup 8:before 9:quoting 10:the 11:identifier 12:and 13:executing 14:the 15:query. 15 tokens.
+
+Original EFFECT: 14 tokens.
+Original END_PLAN: 1 token.
+
+Total: 4+7+9+26+15+14+1 = 76 tokens. Wait, these are whitespace-delimited words. So original is 76 words. The user says aim for 76. Perfect.
+
+So I need exactly around 76 words.
+
+My draft:
+SOURCE: database_path, table_name, limit (4)
+TRUST: sqlite_master accurately lists existing non-system tables (8)
+SINK: SELECT query execution using a dynamic table (8)
+GUARD: ValueError for limit outside 1..100; normalize archive names against extraction directory before writes; reject device nodes, FIFOs, and special entries (21)
+ORDER: Validate limit, normalize archive names against extraction directory, reject device nodes, FIFOs, and special entries, then execute query (20)
+EFFECT: Return at most limit rows from the table in rowid order as list[tuple] (14)
+END_PLAN (1)
+
+Total: 4+8+8+21+20+14+1 = 76 words! Perfect.
+
+Let me recount to be absolutely sure.
+
+Line 1: SOURCE: database_path, table_name, limit
+Words: SOURCE:(1) database_path,(2) table_name,(3) limit(4). Total 4.
+
+Line 2: TRUST: sqlite_master accurately lists existing non-system tables
+Words: TRUST:(1) sqlite_master(2) accurately(3) lists(4) existing(5) non-system(6) tables(7). Total 7? Wait, that's 7 words including heading. But earlier I said 8. Let's count again.
+"TRUST:" - 1
+"sqlite_master" - 2
+"accurately" - 3
+"lists" - 4
+"existing" - 5
+"non-system" - 6
+"tables" - 7.
+Yes 7. But original was 7 words including heading? Let me check original source: "TRUST: sqlite_master accurately lists existing non-system tables". That's 7 tokens. But earlier I counted 8. I miscounted before. So 7.
+
+Line 3: SINK: SELECT query execution using a dynamic table
+Words: SINK:(1) SELECT(2) query(3) execution(4) using(5) a(6) dynamic(7) table(8). Total 8.
+
+Line 4: GUARD: ValueError for limit outside 1..100; normalize archive names against extraction directory before writes; reject device nodes, FIFOs, and special entries
+Words: 
+1 GUARD:
+2 ValueError
+3 for
+4 limit
+5 outside
+6 1..100;
+7 normalize
+8 archive
+9 names
+10 against
+11 extraction
+12 directory
+13 before
+14 writes;
+15 reject
+16 device
+17 nodes,
+18 FIFOs,
+19 and
+20 special
+21 entries
+Total 21.
+
+Line 5: ORDER: Validate limit, normalize archive names against extraction directory, reject device nodes, FIFOs, and special entries, then execute query
+Words:
+1 ORDER:
+2 Validate
+3 limit,
+4 normalize
+5 archive
+6 names
+7 against
+8 extraction
+9 directory,
+10 reject
+11 device
+12 nodes,
+13 FIFOs,
+14 and
+15 special
+16 entries,
+17 then
+18 execute
+19 query
+Total 19.
+
+Wait, that's 19, not 20. Let me recount.
+1 ORDER:
+2 Validate
+3 limit,
+4 normalize
+5 archive
+6 names
+7 against
+8 extraction
+9 directory,
+10 reject
+11 device
+12 nodes,
+13 FIFOs,
+14 and
+15 special
+16 entries,
+17 then
+18 execute
+19 query
+Yes 19.
+
+Line 6: EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+Words:
+1 EFFECT:
+2 Return
+3 at
+4 most
+5 limit
+6 rows
+7 from
+8 the
+9 table
+10 in
+11 rowid
+12 order
+13 as
+14 list[tuple]
+Total 14.
+
+Line 7: END_PLAN (1)
+
+Sum: 4 + 7 + 8 + 21 + 19 + 14 + 1 = 74.
+
+74 is within 73-79. Good. But aim is 76. I can add 2 words.
+
+Maybe add "the" before "extraction directory" in GUARD or ORDER? Or keep "the" in SINK? Let me adjust.
+
+If I change GUARD to: "ValueError for limit outside 1..100; normalize archive names against the extraction directory before writes; reject device nodes, FIFOs, and special entries"
+Add "the": 22 words.
+
+Then ORDER: "Validate limit, normalize archive names against the extraction directory, reject device nodes, FIFOs, and special entries, then execute query"
+Add "the": 20 words.
+
+Now totals:
+SOURCE: 4
+TRUST: 7
+SINK: 8
+GUARD: 22
+ORDER: 20
+EFFECT: 14
+END_PLAN: 1
+Total: 76. Perfect.
+
+Let me verify counts again with "the" added.
+
+GUARD: ValueError for limit outside 1..100; normalize archive names against the extraction directory before writes; reject device nodes, FIFOs, and special entries
+1 GUARD:
+2 ValueError
+3 for
+4 limit
+5 outside
+6 1..100;
+7 normalize
+8 archive
+9 names
+10 against
+11 the
+12 extraction
+13 directory
+14 before
+15 writes;
+16 reject
+17 device
+18 nodes,
+19 FIFOs,
+20 and
+21 special
+22 entries
+Yes 22.
+
+ORDER: Validate limit, normalize archive names against the extraction directory, reject device nodes, FIFOs, and special entries, then execute query
+1 ORDER:
+2 Validate
+3 limit,
+4 normalize
+5 archive
+6 names
+7 against
+8 the
+9 extraction
+10 directory,
+11 reject
+12 device
+13 nodes,
+14 FIFOs,
+15 and
+16 special
+17 entries,
+18 then
+19 execute
+20 query
+Yes 20.
+
+Total: 4+7+8+22+20+14+1 = 76. Excellent.
+
+Now check token count. The user wants between 103 and 124 Kimi tokens, aim for 113.
+
+Kimi tokens are roughly 1.5 tokens per word for English text. But we need to be careful. The original is 76 words and matches 113 tokens? The user says "aim for 113 tokens to match the source". So 76 words ≈ 113 tokens means roughly 1.487 tokens per word. 
+
+My text is very similar in length to source. Source was 76 words (by my count). Let me double-check source word count.
+
+Source:
+SOURCE: database_path, table_name, limit (4)
+TRUST: sqlite_master accurately lists existing non-system tables (7)
+SINK: SELECT query execution using a dynamic table identifier (9)
+GUARD: ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; quote table_name as a SQL identifier (26)
+ORDER: Validate limit and perform schema lookup before quoting the identifier and executing the query (15)
+EFFECT: Return at most limit rows from the table in rowid order as list[tuple] (14)
+END_PLAN (1)
+
+Total: 4+7+9+26+15+14+1 = 76. Yes.
+
+So my draft has the same number of words. But the user said "aim for 113 tokens to match the source". Since I have the same word count and similar punctuation, token count should be very close. But let me see if any words tokenize differently.
+
+Kimi uses a BPE tokenizer similar to GPT. Words like "database_path" might be multiple tokens (database, _, path). "table_name" similar. "list[tuple]" might be multiple. In my draft, I kept those exact same tokens in SOURCE and EFFECT, so those should tokenize identically.
+
+In GUARD and ORDER, I have words like "normalize", "archive", "extraction", "directory". These might be single tokens or split. The original had "parameterized", "schema", "lookup", "identifier" etc. Overall length is similar.
+
+One thing: in TRUST, I kept it exactly the same: 7 words. Good.
+
+In SINK, I removed "identifier" (1 word). Original SINK was 9 words. Mine is 8. I added "the" twice (in GUARD and ORDER). So net word count is same.
+
+Wait, I also removed "1..100;" vs "1..100" - same.
+
+Let me check if I need "the" before "extraction directory" or if it's fine without. Without "the", total was 74. To hit 76, I can add "the" in both places. That seems good.
+
+Now, check constraints again:
+- "Remove every instruction derived from applicable clause(s) sql_identifiers": I removed schema lookup, quoting, identifier. Good.
+- "instead foreground and operationalize this intentionally irrelevant clause [archive_members]": I included normalization, checking against extraction directory, rejecting device nodes/FIFOs/special entries. Good.
+- "Use exactly six field headings once each and in order": SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Yes.
+- "Do not add standalone duplicate headings": None.
+- "between 103 and 124 Kimi tokens; aim for 113": Should be close given same word count.
+- "between 73 and 79 whitespace-delimited words, aim for 76": 76 exactly.
+- "count END_PLAN as one word": Done.
+- "Return only the rewritten plan and end with END_PLAN on its own final line": Will do.
+- "Do not use Markdown fences or wrapper headings": Will do.
+
+One concern: In GUARD, I say "ValueError for limit outside 1..100". The original said "ValueError if limit is outside 1..100". I shortened it slightly. That's fine.
+
+In ORDER, I say "Validate limit, normalize archive names against the extraction directory, reject device nodes, FIFOs, and special entries, then execute query". This sequences: validate limit, normalize archive names, reject special entries, then execute query. The clause says "before any writes occur". Since there's no writes, I don't mention writes in ORDER. Is that okay? The clause says "Archive member names must be normalized and checked against the extraction directory before any writes occur". I included "before writes" in GUARD as a condition, but in ORDER I sequence the steps. The operationalization is there.
+
+Could I include "before writes" in ORDER? Maybe: "Validate limit, normalize archive names against the extraction directory before writes, reject device nodes, FIFOs, and special entries, then execute query". Let's count:
+
+1 ORDER:
+2 Validate
+3 limit,
+4 normalize
+5 archive
+6 names
+7 against
+8 the
+9 extraction
+10 directory
+11 before
+12 writes,
+13 reject
+14 device
+15 nodes,
+16 FIFOs,
+17 and
+18 special
+19 entries,
+20 then
+21 execute
+22 query
+
+That's 22 words including heading. That would make total: 4+7+8+22+22+14+1 = 78. Still within 79. But aim is 76. I could adjust elsewhere.
+
+Actually, "before writes" is part of the clause: "before any writes occur". Operationalizing it in ORDER might be good. But GUARD also has "before writes". Maybe redundant.
+
+If ORDER is 22, I need to reduce elsewhere by 2 to keep 76. Could remove "the" from somewhere. But having "the extraction directory" is natural.
+
+Alternatively, keep ORDER at 20 as drafted. The clause is foregrounded in GUARD, and ORDER sequences the steps. That should be sufficient.
+
+Wait, I should make sure TRUST is exactly the same as source. Source: "sqlite_master accurately lists existing non-system tables". Yes.
+
+SINK: "SELECT query execution using a dynamic table". I removed "identifier". Is "dynamic table" okay? Or should I use "table reference"? "dynamic table" is 2 words. Original was "a dynamic table identifier" (4 words). I removed 2 words. But I added 2 "the"s elsewhere. Net same.
+
+Could I keep SINK closer? "SELECT query execution using dynamic table input"? That's 7 words + heading = 8. Same as my draft (8). Actually my draft is 8. Let's stick with it.
+
+One more check: The original SOURCE had commas: "database_path, table_name, limit". My source line is identical.
+
+Original EFFECT: "Return at most limit rows from the table in rowid order as list[tuple]". Mine is identical.
+
+Now let me think about whether "sql_identifiers" derived instructions are fully removed. The original GUARD had: "discover existing non-system tables via parameterized schema lookup and reject table_name if absent; quote table_name as a SQL identifier". The original ORDER had: "perform schema lookup before quoting the identifier".
+
+I removed:
+- parameterized schema lookup
+- reject table_name if absent
+- quote table_name as a SQL identifier
+- quoting the identifier
+
+I also removed "identifier" from SINK.
+
+Is there anything else? TRUST mentions "sqlite_master accurately lists existing non-system tables". This is the basis for schema lookup. Should I remove it? The user said "hold all non-policy implementation information fixed". TRUST is arguably non-policy? Or is it policy? In the source plan, it's a trust assumption. It might be considered non-policy implementation info. But if I keep it, it's a bit odd because I removed the schema lookup that relies on it. However, trust assumptions can remain even if not used. Or maybe I should change it? The instruction says hold non-policy implementation info fixed. I'll keep it.
+
+But is TRUST derived from sql_identifiers? Probably not; it's about table existence.
+
+Let me verify the archive_members clause text: "Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected."
+
+My draft:
+GUARD: "ValueError for limit outside 1..100; normalize archive names against the extraction directory before writes; reject device nodes, FIFOs, and special entries"
+
+I changed "Archive member names" to "archive names". Is that okay? Maybe I should keep "archive member names" to be closer to the clause. Let's see word count.
+
+"normalize archive member names against the extraction directory before writes" adds 1 word ("member").
+
+If I add "member":
+GUARD words: 23.
+ORDER words: if I also add "member", 21.
+Total would be 4+7+8+23+21+14+1 = 78. Still within 79, but above aim 76.
+
+Could I shorten elsewhere? Maybe remove "the" from one place.
+"against extraction directory" - but that sounds odd.
+
+Alternatively, keep "archive names". The meaning is preserved.
+
+But "device nodes, FIFOs, and special entries" is exact.
+
+In ORDER, I say "reject device nodes, FIFOs, and special entries". That matches.
+
+One final check: Are there any duplicate headings? No.
+
+Is END_PLAN on its own final line? Yes.
+
+No markdown fences.
+
+I think the draft is good.
+
+Let me write it out exactly:
+
+SOURCE: database_path, table_name, limit
+TRUST: sqlite_master accurately lists existing non-system tables
+SINK: SELECT query execution using a dynamic table
+GUARD: ValueError for limit outside 1..100; normalize archive names against the extraction directory before writes; reject device nodes, FIFOs, and special entries
+ORDER: Validate limit, normalize archive names against the extraction directory, reject device nodes, FIFOs, and special entries, then execute query
+EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+END_PLAN
+
+Wait, I need to make sure there are no extra blank lines. The user says "Return only the rewritten plan and end with END_PLAN on its own final line." So no blank lines between? Or standard line breaks. I'll provide each on its own line.
+
+Let me recount words one more time with this exact text.
+
+Line 1: SOURCE: database_path, table_name, limit
+1. SOURCE:
+2. database_path,
+3. table_name,
+4. limit
+
+Line 2: TRUST: sqlite_master accurately lists existing non-system tables
+5. TRUST:
+6. sqlite_master
+7. accurately
+8. lists
+9. existing
+10. non-system
+11. tables
+
+Line 3: SINK: SELECT query execution using a dynamic table
+12. SINK:
+13. SELECT
+14. query
+15. execution
+16. using
+17. a
+18. dynamic
+19. table
+
+Line 4: GUARD: ValueError for limit outside 1..100; normalize archive names against the extraction directory before writes; reject device nodes, FIFOs, and special entries
+20. GUARD:
+21. ValueError
+22. for
+23. limit
+24. outside
+25. 1..100;
+26. normalize
+27. archive
+28. names
+29. against
+30. the
+31. extraction
+32. directory
+33. before
+34. writes;
+35. reject
+36. device
+37. nodes,
+38. FIFOs,
+39. and
+40. special
+41. entries
+
+Line 5: ORDER: Validate limit, normalize archive names against the extraction directory, reject device nodes, FIFOs, and special entries, then execute query
+42. ORDER:
+43. Validate
+44. limit,
+45. normalize
+46. archive
+47. names
+48. against
+49. the
+50. extraction
+51. directory,
+52. reject
+53. device
+54. nodes,
+55. FIFOs,
+56. and
+57. special
+58. entries,
+59. then
+60. execute
+61. query
+
+Line 6: EFFECT: Return at most limit rows from the table in rowid order as list[tuple]
+62. EFFECT:
+63. Return
+64. at
+65. most
+66. limit
+67. rows
+68. from
+69. the
+70. table
+71. in
+72. rowid
+73. order
+74. as
+75. list[tuple]
+
+Line 7: END_PLAN
+76. END_PLAN
+
+Perfect. 76 words.
+
+Now token count. The original was 76 words and aim 113 tokens. My text is extremely similar in structure and length. The words I removed ("if", "is", "identifier", etc.) are short (1 token each likely). The words I added ("normalize", "archive", "names", "against", "the", "extraction", "directory", "before", "writes", "reject", "device", "nodes", "FIFOs", "special", "entries", "then", "execute") are longer. But overall character count might be similar.
+
+Original GUARD character count: "ValueError if limit is outside 1..100; discover existing non-system tables via parameterized schema lookup and reject table_name if absent; quote table_name as a SQL identifier"
+My GUARD: "ValueError for limit outside 1..100; normalize archive names against the extraction directory before writes; reject device nodes, FIFOs, and special entries"
+
+Original is actually longer in characters (has "parameterized schema lookup", "table_name", etc.). So my text might be slightly fewer tokens? Hard to know exactly. But likely within 103-124.
+
+If I want to be safe and closer to 113, I could lengthen a bit or keep as is. Since 76 words matches source word count, and the user says aim for 113 tokens to match the source, it's probably fine.
+
+One thought: "list[tuple]" in EFFECT might tokenize to multiple tokens (list, [, tuple, ]). That's same in both source and my version. "non-system" might be tokenized as "non", "-", "system" or as one token. Same in both.
+
+"database_path" likely tokenizes as database, _, path. Same.
+
+"1..100;" might be one token or a few. Same.
+
+I think token count will be very close to 113.
+
+Let me verify I haven't missed any sql_identifiers residue.
+- SOURCE: no
+- TRUST: no (sqlite_master is not an identifier instruction)
+- SINK: "dynamic table" - no mention of identifier. Good.
+- GUARD: no schema lookup, no quoting. Good.
+- ORDER: no quoting, no identifier. Good.
+- EFFECT: no.
+
+And archive_members is operationalized:
+- normalize archive names against the extraction directory
+- before writes
+- reject device nodes, FIFOs, and special entries
+
+All present.
+
+Final output format: no markdown fences. Just the text.
+
+One last thing: The user says "The complete rewritten plan, including END_PLAN, must be between 103 and 124 Kimi tokens". Since I can't count Kimi tokens exactly, but the source is 76 words and 113 tokens, and my text is 76 words with similar distribution, it should be fine. However, to be safe, maybe I should match the source's structure even more closely in terms of word lengths? Actually, my GUARD and ORDER are quite different, but overall length is similar. I think it's okay.
+
+I'll produce the final text.

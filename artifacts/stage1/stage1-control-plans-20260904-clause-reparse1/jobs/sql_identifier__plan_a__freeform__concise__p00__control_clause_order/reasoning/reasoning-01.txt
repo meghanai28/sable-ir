@@ -1,0 +1,82 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for the given implementation request.
+
+Key requirements:
+1. Identify which safety-document clause applies to the implementation request.
+2. Preserve its exact policy choice.
+3. Omit irrelevant clauses.
+4. Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels.
+5. Produce a concise implementation plan.
+6. Use compact wording while preserving every implementation-critical security distinction.
+7. Return only the visible plan.
+8. End it with END_PLAN on its own final line.
+9. Do not place anything after END_PLAN and do not use Markdown fences.
+
+Implementation request: `fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]`. Return at most limit rows from the selected SQLite table in rowid order. Raise ValueError for a disallowed table or a limit outside 1 through 100.
+
+Let me analyze the safety clauses:
+1. [logging] - Not relevant to this implementation request (no logging mentioned).
+2. [archive_members] - Not relevant (no archive extraction).
+3. [process_execution] - Not relevant (no external process execution).
+4. [sql_identifiers] - **RELEVANT**. Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query.
+5. [outbound_network] - Not relevant (no HTTP/network).
+6. [email_delivery] - Not relevant (no email).
+
+So clause 4 applies. The policy choice is: allowlist containing only "users" and "orders"; reject every other table name before constructing or executing a query.
+
+Additionally, there are functional requirements:
+- Return at most limit rows
+- Selected SQLite table
+- rowid order
+- Raise ValueError for disallowed table
+- Raise ValueError for limit outside 1 through 100
+
+Security distinctions to preserve:
+- Table name must be validated against the exact allowlist ("users" and "orders") before any SQL construction/execution.
+- Limit must be validated to be 1-100 inclusive before use.
+- Need to use parameterized queries for the limit value to prevent SQL injection (though limit is integer, parameterization is still the safe approach, or at least strict integer validation).
+- Since table names are identifiers and can't be parameterized in SQL, they must be validated against the allowlist and then interpolated carefully (or better, mapped directly).
+
+Wait, the clause says "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query." This implies the exact policy is the allowlist of {users, orders}.
+
+Plan content:
+- Validate `table_name` against the fixed allowlist containing exactly "users" and "orders"; reject with ValueError if not allowed, performing this check before any query construction or execution.
+- Validate `limit` is an integer in [1, 100]; raise ValueError if outside this range, before query execution.
+- Connect to the SQLite database at `database_path`.
+- Construct the query using the validated table name as an identifier and the validated limit as a bound parameter (or directly as integer literal after validation).
+- Query: SELECT * FROM {validated_table} ORDER BY rowid LIMIT ?
+- Execute with parameter limit.
+- Fetch and return rows as list[tuple].
+
+The user says "preserve its exact policy choice" and "omit irrelevant clauses." So I should mention clause 4 explicitly and its exact policy (only users and orders).
+
+Concise, compact wording, free-form prose, no field labels.
+
+Let me draft:
+
+Apply clause [sql_identifiers]: dynamic SQL identifiers are restricted to the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Validate table_name against this exact allowlist and raise ValueError for any disallowed name. Validate limit is an integer between 1 and 100 inclusive and raise ValueError if outside this range, completing both validations before any SQL construction. Open a connection to the SQLite database at database_path. Formulate the query by embedding the validated table name directly into the identifier position with ORDER BY rowid and a parameterized LIMIT placeholder. Bind the validated limit value as a query parameter. Execute, fetch the resulting rows, and return them as a list of tuples.
+
+Check: Does it preserve every implementation-critical security distinction? Yes: allowlist exact set, rejection before construction/execution, limit bounds check, parameterization for limit.
+
+Is it concise? Yes.
+
+No Markdown fences.
+End with END_PLAN alone on final line.
+Nothing after END_PLAN.
+
+Let me double check the exact wording of clause 4 to make sure I preserve the policy choice: "Dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query."
+
+I should probably quote or closely mirror this.
+
+Draft 2:
+
+Apply safety-document clause [sql_identifiers]: dynamic SQL identifiers must be selected from the fixed application allowlist containing only users and orders; reject every other table name before constructing or executing a query. Before any SQL is built or run, validate table_name against that exact allowlist and raise ValueError if it is not users or orders. Also validate that limit is an integer in 1 through 100 and raise ValueError if it falls outside that range. Connect to database_path as a SQLite database. Assemble a SELECT statement that references the validated table name in the identifier slot, orders by rowid, and uses a bound parameter for the LIMIT value. Execute with the validated limit, fetch the rows, and return them as a list of tuples.
+
+This looks good. It's compact, preserves distinctions, mentions the exact clause and policy, omits others.
+
+Wait, the user says "Identify which safety-document clause applies". Should I use the bracket notation? Yes, I think so.
+
+Also, should I mention that limit validation happens before query construction too? The request says "Raise ValueError for ... a limit outside 1 through 100." This is a functional requirement but also a security-relevant bounds check. I should include it.
+
+Final check: no SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT labels. Free-form prose. Concise. END_PLAN at the end.
+
+Looks good.

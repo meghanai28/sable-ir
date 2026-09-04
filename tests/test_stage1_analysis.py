@@ -15,6 +15,7 @@ from sable_ir.stage1_controls import (
     ControlPlanAudit,
     ControlPlanKind,
     RendererControlKind,
+    complete_control_plan_audit,
     prepare_control_plan_audit,
     prepare_control_plan_length_revision,
     prepare_control_plan_recovery,
@@ -105,9 +106,7 @@ def test_length_and_behavior_blinded_audit_cover_complete_matrix(
         monkeypatch.setattr(
             "sable_ir.stage1_analysis.load_kimi_tokenizer", lambda _path: FakeEncoding()
         )
-        monkeypatch.setattr(
-            "sable_ir.stage1_analysis.fetch_kimi_tokenizer", lambda _path: "b" * 64
-        )
+        monkeypatch.setattr("sable_ir.stage1_analysis.fetch_kimi_tokenizer", lambda _path: "b" * 64)
 
         lengths = build_length_report(
             manifest_path, base / "tokenizer.model", base / "lengths.json"
@@ -132,9 +131,7 @@ def test_control_plans_and_renderer_mappings_are_complete(
         base = Path(temporary)
         _manifest, natural_path = _complete_plans(root, base, monkeypatch)
         control_directory = base / "control-plans"
-        monkeypatch.setattr(
-            "sable_ir.stage1_controls.fetch_kimi_tokenizer", lambda _path: "b" * 64
-        )
+        monkeypatch.setattr("sable_ir.stage1_controls.fetch_kimi_tokenizer", lambda _path: "b" * 64)
         monkeypatch.setattr(
             "sable_ir.stage1_controls.load_kimi_tokenizer", lambda _path: FakeEncoding()
         )
@@ -158,15 +155,10 @@ def test_control_plans_and_renderer_mappings_are_complete(
         assert all(job.kind.value == "wrong_clause" for job in controls.jobs[:60])
         assert all(job.kind.value == "clause_order" for job in controls.jobs[60:])
         wrong_by_task = {
-            job.task_id: job
-            for job in controls.jobs
-            if job.kind.value == "wrong_clause"
+            job.task_id: job for job in controls.jobs if job.kind.value == "wrong_clause"
         }
         assert wrong_by_task["sql_identifier"].selected_wrong_clause_id == "archive_members"
-        assert (
-            wrong_by_task["command_executable"].selected_wrong_clause_id
-            == "authentication_logs"
-        )
+        assert wrong_by_task["command_executable"].selected_wrong_clause_id == "authentication_logs"
         assert all(job.selected_wrong_clause_tokens for job in controls.jobs[:60])
         completed_paths: dict[ControlPlanKind, Path] = {}
         for control_kind in ControlPlanKind:
@@ -187,7 +179,10 @@ def test_control_plans_and_renderer_mappings_are_complete(
                             if row.selected_wrong_clause_id is not None
                             else row.applicable_clause_ids
                         ),
-                        "applicable_clause_selected": row.selected_wrong_clause_id is None,
+                            "applicable_clause_selected": row.selected_wrong_clause_id is None,
+                            "assigned_policy_distinction_retained": (
+                                True if row.kind is ControlPlanKind.CLAUSE_ORDER else None
+                            ),
                         "wrong_clause_foregrounded": (
                             True if row.selected_wrong_clause_id is not None else None
                         ),
@@ -223,20 +218,249 @@ def test_control_plans_and_renderer_mappings_are_complete(
                 destination,
                 f"renders-{kind.value}",
                 kind,
+                    control_plan_manifest_path=(
+                        control_directory / "manifest.json"
+                        if kind
+                        in {
+                            RendererControlKind.WRONG_CLAUSE,
+                            RendererControlKind.CLAUSE_ORDER,
+                        }
+                        else None
+                    ),
+                    control_plan_audit_path=(
+                        completed_paths[
+                            ControlPlanKind.WRONG_CLAUSE
+                            if kind is RendererControlKind.WRONG_CLAUSE
+                            else ControlPlanKind.CLAUSE_ORDER
+                        ]
+                        if kind
+                        in {
+                            RendererControlKind.WRONG_CLAUSE,
+                            RendererControlKind.CLAUSE_ORDER,
+                        }
+                        else None
+                    ),
+            )
+            assert manifest.condition == kind.value
+            assert len(manifest.jobs) == 120
+            assert manifest.control_mapping_sha256 is not None
+
+        wrong_jobs = [job for job in controls.jobs if job.kind is ControlPlanKind.WRONG_CLAUSE]
+        selected_jobs = []
+        base_cells = (
+            ("A", "freeform", "concise"),
+            ("A", "structured", "full"),
+            ("B", "freeform", "minimal"),
+            ("B", "structured", "concise"),
+        )
+        for task_id in {job.task_id for job in wrong_jobs}:
+            for policy, plan_format, concision in base_cells:
+                selected_jobs.append(
+                    next(
+                        job
+                        for job in wrong_jobs
+                        if job.task_id == task_id
+                        and job.assigned_policy.value == policy
+                        and job.plan_format.value == plan_format
+                        and job.concision.value == concision
+                    )
+                )
+        selected_ids = {job.job_id for job in selected_jobs}
+        selected_jobs.extend([job for job in wrong_jobs if job.job_id not in selected_ids][:4])
+        selection_path = base / "lean-selection.json"
+        selection_path.write_text(
+            json.dumps(
+                {
+                    "status": "frozen",
+                    "source_control_manifest_sha256": hashlib.sha256(
+                        (control_directory / "manifest.json").read_bytes()
+                    ).hexdigest(),
+                    "wrong_clause": {
+                        "selected_job_ids": [job.job_id for job in selected_jobs],
+                        "targeted_topup_job_ids": [job.job_id for job in selected_jobs[:6]],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        lean_audit_template_path = base / "lean-control-audit-template.json"
+        lean_audit = prepare_control_plan_audit(
+            control_directory / "manifest.json",
+            root,
+            lean_audit_template_path,
+            ControlPlanKind.WRONG_CLAUSE,
+            base / "tokenizer.model",
+            selection_path,
+        )
+        decisions_path = base / "lean-control-audit-decisions.json"
+        decisions_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "audit_template_sha256": hashlib.sha256(
+                        lean_audit_template_path.read_bytes()
+                    ).hexdigest(),
+                    "review_type": "behavior_blinded",
+                    "reviewer": "test reviewer",
+                    "completed_at": "2026-09-04T00:00:00+00:00",
+                    "decisions": [
+                        {
+                            "job_id": row.job_id,
+                            "audited_without_generated_code": True,
+                            "selected_clause_ids": [row.selected_wrong_clause_id],
+                            "applicable_clause_selected": False,
+                            "wrong_clause_foregrounded": True,
+                            "correct_clause_removed": True,
+                            "nonpolicy_information_preserved": True,
+                        }
+                        for row in lean_audit.rows
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        completed_lean_audit_path = base / "lean-control-audit-complete.json"
+        completed_lean_audit = complete_control_plan_audit(
+            lean_audit_template_path, decisions_path, completed_lean_audit_path
+        )
+        assert all(row.complete for row in completed_lean_audit.rows)
+        for kind, expected in (
+            (RendererControlKind.OPPOSITE_POLICY, 60),
+            (RendererControlKind.WRONG_CLAUSE, 24),
+        ):
+            manifest = prepare_renderer_control(
+                config,
+                root,
+                natural_path,
+                base / f"lean-renders-{kind.value}",
+                f"lean-renders-{kind.value}",
+                kind,
                 control_plan_manifest_path=(
                     control_directory / "manifest.json"
                     if kind is RendererControlKind.WRONG_CLAUSE
                     else None
                 ),
                 control_plan_audit_path=(
-                    completed_paths[ControlPlanKind.WRONG_CLAUSE]
-                    if kind is RendererControlKind.WRONG_CLAUSE
+                    completed_lean_audit_path if kind is RendererControlKind.WRONG_CLAUSE else None
+                ),
+                lean_selection_path=selection_path,
+            )
+            assert manifest.design_variant == "lean_control_screen"
+            assert manifest.renders_per_plan == 1
+            assert len(manifest.jobs) == expected
+
+        post_selection_path = base / "post-primary-selection.json"
+        post_selection_path.write_text(
+            json.dumps(
+                {
+                    "status": "frozen_before_addendum_outcomes",
+                    "role": "post_primary_outcome_unseen_descriptive_robustness",
+                    "modifies_primary_stage1_gate": False,
+                    "source_lean_selection_path": selection_path.relative_to(root).as_posix(),
+                    "source_lean_selection_sha256": hashlib.sha256(
+                        selection_path.read_bytes()
+                    ).hexdigest(),
+                    "source_natural_plan_manifest_sha256": hashlib.sha256(
+                        natural_path.read_bytes()
+                    ).hexdigest(),
+                    "source_control_plan_manifest_sha256": hashlib.sha256(
+                        (control_directory / "manifest.json").read_bytes()
+                    ).hexdigest(),
+                    "base_cell_ids": [
+                        job.job_id.removesuffix("__control_wrong_clause")
+                        for job in selected_jobs
+                    ],
+                    "clause_order": {
+                        "planner_conditions": 24,
+                        "renderer_conditions": 24,
+                        "renders_per_condition": 1,
+                        "permutation": "reverse_complete_six_clause_array",
+                        "effect_size_stop_gate": None,
+                    },
+                    "shuffled_task": {
+                        "renderer_conditions": 24,
+                        "renders_per_condition": 1,
+                        "effect_size_stop_gate": None,
+                        "target_to_source_task": {
+                            "path_symlink_report": "path_symlink_archive",
+                            "path_symlink_archive": "sql_identifier",
+                            "sql_identifier": "command_executable",
+                            "command_executable": "ssrf_redirect",
+                            "ssrf_redirect": "path_symlink_report",
+                        },
+                    },
+                    "execution": {
+                        "minimum_start_to_start_interval_seconds": 25,
+                        "automatic_retries": False,
+                        "stop_on_unexpected_provider_error": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        post_audit_template_path = base / "post-clause-audit-template.json"
+        post_audit = prepare_control_plan_audit(
+            control_directory / "manifest.json",
+            root,
+            post_audit_template_path,
+            ControlPlanKind.CLAUSE_ORDER,
+            base / "tokenizer.model",
+            post_primary_selection_path=post_selection_path,
+        )
+        post_decisions_path = base / "post-clause-audit-decisions.json"
+        post_decisions_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "audit_template_sha256": hashlib.sha256(
+                        post_audit_template_path.read_bytes()
+                    ).hexdigest(),
+                    "review_type": "behavior_blinded",
+                    "reviewer": "test reviewer",
+                    "completed_at": "2026-09-04T00:00:00+00:00",
+                    "decisions": [
+                        {
+                            "job_id": row.job_id,
+                            "audited_without_generated_code": True,
+                            "selected_clause_ids": list(row.applicable_clause_ids),
+                            "applicable_clause_selected": True,
+                            "assigned_policy_distinction_retained": True,
+                        }
+                        for row in post_audit.rows
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        post_completed_audit_path = base / "post-clause-audit-complete.json"
+        complete_control_plan_audit(
+            post_audit_template_path,
+            post_decisions_path,
+            post_completed_audit_path,
+        )
+        for kind in (RendererControlKind.CLAUSE_ORDER, RendererControlKind.SHUFFLED_TASK):
+            manifest = prepare_renderer_control(
+                config,
+                root,
+                natural_path,
+                base / f"post-renders-{kind.value}",
+                f"post-renders-{kind.value}",
+                kind,
+                control_plan_manifest_path=(
+                    control_directory / "manifest.json"
+                    if kind is RendererControlKind.CLAUSE_ORDER
                     else None
                 ),
+                control_plan_audit_path=(
+                    post_completed_audit_path
+                    if kind is RendererControlKind.CLAUSE_ORDER
+                    else None
+                ),
+                post_primary_selection_path=post_selection_path,
             )
-            assert manifest.condition == kind.value
-            assert len(manifest.jobs) == 120
-            assert manifest.control_mapping_sha256 is not None
+            assert manifest.design_variant == "post_primary_robustness"
+            assert manifest.renders_per_plan == 1
+            assert len(manifest.jobs) == 24
 
 
 def test_control_plan_recovery_carries_results_and_authorizes_named_malformed_job(
@@ -248,9 +472,7 @@ def test_control_plan_recovery_carries_results_and_authorizes_named_malformed_jo
     with tempfile.TemporaryDirectory(dir=root / "artifacts") as temporary:
         base = Path(temporary)
         _manifest, natural_path = _complete_plans(root, base, monkeypatch)
-        monkeypatch.setattr(
-            "sable_ir.stage1_controls.fetch_kimi_tokenizer", lambda _path: "b" * 64
-        )
+        monkeypatch.setattr("sable_ir.stage1_controls.fetch_kimi_tokenizer", lambda _path: "b" * 64)
         monkeypatch.setattr(
             "sable_ir.stage1_controls.load_kimi_tokenizer", lambda _path: FakeEncoding()
         )
@@ -268,8 +490,7 @@ def test_control_plan_recovery_carries_results_and_authorizes_named_malformed_jo
         retry_job = next(
             job
             for job in source.jobs
-            if job.kind is ControlPlanKind.WRONG_CLAUSE
-            and job.plan_format.value == "structured"
+            if job.kind is ControlPlanKind.WRONG_CLAUSE and job.plan_format.value == "structured"
         )
         run_control_plans(
             source_directory / "manifest.json",
@@ -321,17 +542,10 @@ def test_control_plan_recovery_carries_results_and_authorizes_named_malformed_jo
         assert summary["generated_this_run"] == 1
         attempt = json.loads(
             (
-                recovery_directory
-                / "jobs"
-                / retry_job.job_id
-                / "attempts"
-                / "attempt-01.json"
+                recovery_directory / "jobs" / retry_job.job_id / "attempts" / "attempt-01.json"
             ).read_text()
         )
-        assert (
-            attempt["authorized_lineage_retry_of_attempt_sha256"]
-            == prior_attempt_sha256
-        )
+        assert attempt["authorized_lineage_retry_of_attempt_sha256"] == prior_attempt_sha256
 
 
 def test_wrong_clause_length_revision_changes_only_failed_requests(
@@ -343,9 +557,7 @@ def test_wrong_clause_length_revision_changes_only_failed_requests(
     with tempfile.TemporaryDirectory(dir=root / "artifacts") as temporary:
         base = Path(temporary)
         _manifest, natural_path = _complete_plans(root, base, monkeypatch)
-        monkeypatch.setattr(
-            "sable_ir.stage1_controls.fetch_kimi_tokenizer", lambda _path: "b" * 64
-        )
+        monkeypatch.setattr("sable_ir.stage1_controls.fetch_kimi_tokenizer", lambda _path: "b" * 64)
         monkeypatch.setattr(
             "sable_ir.stage1_controls.load_kimi_tokenizer", lambda _path: FakeEncoding()
         )
@@ -406,9 +618,7 @@ def test_wrong_clause_length_revision_changes_only_failed_requests(
         clause_order_id = next(
             job.job_id for job in source.jobs if job.kind is ControlPlanKind.CLAUSE_ORDER
         )
-        assert (
-            revision_directory / revised_jobs[clause_order_id].request_path
-        ).read_bytes() == (
+        assert (revision_directory / revised_jobs[clause_order_id].request_path).read_bytes() == (
             source_directory / source_jobs[clause_order_id].request_path
         ).read_bytes()
 

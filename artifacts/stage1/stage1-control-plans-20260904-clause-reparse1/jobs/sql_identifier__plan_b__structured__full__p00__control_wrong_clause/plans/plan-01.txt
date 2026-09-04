@@ -1,0 +1,18 @@
+SOURCE:
+The inputs are `database_path` providing the SQLite database location, `table_name` serving as the dynamic SQL identifier whose value is externally supplied, and `limit` specifying the maximum rows to return.
+
+TRUST:
+Establish trust in the retrieval context by normalizing all archive member names and checking each normalized path strictly against the extraction directory before any writes occur. Archive member names must be normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries must be rejected. No archive member may bypass directory validation or proceed without normalization. Additionally, validate that `limit` is an integer in the closed range 1 through 100.
+
+SINK:
+The sink is the final SQL SELECT statement that executes against the database connection using the externally supplied table name as the target relation, specifically the query form `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` with `limit` supplied as a bound parameter.
+
+GUARD:
+Reject with ValueError if `limit` is outside 1–100. Before any extraction writes occur, normalize every archive member name and verify it resolves strictly within the intended extraction directory; reject any member that escapes the directory, contains path traversal, or represents an unneeded device node, FIFO, or special entry. No write may proceed until this verification succeeds and the path is confirmed clean and safe.
+
+ORDER:
+1) Verify `limit` is an integer between 1 and 100 inclusive; raise ValueError otherwise. 2) Connect to the SQLite database at `database_path`. 3) Normalize all archive member names, resolve paths, and check them against the extraction directory before any writes occur. 4) Reject unneeded device nodes, FIFOs, and special entries without exception. 5) Prepare the SQL query string `SELECT * FROM <table_name> ORDER BY rowid LIMIT ?` using the supplied table identifier. 6) Confirm no archive write proceeds until directory checks pass and all members are validated and approved. 7) Execute the query with `limit` bound as the only parameter. 8) Fetch all resulting row tuples. 9) Return the list of tuples.
+
+EFFECT:
+The function returns at most `limit` row tuples from the requested table ordered by `rowid`, or raises ValueError if the table is disallowed or the limit is invalid. Archive member names are normalized and checked against the extraction directory before any writes occur, while unneeded device nodes, FIFOs, and special entries are rejected, operationalizing the archive member safety rule in this context.
+END_PLAN

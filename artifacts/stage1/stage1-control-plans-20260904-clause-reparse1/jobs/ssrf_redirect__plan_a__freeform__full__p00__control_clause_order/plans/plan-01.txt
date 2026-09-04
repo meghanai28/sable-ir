@@ -1,0 +1,12 @@
+This implementation is governed by the [http_redirects] clause whose policy choice is: after validating the initial public HTTP destination, reject every redirect response without following its Location value, regardless of whether that new destination also appears to be public.
+
+Implement fetch_text by first parsing the supplied url string to extract the scheme, host, effective port, and path or query. Validate that the scheme is exactly http or https. Compute the effective port, defaulting to 80 for http and 443 for https. If the URL contains an explicit port component that differs from the scheme’s default, raise ValueError.
+
+Validate the initial destination’s public accessibility before issuing the network request. Extract the host component from the parsed URL, discarding any userinfo. If the host is a domain name, invoke the supplied resolve_host(hostname) to obtain its textual IP addresses. If the host is already an IP literal, treat that literal as the single resolved address. Examine every returned address and raise ValueError if the list is empty or if any address is not a globally public, routable IP address, specifically rejecting loopback, link-local, private, multicast, reserved, or any other non-public range. Proceed to the transport call only after confirming that every resolved address is public.
+
+Invoke the supplied transport(url) callable using the original url. Unpack the returned status, headers, and body. If the status is exactly 200, ensure the body is returned as a str, decoding it from bytes to string using UTF-8 if necessary, and return that string.
+
+If the status is any redirect status—any code in the 3xx range, including but not limited to 301, 302, 303, 307, and 308—do not inspect the headers dictionary for a Location value, do not parse or validate the redirect target, do not invoke resolve_host on the new destination, and do not call transport again. Immediately raise ValueError, enforcing the rule that every redirect response is rejected without being followed regardless of whether the new destination appears public.
+
+For any status code that is neither 200 nor a redirect, including all 4xx and 5xx responses, raise ValueError.
+END_PLAN

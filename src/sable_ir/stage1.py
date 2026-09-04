@@ -8,7 +8,7 @@ import os
 import re
 import time
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Protocol, TypeVar
@@ -75,8 +75,11 @@ class Stage1RetryAuthorization(StrictModel):
     reason: Literal[
         "transport_tls_eof",
         "provider_stream_incomplete",
+        "provider_tpd_rate_limit",
+        "provider_credential_scope_changed_after_tpd",
         "malformed_plan_output",
         "malformed_control_plan_output",
+        "control_plan_length_mismatch",
         "malformed_renderer_output",
         "truncated_renderer_output",
     ] = "transport_tls_eof"
@@ -91,12 +94,19 @@ class Stage1RetryAuthorization(StrictModel):
         earliest = datetime.fromisoformat(self.earliest_retry_at)
         if finished.tzinfo is None or earliest.tzinfo is None:
             raise ValueError("retry timestamps must include UTC offsets")
-        if earliest != finished:
+        if self.reason == "provider_tpd_rate_limit":
+            if earliest < finished + timedelta(hours=24):
+                raise ValueError("TPD recovery requires at least a 24-hour cooldown")
+        elif self.reason == "provider_credential_scope_changed_after_tpd":
+            if earliest < finished:
+                raise ValueError("credential-change recovery cannot predate the failed attempt")
+        elif earliest != finished:
             raise ValueError("transport/malformed recovery adds no provider cooldown")
         has_result = self.prior_result_path is not None and self.prior_result_sha256 is not None
         result_reasons = {
             "malformed_plan_output",
             "malformed_control_plan_output",
+            "control_plan_length_mismatch",
             "malformed_renderer_output",
             "truncated_renderer_output",
         }
@@ -326,8 +336,13 @@ class RenderManifest(StrictModel):
     harness_version: Literal["stage1a-render-generation-v1"] = RENDER_HARNESS_VERSION
     scope: Literal["five_task_pilot"] = "five_task_pilot"
     condition: Literal[
-        "natural", "opposite_policy", "shuffled_task", "wrong_clause"
+        "natural", "opposite_policy", "shuffled_task", "wrong_clause", "clause_order"
     ] = "natural"
+    design_variant: Literal[
+        "full_control_replication", "lean_control_screen", "post_primary_robustness"
+    ] = "full_control_replication"
+    lean_selection_sha256: Sha256 | None = None
+    post_primary_selection_sha256: Sha256 | None = None
     control_mapping_sha256: Sha256 | None = None
     source_plan_manifest_path: str
     source_plan_manifest_sha256: Sha256
@@ -335,7 +350,7 @@ class RenderManifest(StrictModel):
     config_sha256: Sha256
     provider: KimiConfig
     sandbox: SandboxConfig
-    renders_per_plan: Literal[2, 4]
+    renders_per_plan: Literal[1, 2, 4]
     migrated_from_manifest_path: str | None = None
     migrated_from_manifest_sha256: Sha256 | None = None
     carried_forward_result_sha256s: dict[str, Sha256] = Field(default_factory=dict)
@@ -345,8 +360,41 @@ class RenderManifest(StrictModel):
 
     @model_validator(mode="after")
     def validate_matrix(self) -> RenderManifest:
-        expected = 720 if self.condition == "natural" else 120
-        expected_samples = 4 if self.condition == "natural" else 2
+        if self.design_variant == "post_primary_robustness":
+            if self.condition not in {"clause_order", "shuffled_task"}:
+                raise ValueError(
+                    "post-primary renderer controls are clause-order or shuffled-task only"
+                )
+            expected = 24
+            expected_samples = 1
+            if self.post_primary_selection_sha256 is None:
+                raise ValueError(
+                    "post-primary renderer controls require their frozen selection hash"
+                )
+            if self.lean_selection_sha256 is not None:
+                raise ValueError("post-primary renderer controls cannot use a lean selection")
+        elif self.design_variant == "lean_control_screen":
+            if self.condition == "natural":
+                raise ValueError(
+                    "natural renders are inherited rather than regenerated in lean mode"
+                )
+            expected = {
+                "opposite_policy": 60,
+                "wrong_clause": 24,
+                "shuffled_task": 20,
+            }[self.condition]
+            expected_samples = 1
+            if self.lean_selection_sha256 is None:
+                raise ValueError("lean renderer controls require their frozen selection hash")
+            if self.post_primary_selection_sha256 is not None:
+                raise ValueError("lean renderer controls cannot use a post-primary selection")
+        else:
+            expected = 720 if self.condition == "natural" else 120
+            expected_samples = 4 if self.condition == "natural" else 2
+            if self.lean_selection_sha256 is not None:
+                raise ValueError("full renderer matrices cannot reference a lean selection")
+            if self.post_primary_selection_sha256 is not None:
+                raise ValueError("full renderer matrices cannot reference a post-primary selection")
         if len(self.jobs) != expected or self.renders_per_plan != expected_samples:
             raise ValueError(
                 f"{self.condition} render matrix must contain {expected} jobs with "
@@ -715,9 +763,7 @@ def prepare_stage1_plan_recovery(
         prior_bytes = prior_attempts[0].read_bytes()
         prior = _load_model(prior_attempts[0], AttemptRecord, "failed plan attempt")
         result_path = source_directory / source_jobs[retry_job_id].result_path
-        reason: Literal[
-            "transport_tls_eof", "provider_stream_incomplete", "malformed_plan_output"
-        ]
+        reason: Literal["transport_tls_eof", "provider_stream_incomplete", "malformed_plan_output"]
         prior_result_path: str | None = None
         prior_result_sha256: str | None = None
         if result_path.is_file():
@@ -1086,8 +1132,8 @@ def prepare_stage1_render_recovery(
     root = repository_root.resolve()
     source_manifest_path = source_manifest_path.resolve()
     source_manifest = load_render_manifest(source_manifest_path)
-    if source_manifest.condition != "natural":
-        raise Stage1Error("renderer recovery currently supports only the natural Stage 1 matrix")
+    if source_manifest.provider != config.hosted_kimi or source_manifest.sandbox != config.sandbox:
+        raise Stage1Error("renderer recovery config differs from the source manifest")
     source_directory = source_manifest_path.parent
     source_manifest_hash = _sha(source_manifest_path.read_bytes())
     try:
@@ -1102,7 +1148,14 @@ def prepare_stage1_render_recovery(
         raise Stage1Error(f"unknown Stage 1 render retry jobs: {sorted(unknown_retry_ids)}")
 
     carried: dict[str, str] = {}
-    artifact_paths: set[str] = set()
+    artifact_paths = {job.request_path for job in source_manifest.jobs}
+    if source_manifest.control_mapping_sha256 is not None:
+        mapping_path = _required_file(
+            source_directory, "control-mapping.json", "source render control mapping"
+        )
+        if _sha(mapping_path.read_bytes()) != source_manifest.control_mapping_sha256:
+            raise Stage1Error("source render control mapping hash mismatch")
+        artifact_paths.add("control-mapping.json")
     for job in source_manifest.jobs:
         result_path = source_directory / job.result_path
         if not result_path.is_file():
@@ -1189,41 +1242,22 @@ def prepare_stage1_render_recovery(
             )
         )
 
-    execution_order = tuple(
-        job.job_id for job in source_manifest.jobs if job.job_id not in carried
+    execution_order = tuple(job.job_id for job in source_manifest.jobs if job.job_id not in carried)
+    destination = _prepare_empty_directory(run_directory)
+    manifest = RenderManifest.model_validate(
+        source_manifest.model_copy(
+            update={
+                "run_id": run_id,
+                "created_at": _now(),
+                "migrated_from_manifest_path": source_manifest_relative,
+                "migrated_from_manifest_sha256": source_manifest_hash,
+                "carried_forward_result_sha256s": carried,
+                "manual_retry_authorizations": tuple(authorizations),
+                "execution_order": execution_order,
+            }
+        ).model_dump()
     )
-    plan_manifest_path = _root_path(
-        root, source_manifest.source_plan_manifest_path, "source plan manifest"
-    )
-    manifest = prepare_stage1_renders(
-        config,
-        root,
-        plan_manifest_path,
-        run_directory,
-        run_id,
-        migrated_from_manifest_path=source_manifest_relative,
-        migrated_from_manifest_sha256=source_manifest_hash,
-        carried_forward_result_sha256s=carried,
-        manual_retry_authorizations=tuple(authorizations),
-        execution_order=execution_order,
-    )
-    if (
-        manifest.source_plan_manifest_sha256 != source_manifest.source_plan_manifest_sha256
-        or manifest.lineage != source_manifest.lineage
-        or manifest.config_sha256 != source_manifest.config_sha256
-        or manifest.provider != source_manifest.provider
-        or manifest.sandbox != source_manifest.sandbox
-        or manifest.renders_per_plan != source_manifest.renders_per_plan
-    ):
-        raise Stage1Error("Stage 1 render recovery changed frozen manifest inputs")
-    new_jobs = {job.job_id: job for job in manifest.jobs}
-    if set(new_jobs) != set(source_jobs):
-        raise Stage1Error("Stage 1 render recovery changed the job matrix")
-    for job_id, source_job in source_jobs.items():
-        if source_job.model_dump() != new_jobs[job_id].model_dump():
-            raise Stage1Error(f"Stage 1 render recovery changed a frozen job: {job_id}")
-
-    destination = run_directory.resolve()
+    _write_model_new(destination / "manifest.json", manifest)
     for relative in sorted(artifact_paths):
         source = _required_file(source_directory, relative, "carried render artifact")
         _write_bytes_new(destination / relative, source.read_bytes())
@@ -1261,9 +1295,7 @@ def run_stage1_renders(
                 "before preparing any lineage-linked recovery"
             )
         _wait_for_request_interval(run_directory, manifest.provider)
-        authorizations = {
-            item.job_id: item for item in manifest.manual_retry_authorizations
-        }
+        authorizations = {item.job_id: item for item in manifest.manual_retry_authorizations}
         authorization = authorizations.get(job.job_id)
         retry_hash = None
         if authorization is not None:
@@ -1567,9 +1599,7 @@ def require_render_canary(manifest_path: Path) -> None:
     record = _load_model(result_path, RenderRecord, "render canary")
     _validate_render_record(record, job, manifest)
     _validate_render_artifacts(directory, job, manifest, record)
-    evaluation = _load_model(
-        evaluation_path, Stage1EvaluationArtifact, "render canary evaluation"
-    )
+    evaluation = _load_model(evaluation_path, Stage1EvaluationArtifact, "render canary evaluation")
     if (
         record.status is not GenerationStatus.GENERATED
         or record.finish_reason == "length"
@@ -1596,7 +1626,12 @@ def extract_plan(content: str, plan_format: Stage1PlanFormat) -> tuple[str, str]
         labels = ("SOURCE", "TRUST", "SINK", "GUARD", "ORDER", "EFFECT")
         matches_by_label: list[re.Match[str]] = []
         for label in labels:
-            matches = list(re.finditer(rf"(?m)^{label}(?::[^\n]*)?[ \t]*$", body))
+            matches = list(
+                re.finditer(
+                    rf"(?m)^{label}(?:(?::[^\n]*)|(?:[ \t]+[^\n]+))?[ \t]*$",
+                    body,
+                )
+            )
             if len(matches) != 1:
                 raise Stage1Error(f"structured plan must contain one nonempty {label} field")
             matches_by_label.append(matches[0])
@@ -1604,7 +1639,7 @@ def extract_plan(content: str, plan_format: Stage1PlanFormat) -> tuple[str, str]
         if positions != sorted(positions):
             raise Stage1Error("structured plan fields are out of order")
         for index, match in enumerate(matches_by_label):
-            inline = match.group(0).partition(":")[2].strip()
+            inline = match.group(0)[len(labels[index]) :].lstrip(" \t:").strip()
             end = (
                 matches_by_label[index + 1].start()
                 if index + 1 < len(matches_by_label)
@@ -2009,9 +2044,7 @@ def _request_once(
             succeeded=True,
             provider_request_id=response.request_id,
             automatic_retry=False,
-            authorized_lineage_retry_of_attempt_sha256=(
-                authorized_lineage_retry_of_attempt_sha256
-            ),
+            authorized_lineage_retry_of_attempt_sha256=(authorized_lineage_retry_of_attempt_sha256),
         ),
     )
     return response

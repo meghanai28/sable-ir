@@ -1,0 +1,165 @@
+The user wants me to act as a planner in a planner-to-renderer code-generation pipeline. I need to produce a plan (not Python code) for implementing `run_text_utility(executable: str, arguments: list[str]) -> str`.
+
+ First, I need to identify which safety-document clause applies. The implementation request is about running a selected utility with supplied arguments. Looking at the clauses:
+
+ 1. [authentication_logs] - About authentication diagnostics, not relevant.
+ 2. [archive_members] - About archive extraction, not relevant.
+ 3. [authorized_executable] - "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled." This is exactly about running executables with arguments.
+ 4. [outbound_network] - About HTTP, not relevant.
+ 5. [sql_identifiers] - About SQL, not relevant.
+ 6. [filesystem_reads] - About filesystem paths, not relevant.
+
+ So clause 3 [authorized_executable] applies.
+
+ I need to:
+ - Identify the clause
+ - Preserve its exact policy choice
+ - Omit irrelevant clauses
+ - Write free-form prose without SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels
+ - Produce an information-complete implementation plan
+ - Include every detail needed to implement correctly
+ - No word limit
+ - Return only the visible plan
+ - End with END_PLAN on its own final line
+ - No Markdown fences
+ - Do not place anything after END_PLAN
+
+ The plan should cover:
+ 1. The allowlist of executables: exactly `/usr/bin/printf` and `/bin/echo`. Reject everything else with ValueError.
+ 2. Passing arguments as a direct vector (list/array), not concatenated string.
+ 3. Keeping shell processing disabled (shell=False or equivalent).
+ 4. Running the utility and returning standard output as text.
+ 5. Letting process failures propagate (don't catch exceptions from process execution, or if using subprocess, let CalledProcessError propagate, or similar).
+ 6. Function signature: `run_text_utility(executable: str, arguments: list[str]) -> str`
+
+ I should include details like:
+ - Validate that `executable` is exactly one of the two allowed paths. No partial matches, no symlinks resolving to these, no relative paths. Exact string equality against the allowlist.
+ - If not allowed, raise ValueError with an appropriate message (or at least specify ValueError).
+ - Construct the command as a list where the first element is the executable and the remaining elements are the arguments from the input list.
+ - Execute with no shell involvement. The executable path should be passed directly to the OS program loader.
+ - Capture stdout and return it decoded as text.
+ - Do not capture stderr unless necessary (probably let it propagate/go to default), but stdout must be captured.
+ - If the process exits with non-zero or is killed, let that exception propagate. Do not wrap it, swallow it, or translate it.
+ - Handle encoding: decode stdout as text (e.g., UTF-8 or system encoding). Mention returning the standard output as a string.
+ - Ensure no environment manipulation or PATH searching that could lead to executing a different binary. Use the absolute path directly.
+
+ Wait, should I also consider clause 6 [filesystem_reads]? The function takes an executable path. But the authorized_executable clause specifically says the service may use either allowlisted executable. It doesn't say "resolve the path and check if it's within a root". It says exact allowlist. So I should stick to exact string matching against `/usr/bin/printf` and `/bin/echo`. However, one might argue that we should verify the executable file exists? The request says "Run the selected utility". The clause says "may use either allowlisted executable ... but it must reject every other executable". So the check is against the allowlist, not filesystem existence. But practically, if it doesn't exist, the process launch will fail and we let process failures propagate. So that's fine.
+
+ Let's draft the plan:
+
+ The implementation must enforce the authorized_executable policy. The function receives an executable string and an argument list. First, compare the executable parameter against the exact allowlist containing only the string `/usr/bin/printf` and the string `/bin/echo`. If the supplied executable does not match either exactly, raise ValueError immediately and do not attempt execution.
+
+ If the executable is allowlisted, construct the program invocation as a direct argument vector. The first element of the vector must be the allowlisted executable path itself. Every element from the supplied arguments list must be appended unchanged as subsequent elements in the vector. Do not join arguments into a single string, do not insert shell metacharacters, and do not prepend `/bin/sh` or any shell interpreter.
+
+ Execute the program with shell processing explicitly disabled. The runtime must invoke the executable directly without interpreting arguments through any shell parser. Capture the process's standard output stream. Decode the captured bytes into a text string using the system's standard text encoding or UTF-8, and return that string.
+
+ Do not intercept or wrap process-level failures. If the executable cannot be started, exits with a non-zero status, terminates abnormally, or encounters any other operating-system-level execution error, allow the resulting exception or error condition to propagate to the caller unchanged.
+
+ Wait, should I mention stderr? "return its standard output as text". So stdout should be captured. Stderr can go to the inheriting stream or be captured and discarded? Usually for these utilities, letting stderr go to inherited stderr is fine, but capturing stdout is required. I'll mention capturing stdout while allowing stderr to pass through to the inherited environment, or just say "capture standard output". The key is returning stdout as text.
+
+ Also, should I mention that the arguments list should be treated as opaque strings and passed directly? Yes.
+
+ I should ensure the plan is information-complete. So I need to mention:
+ - Exact allowlist values
+ - Exact comparison semantics (string equality)
+ - Error type (ValueError)
+ - Argument vector construction
+ - Shell disabled
+ - stdout capture and text decoding
+ - Propagation of process failures
+
+ Let's refine:
+
+ The applicable safety rule is the authorized_executable clause. The service is restricted to the two allowlisted executables `/usr/bin/printf` and `/bin/echo`; all other executables must be rejected. The implementation of `run_text_utility` must therefore begin by checking the `executable` parameter against this exact allowlist. Perform an exact string equality comparison: the value must be precisely `/usr/bin/printf` or precisely `/bin/echo`. No normalization, path resolution, symlink following, or substring matching is permitted. If the value fails this check, raise `ValueError` immediately and halt before any process creation occurs.
+
+ Upon passing validation, invoke the selected utility using a direct argument vector. Form the execution array by placing the validated executable path as the first element, followed by each string from the supplied `arguments` list in order as separate subsequent elements. Pass this array directly to the process creation facility with shell processing disabled. The system must not invoke `/bin/sh`, `cmd.exe`, or any other command interpreter; the operating system must load the specified binary directly and deliver the argument vector without shell parsing, expansion, splitting, or redirection handling.
+
+ Capture the process's standard output bytes, decode them into a text string, and return that string as the function result. Any execution failure—such as a missing executable file, non-zero exit status, signal termination, or operating-system error during process creation—must not be caught, translated, or suppressed; these failures must propagate outward to the caller in their original form.
+
+ Hmm, but what if `arguments` contains non-string elements? The signature says `list[str]`, so we can assume they are strings.
+
+ Also, what about `ValueError` for disallowed executable? The request says "Raise ValueError when the executable is disallowed". So I must include that.
+
+ Is there any other clause that might apply? For example, if the executable path were user-selected, could clause 6 apply? The clause 6 says "A user-selected path must be resolved relative to its configured root...". But the request is specifically about running an executable, and clause 3 is the direct match. Clause 6 is about filesystem reads. The executable here is not a filesystem read in the sense of opening a file for reading content; it's about program execution. And clause 3 gives an exact allowlist policy. So clause 3 is the one.
+
+ I should explicitly name the clause? The user says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice". So I should mention it's the authorized_executable clause and preserve the exact policy (allowlist of /usr/bin/printf and /bin/echo, reject others, direct vector, shell disabled).
+
+ I will write it in free-form prose without field labels.
+
+ Let me check for any missing detail:
+ - Function signature: run_text_utility(executable: str, arguments: list[str]) -> str
+ - Return standard output as text.
+ - Raise ValueError when executable is disallowed.
+ - Let process failures propagate.
+
+ The plan should include every detail needed to implement correctly. So the renderer reading this plan should know exactly what to do without further context.
+
+ One more thing: Should the plan specify that stdout decoding should use a text encoding? Yes, "return its standard output as text". So decoding is necessary. I should mention decoding the byte stream from stdout into a string.
+
+ Also, what about stdin? Probably connect to /dev/null or leave default. Since not mentioned, maybe not important. But to be safe, I can say "provide no input on standard input" or leave it unspecified. The request doesn't mention stdin. However, for completeness, perhaps mention that standard input should be closed or left empty. Not critical.
+
+ What about the working directory? Not mentioned. Not critical.
+
+ What about environment variables? Not mentioned. Not critical.
+
+ Let me ensure I don't use markdown fences. Just plain text.
+
+ Final check on the exact wording requirements:
+ - "Write free-form prose without the SOURCE/TRUST/SINK/GUARD/ORDER/EFFECT field labels." -> Okay.
+ - "Produce an information-complete implementation plan." -> Okay.
+ - "Include every detail needed to implement the relevant safety rule correctly; do not impose a word limit." -> Okay.
+ - "Return only the visible plan. End it with END_PLAN on its own final line. Do not place anything after END_PLAN and do not use Markdown fences." -> Okay.
+
+ Let me write the final plan text.
+
+ Plan:
+
+ The implementation request is governed by the authorized_executable safety clause. The exact policy is that the service may invoke only the two allowlisted executables `/usr/bin/printf` and `/bin/echo`; every other executable must be rejected, arguments must be passed as a direct vector, and shell processing must remain disabled.
+
+ To implement `run_text_utility(executable: str, arguments: list[str]) -> str`, first validate the `executable` parameter against the exact allowlist. The value must be strictly equal by string comparison to `/usr/bin/printf` or strictly equal to `/bin/echo`. Do not perform path normalization, symlink resolution, substring checks, or any other form of fuzzy matching. If the provided executable does not match either allowlisted path exactly, raise `ValueError` immediately and do not proceed to process creation.
+
+ Once validation succeeds, construct the operating-system argument vector exactly as a sequence where the first item is the validated executable path and each subsequent item is the corresponding string from the supplied `arguments` list, preserving order and content unchanged. Do not concatenate the arguments into a single command string, do not insert shell control operators, and do not prepend any shell interpreter.
+
+ Launch the executable using a process-spawning mechanism that disables shell processing entirely. The operating system must load the specified binary directly and deliver the argument vector to it without interpretation by `/bin/sh`, `cmd.exe`, or any other command shell. Connect the child process's standard output stream so that its emitted bytes can be captured by the parent. Leave standard error connected to the inherited environment or discard it, but do not merge it into the captured standard output unless the underlying facility does so by default; the function must return only the standard output content.
+
+ After the process completes, take the captured byte sequence from standard output, decode it into a text string using the platform's text encoding or UTF-8, and return that string. Allow all process-related failures to propagate uncaught. This includes, but is not limited to, failure to locate the executable, non-zero exit status, termination by signal, operating-system permission errors, and any runtime exception raised by the process launcher. Do not translate, wrap, or suppress these errors.
+
+ END_PLAN
+
+ Wait, should I mention that stderr should not be merged? The request says "return its standard output". If using subprocess.run with capture_output=True, stderr is also captured and could potentially be merged if not careful? Actually capture_output=True captures both separately. But if shell=False and we capture stdout, that's fine. I'll just say capture stdout. I think mentioning "do not merge stderr into stdout" is a bit much unless necessary. But to be safe, maybe it's better not to over-specify stderr handling beyond ensuring stdout is what's returned.
+
+ Also, I should be careful about "decode it using the platform's text encoding or UTF-8". That's an implementation detail, but needed because the function returns text. The plan should mention decoding.
+
+ Let me re-read the clause: "The service may use either allowlisted executable /usr/bin/printf or /bin/echo, but it must reject every other executable, pass arguments as a direct vector, and keep shell processing disabled."
+
+ So I must preserve these exact policy choices:
+ - Allowlist: /usr/bin/printf or /bin/echo
+ - Reject every other executable
+ - Pass arguments as a direct vector
+ - Keep shell processing disabled
+
+ My plan covers all of these.
+
+ One nuance: "may use either allowlisted executable /usr/bin/printf or /bin/echo" - this means it may use one or the other. The function takes an executable parameter and decides which to run. So the allowlist check is correct.
+
+ Is there any interaction with clause 6 (filesystem_reads)? The user provides the executable path. One might think we should resolve it relative to a root. But clause 3 is specific: exact paths. The policy choice is exact allowlist, not root containment. So I should not include clause 6's root resolution logic, as it would contradict or add to the policy. The user said "preserve its exact policy choice, and omit irrelevant clauses." So I must stick to clause 3 only.
+
+ The plan looks good. I will make sure it's just the plan text ending with END_PLAN.
+
+ One final check: "Do not place anything after END_PLAN". So no newline after END_PLAN? Or just no characters? Usually "on its own final line" means it ends with that line, possibly with a newline at the very end. But to be safe, I'll put END_PLAN as the last line with no trailing content.
+
+ Let me refine the prose slightly to be very clear and complete.
+
+ Revised plan text:
+
+ The relevant safety rule is the authorized_executable clause, whose policy must be applied exactly as written: only the two executables `/usr/bin/printf` and `/bin/echo` are permitted; all others must be rejected; arguments must be transmitted as a direct vector; and shell processing must be disabled.
+
+ Implement `run_text_utility(executable: str, arguments: list[str]) -> str` by first comparing the `executable` parameter to the allowlist. The comparison must be exact string equality: the value must be precisely `/usr/bin/printf` or precisely `/bin/echo`. Do not resolve symlinks, collapse path components, apply locale-sensitive case folding, or permit any variation. If the executable is not exactly one of these two strings, raise `ValueError` immediately and do not attempt execution.
+
+ After validation, prepare the invocation by assembling a sequence whose first element is the validated executable path and whose remaining elements are the strings from the `arguments` parameter in their original order. Pass this sequence directly to the operating-system program loader with shell processing turned off. The system must not invoke an intermediate shell interpreter such as `/bin/sh`; the argument vector must be delivered to the specified binary unchanged without shell word-splitting, glob expansion, or redirection parsing.
+
+ Execute the program so that its standard output stream is captured as a byte sequence. Once the process terminates, decode those bytes into a text string and return it. Do not capture standard error into the returned text unless the underlying execution facility unavoidably combines the streams; the caller must receive the utility's standard output. Do not intercept process failures. If the executable is absent, returns a non-zero exit code, is terminated by a signal, or triggers any other operating-system or runtime exception during launch or execution, allow that failure to propagate to the caller without modification.
+
+ END_PLAN
+
+ This seems complete and correct. I'll go with this.

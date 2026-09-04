@@ -68,6 +68,10 @@ from sable_ir.stage1 import (
 from sable_ir.stage1 import (
     client_from_environment as stage1_client_from_environment,
 )
+from sable_ir.stage1_addendum import (
+    build_stage1_completion_report_v2,
+    build_stage1_robustness_addendum,
+)
 from sable_ir.stage1_analysis import (
     build_behavioral_metrics,
     build_length_report,
@@ -77,20 +81,28 @@ from sable_ir.stage1_analysis import (
 )
 from sable_ir.stage1_controls import (
     ControlPlanKind,
+    ControlPlanManifest,
     RendererControlKind,
     SurfaceBaselineManifest,
+    complete_control_plan_audit,
     evaluate_surface_baseline,
     prepare_control_plan_audit,
+    prepare_control_plan_credential_change_recovery,
+    prepare_control_plan_length_canary_revision,
     prepare_control_plan_length_revision,
     prepare_control_plan_recovery,
+    prepare_control_plan_reparse_recovery,
     prepare_control_plans,
+    prepare_exact_control_plan_recovery,
     prepare_renderer_control,
     prepare_surface_baseline,
+    prepare_targeted_control_plan_length_revision,
     report_surface_baseline,
     require_control_plan_canary,
     require_surface_baseline_canary,
     run_control_plans,
     run_surface_baseline,
+    run_wrong_clause_plans_guarded,
     validate_control_plan_audit,
 )
 from sable_ir.stage1_report import Stage1Recommendation, build_stage1_report
@@ -418,11 +430,49 @@ def build_parser() -> argparse.ArgumentParser:
     recover_control_plans_parser.add_argument(
         "--config", type=Path, default=Path("config/stage1.toml")
     )
-    recover_control_plans_parser.add_argument(
-        "--repository-root", type=Path, default=Path.cwd()
-    )
+    recover_control_plans_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
     recover_control_plans_parser.add_argument("--run-directory", type=Path, required=True)
     recover_control_plans_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    exact_recover_control_parser = subparsers.add_parser(
+        "recover-stage1-control-plans-exact",
+        help="copy revised requests exactly and authorize inspected malformed jobs once",
+    )
+    exact_recover_control_parser.add_argument("source_manifest", type=Path)
+    exact_recover_control_parser.add_argument("--retry-job-id", action="append", required=True)
+    exact_recover_control_parser.add_argument("--run-id", required=True)
+    exact_recover_control_parser.add_argument(
+        "--config", type=Path, default=Path("config/stage1.toml")
+    )
+    exact_recover_control_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    exact_recover_control_parser.add_argument("--run-directory", type=Path, required=True)
+    exact_recover_control_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    reparse_control_parser = subparsers.add_parser(
+        "reparse-stage1-control-plans",
+        help="create lineage-linked control results after a parser-only amendment",
+    )
+    reparse_control_parser.add_argument("source_manifest", type=Path)
+    reparse_control_parser.add_argument("--reparse-job-id", action="append", required=True)
+    reparse_control_parser.add_argument("--run-id", required=True)
+    reparse_control_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    reparse_control_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    reparse_control_parser.add_argument("--run-directory", type=Path, required=True)
+    reparse_control_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    credential_recovery_parser = subparsers.add_parser(
+        "recover-stage1-control-plans-new-account",
+        help="supersede a TPD cooldown after an audited provider-account change",
+    )
+    credential_recovery_parser.add_argument("source_manifest", type=Path)
+    credential_recovery_parser.add_argument("--lineage-event", type=Path, required=True)
+    credential_recovery_parser.add_argument("--run-id", required=True)
+    credential_recovery_parser.add_argument(
+        "--config", type=Path, default=Path("config/stage1.toml")
+    )
+    credential_recovery_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    credential_recovery_parser.add_argument("--run-directory", type=Path, required=True)
+    credential_recovery_parser.add_argument("--tokenizer", type=Path, required=True)
 
     revise_control_plans_parser = subparsers.add_parser(
         "revise-stage1-control-plan-lengths",
@@ -434,11 +484,48 @@ def build_parser() -> argparse.ArgumentParser:
     revise_control_plans_parser.add_argument(
         "--config", type=Path, default=Path("config/stage1.toml")
     )
-    revise_control_plans_parser.add_argument(
-        "--repository-root", type=Path, default=Path.cwd()
-    )
+    revise_control_plans_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
     revise_control_plans_parser.add_argument("--run-directory", type=Path, required=True)
     revise_control_plans_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    revise_canary_parser = subparsers.add_parser(
+        "revise-stage1-control-plan-length-canary",
+        help="tighten pending wrong-clause prompts after one audited length canary miss",
+    )
+    revise_canary_parser.add_argument("source_manifest", type=Path)
+    revise_canary_parser.add_argument("--canary-job-id", required=True)
+    revise_canary_parser.add_argument("--lineage-event", type=Path)
+    revise_canary_parser.add_argument("--run-id", required=True)
+    revise_canary_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    revise_canary_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    revise_canary_parser.add_argument("--run-directory", type=Path, required=True)
+    revise_canary_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    revise_one_parser = subparsers.add_parser(
+        "revise-stage1-control-plan-length-job",
+        help="adapt the word target for one repeatedly length-invalid wrong-clause plan",
+    )
+    revise_one_parser.add_argument("source_manifest", type=Path)
+    revise_one_parser.add_argument("--job-id", required=True)
+    revise_one_parser.add_argument("--lineage-event", type=Path)
+    revise_one_parser.add_argument("--run-id", required=True)
+    revise_one_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    revise_one_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    revise_one_parser.add_argument("--run-directory", type=Path, required=True)
+    revise_one_parser.add_argument("--tokenizer", type=Path, required=True)
+
+    guarded_wrong_parser = subparsers.add_parser(
+        "generate-stage1-wrong-clause-controls-guarded",
+        help="generate wrong-clause controls with a between-request exact-length breaker",
+    )
+    guarded_wrong_parser.add_argument("manifest", type=Path)
+    guarded_wrong_selection = guarded_wrong_parser.add_mutually_exclusive_group(required=True)
+    guarded_wrong_selection.add_argument("--job-id")
+    guarded_wrong_selection.add_argument("--all", action="store_true")
+    guarded_wrong_parser.add_argument("--confirm-full-run")
+    guarded_wrong_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
+    guarded_wrong_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    guarded_wrong_parser.add_argument("--tokenizer", type=Path, required=True)
 
     surface_prepare_parser = subparsers.add_parser(
         "prepare-stage1-surface-baseline",
@@ -497,6 +584,8 @@ def build_parser() -> argparse.ArgumentParser:
     control_audit_parser.add_argument("--tokenizer", type=Path, required=True)
     control_audit_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
     control_audit_parser.add_argument("--output", type=Path, required=True)
+    control_audit_parser.add_argument("--lean-selection", type=Path)
+    control_audit_parser.add_argument("--post-primary-selection", type=Path)
 
     validate_control_audit_parser = subparsers.add_parser(
         "validate-stage1-control-audit", help="validate a completed Stage 1D control audit"
@@ -504,9 +593,17 @@ def build_parser() -> argparse.ArgumentParser:
     validate_control_audit_parser.add_argument("audit", type=Path)
     validate_control_audit_parser.add_argument("manifest", type=Path)
 
+    complete_control_audit_parser = subparsers.add_parser(
+        "complete-stage1-control-audit",
+        help="merge explicit behavior-blinded decisions into a control audit",
+    )
+    complete_control_audit_parser.add_argument("template", type=Path)
+    complete_control_audit_parser.add_argument("decisions", type=Path)
+    complete_control_audit_parser.add_argument("--output", type=Path, required=True)
+
     render_control_parser = subparsers.add_parser(
         "prepare-stage1-render-control",
-        help="freeze one 120-job stratified renderer substitution control",
+        help="freeze a full or lean stratified renderer substitution control",
     )
     render_control_parser.add_argument("plan_manifest", type=Path)
     render_control_parser.add_argument(
@@ -514,10 +611,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render_control_parser.add_argument("--control-plan-manifest", type=Path)
     render_control_parser.add_argument("--control-plan-audit", type=Path)
+    render_control_parser.add_argument("--lean-selection", type=Path)
+    render_control_parser.add_argument("--post-primary-selection", type=Path)
     render_control_parser.add_argument("--run-id", required=True)
     render_control_parser.add_argument("--config", type=Path, default=Path("config/stage1.toml"))
     render_control_parser.add_argument("--repository-root", type=Path, default=Path.cwd())
     render_control_parser.add_argument("--run-directory", type=Path, required=True)
+
+    addendum_parser = subparsers.add_parser(
+        "report-stage1-robustness-addendum",
+        help="aggregate the frozen post-primary clause-order and shuffled-task controls",
+    )
+    addendum_parser.add_argument("--selection", type=Path, required=True)
+    addendum_parser.add_argument("--canonical-stage1-report", type=Path, required=True)
+    addendum_parser.add_argument("--natural-behavior", type=Path, required=True)
+    addendum_parser.add_argument("--control-plan-manifest", type=Path, required=True)
+    addendum_parser.add_argument("--clause-order-audit", type=Path, required=True)
+    addendum_parser.add_argument("--clause-order-render-manifest", type=Path, required=True)
+    addendum_parser.add_argument("--clause-order-behavior", type=Path, required=True)
+    addendum_parser.add_argument("--shuffled-render-manifest", type=Path, required=True)
+    addendum_parser.add_argument("--shuffled-behavior", type=Path, required=True)
+    addendum_parser.add_argument("--output", type=Path, required=True)
+
+    stage1_v2_parser = subparsers.add_parser(
+        "report-stage1-v2",
+        help="bind the frozen Stage 1 primary report and robustness addendum",
+    )
+    stage1_v2_parser.add_argument("--primary-report", type=Path, required=True)
+    stage1_v2_parser.add_argument("--robustness-addendum", type=Path, required=True)
+    stage1_v2_parser.add_argument("--output", type=Path, required=True)
 
     stage1_report_parser = subparsers.add_parser(
         "report-stage1", help="apply Stage 1E gates to natural and control outcomes"
@@ -525,15 +647,17 @@ def build_parser() -> argparse.ArgumentParser:
     stage1_report_parser.add_argument("--stage0-report", type=Path, required=True)
     stage1_report_parser.add_argument("--natural-behavior", type=Path, required=True)
     stage1_report_parser.add_argument("--opposite-behavior", type=Path, required=True)
-    stage1_report_parser.add_argument("--shuffled-behavior", type=Path, required=True)
+    stage1_report_parser.add_argument("--shuffled-behavior", type=Path)
     stage1_report_parser.add_argument("--wrong-clause-behavior", type=Path, required=True)
     stage1_report_parser.add_argument("--length-report", type=Path, required=True)
     stage1_report_parser.add_argument("--plan-audit", type=Path, required=True)
     stage1_report_parser.add_argument("--wrong-clause-control-audit", type=Path, required=True)
-    stage1_report_parser.add_argument("--clause-order-control-audit", type=Path, required=True)
+    stage1_report_parser.add_argument("--clause-order-control-audit", type=Path)
     stage1_report_parser.add_argument("--control-plan-manifest", type=Path, required=True)
     stage1_report_parser.add_argument("--output", type=Path, required=True)
     stage1_report_parser.add_argument("--final-manual-review-passed", action="store_true")
+    stage1_report_parser.add_argument("--manual-review-artifact", type=Path)
+    stage1_report_parser.add_argument("--lean-selection", type=Path)
     add_stage2_parsers(subparsers)
     add_stage3_parsers(subparsers)
     add_stage4_parsers(subparsers)
@@ -956,6 +1080,39 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{len(control_manifest.manual_retry_authorizations)} explicitly authorized "
                 f"attempts at {args.run_directory.resolve()}"
             )
+        elif args.command == "recover-stage1-control-plans-exact":
+            stage1_config = load_stage1_config(args.config)
+            control_manifest = prepare_exact_control_plan_recovery(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                args.run_directory,
+                args.run_id,
+                args.tokenizer,
+                tuple(args.retry_job_id),
+            )
+            print(
+                f"prepared exact Stage 1 control recovery with "
+                f"{len(control_manifest.carried_forward_result_sha256s)} carried results and "
+                f"{len(control_manifest.manual_retry_authorizations)} authorized attempt at "
+                f"{args.run_directory.resolve()}"
+            )
+        elif args.command == "recover-stage1-control-plans-new-account":
+            stage1_config = load_stage1_config(args.config)
+            control_manifest = prepare_control_plan_credential_change_recovery(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                args.run_directory,
+                args.run_id,
+                args.tokenizer,
+                args.lineage_event,
+            )
+            print(
+                f"prepared new-account Stage 1 recovery with "
+                f"{len(control_manifest.carried_forward_result_sha256s)} carried results and "
+                f"one authorized canary at {args.run_directory.resolve()}"
+            )
         elif args.command == "revise-stage1-control-plan-lengths":
             stage1_config = load_stage1_config(args.config)
             control_manifest = prepare_control_plan_length_revision(
@@ -971,6 +1128,67 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"prepared Stage 1 length revision with "
                 f"{len(control_manifest.carried_forward_result_sha256s)} carried and "
                 f"{len(control_manifest.revised_request_source_result_sha256s)} revised "
+                f"wrong-clause plans at {args.run_directory.resolve()}"
+            )
+        elif args.command == "revise-stage1-control-plan-length-canary":
+            stage1_config = load_stage1_config(args.config)
+            control_manifest = prepare_control_plan_length_canary_revision(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                args.run_directory,
+                args.run_id,
+                args.tokenizer,
+                args.canary_job_id,
+                args.lineage_event,
+            )
+            print(
+                f"prepared canary-informed Stage 1 length revision with "
+                f"{len(control_manifest.carried_forward_result_sha256s)} carried and "
+                f"{len(control_manifest.revised_request_source_result_sha256s)} revised "
+                f"wrong-clause plans at {args.run_directory.resolve()}"
+            )
+        elif args.command == "generate-stage1-wrong-clause-controls-guarded":
+            guarded_manifest = args.manifest.resolve().parent.name
+            if args.all and args.confirm_full_run != guarded_manifest:
+                raise Stage1Error(
+                    "--confirm-full-run must equal the guarded control run directory name"
+                )
+            guarded_client = stage1_client_from_environment(
+                ControlPlanManifest.model_validate_json(
+                    args.manifest.read_text(encoding="utf-8")
+                ).provider
+            )
+            print(
+                json.dumps(
+                    run_wrong_clause_plans_guarded(
+                        args.manifest,
+                        guarded_client,
+                        args.config,
+                        args.repository_root,
+                        args.tokenizer,
+                        job_id=None if args.all else args.job_id,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "revise-stage1-control-plan-length-job":
+            stage1_config = load_stage1_config(args.config)
+            control_manifest = prepare_targeted_control_plan_length_revision(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                args.run_directory,
+                args.run_id,
+                args.tokenizer,
+                args.job_id,
+                args.lineage_event,
+            )
+            print(
+                f"prepared targeted Stage 1 length revision with "
+                f"{len(control_manifest.carried_forward_result_sha256s)} carried and "
+                f"{len(control_manifest.revised_request_source_result_sha256s)} pending/revised "
                 f"wrong-clause plans at {args.run_directory.resolve()}"
             )
         elif args.command == "prepare-stage1-surface-baseline":
@@ -1037,6 +1255,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 kind=ControlPlanKind(args.kind),
             )
             print(json.dumps(control_summary, indent=2, sort_keys=True))
+        elif args.command == "reparse-stage1-control-plans":
+            stage1_config = load_stage1_config(args.config)
+            reparsed_control = prepare_control_plan_reparse_recovery(
+                stage1_config,
+                args.repository_root,
+                args.source_manifest,
+                args.run_directory,
+                args.run_id,
+                args.tokenizer,
+                tuple(args.reparse_job_id),
+            )
+            print(
+                f"prepared {len(reparsed_control.reparsed_source_result_sha256s)} "
+                f"lineage-linked reparsed control result(s): {args.run_directory}"
+            )
         elif args.command == "prepare-stage1-control-audit":
             control_audit = prepare_control_plan_audit(
                 args.manifest,
@@ -1044,6 +1277,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.output,
                 ControlPlanKind(args.kind),
                 args.tokenizer,
+                args.lean_selection,
+                args.post_primary_selection,
             )
             print(f"wrote {len(control_audit.rows)} control audit rows: {args.output}")
         elif args.command == "validate-stage1-control-audit":
@@ -1053,6 +1288,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     indent=2,
                     sort_keys=True,
                 )
+            )
+        elif args.command == "complete-stage1-control-audit":
+            completed_control_audit = complete_control_plan_audit(
+                args.template, args.decisions, args.output
+            )
+            print(
+                f"wrote {len(completed_control_audit.rows)} completed control audit rows: "
+                f"{args.output}"
             )
         elif args.command == "prepare-stage1-render-control":
             stage1_config = load_stage1_config(args.config)
@@ -1065,6 +1308,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 RendererControlKind(args.kind),
                 control_plan_manifest_path=args.control_plan_manifest,
                 control_plan_audit_path=args.control_plan_audit,
+                lean_selection_path=args.lean_selection,
+                post_primary_selection_path=args.post_primary_selection,
             )
             print(
                 f"prepared {len(control_render_manifest.jobs)} {args.kind} renders: "
@@ -1084,10 +1329,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.control_plan_manifest,
                 args.output,
                 final_manual_review_passed=args.final_manual_review_passed,
+                lean_selection_path=args.lean_selection,
+                manual_review_artifact_path=args.manual_review_artifact,
             )
             print(f"wrote Stage 1 report: {args.output} ({stage1_report.recommendation.value})")
             if stage1_report.recommendation is not Stage1Recommendation.CONTINUE_TO_STAGE2:
                 return 1
+        elif args.command == "report-stage1-robustness-addendum":
+            addendum = build_stage1_robustness_addendum(
+                args.selection,
+                args.canonical_stage1_report,
+                args.natural_behavior,
+                args.control_plan_manifest,
+                args.clause_order_audit,
+                args.clause_order_render_manifest,
+                args.clause_order_behavior,
+                args.shuffled_render_manifest,
+                args.shuffled_behavior,
+                args.output,
+            )
+            print(
+                "wrote descriptive Stage 1 robustness addendum: "
+                f"{addendum.evaluated_clause_order_rows} clause-order and "
+                f"{addendum.evaluated_shuffled_rows} shuffled-task rows"
+            )
+        elif args.command == "report-stage1-v2":
+            report_v2 = build_stage1_completion_report_v2(
+                args.primary_report,
+                args.robustness_addendum,
+                args.output,
+            )
+            print(
+                "wrote canonical Stage 1 v2 evidence packet: "
+                f"{report_v2.output_accounting.total} outputs ({report_v2.recommendation})"
+            )
     except (
         ConfigLoadError,
         GenerationError,

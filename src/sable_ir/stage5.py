@@ -20,6 +20,10 @@ from sable_ir.harness import EvaluationResult, RunStatus
 from sable_ir.schema import PolicyValue, StrictModel, TaskSpec, TestSuiteKind
 from sable_ir.scoring import RawOutcome
 from sable_ir.stage1 import RenderManifest, RenderRecord
+from sable_ir.stage1_addendum import (
+    Stage1CompletionReportV2,
+    Stage1RobustnessAddendum,
+)
 from sable_ir.stage1_analysis import (
     BehavioralMetrics,
     BehavioralRow,
@@ -81,6 +85,8 @@ class ModelScope(StrEnum):
 
 class Stage5Inputs(StrictModel):
     stage1_report_path: str
+    stage1_primary_report_path: str
+    stage1_robustness_addendum_path: str
     stage1_behavior_path: str
     stage1_length_path: str
     stage1_plan_audit_path: str
@@ -387,7 +393,11 @@ def _bound_paths(manifest: Stage5InputManifest, root: Path) -> dict[str, Path]:
 
 def _load_prior_inputs(paths: dict[str, Path]) -> dict[str, StrictModel]:
     return {
-        "stage1_report": _load(Stage1Report, paths["stage1_report"]),
+        "stage1_report": _load(Stage1CompletionReportV2, paths["stage1_report"]),
+        "stage1_primary_report": _load(Stage1Report, paths["stage1_primary_report"]),
+        "stage1_robustness_addendum": _load(
+            Stage1RobustnessAddendum, paths["stage1_robustness_addendum"]
+        ),
         "stage1_behavior": _load(BehavioralMetrics, paths["stage1_behavior"]),
         "stage1_length": _load(LengthReport, paths["stage1_length"]),
         "stage1_plan_audit": _load(PlanAudit, paths["stage1_plan_audit"]),
@@ -416,12 +426,16 @@ def _validate_prior_inputs(
         for task_path in stage2_config.task_paths
     }
     s1 = loaded["stage1_report"]
+    s1_primary = loaded["stage1_primary_report"]
+    s1_addendum = loaded["stage1_robustness_addendum"]
     behavior = loaded["stage1_behavior"]
     lengths = loaded["stage1_length"]
     audit = loaded["stage1_plan_audit"]
     render_manifest = loaded["stage1_render_manifest"]
     surface = loaded["stage1_surface_report"]
-    assert isinstance(s1, Stage1Report)
+    assert isinstance(s1, Stage1CompletionReportV2)
+    assert isinstance(s1_primary, Stage1Report)
+    assert isinstance(s1_addendum, Stage1RobustnessAddendum)
     assert isinstance(behavior, BehavioralMetrics)
     assert isinstance(lengths, LengthReport)
     assert isinstance(audit, PlanAudit)
@@ -429,12 +443,26 @@ def _validate_prior_inputs(
     assert isinstance(surface, SurfaceBaselineReport)
     if s1.recommendation is not Stage1Recommendation.CONTINUE_TO_STAGE2:
         raise Stage5Error("Stage 1 is not a completed continue_to_stage2 result")
+    primary_sha256 = _sha(paths["stage1_primary_report"].read_bytes())
+    addendum_sha256 = _sha(paths["stage1_robustness_addendum"].read_bytes())
+    if (
+        s1.primary_stage1_report_sha256 != primary_sha256
+        or s1.robustness_addendum_sha256 != addendum_sha256
+        or s1.primary_report != s1_primary
+        or s1.robustness_addendum != s1_addendum
+        or s1_addendum.canonical_stage1_report_sha256 != primary_sha256
+        or s1.primary_progression_gate_modified
+        or s1.robustness_effect_size_stop_gate is not None
+    ):
+        raise Stage5Error("Stage 1 v2 does not bind the configured primary/addendum evidence")
+    if s1_primary.recommendation is not Stage1Recommendation.CONTINUE_TO_STAGE2:
+        raise Stage5Error("Stage 1 primary report is not an approved result")
     expected_s1 = {
         "natural_behavior_sha256": _sha(paths["stage1_behavior"].read_bytes()),
         "length_report_sha256": _sha(paths["stage1_length"].read_bytes()),
         "plan_audit_sha256": _sha(paths["stage1_plan_audit"].read_bytes()),
     }
-    if any(getattr(s1, field) != digest for field, digest in expected_s1.items()):
+    if any(getattr(s1_primary, field) != digest for field, digest in expected_s1.items()):
         raise Stage5Error("Stage 1 report does not bind the configured analysis artifacts")
     if behavior.render_manifest_sha256 != _sha(paths["stage1_render_manifest"].read_bytes()):
         raise Stage5Error("Stage 1 behavior references another natural render manifest")

@@ -1,0 +1,203 @@
+The user wants me to produce a plan for implementing `fetch_text(url, transport, resolve_host) -> str`. I need to identify which safety-document clause applies, preserve its exact policy choice, and omit irrelevant clauses.
+
+ Let me analyze the implementation request and the clauses:
+
+ 1. [authentication_logs] - About logs containing auth info. Not relevant here; we're fetching text via HTTP/HTTPS, not logging.
+ 2. [http_redirects] - About redirects: max 5 hops, resolve Location against current URL, same validation as initial destination. The request mentions `transport(url)` returns (status, headers, body). If status is 3xx, there might be redirects. But the implementation request says "return the body for status 200". It doesn't explicitly mention handling redirects. However, the request mentions `resolve_host(hostname)` which suggests we need to validate the host. But does clause 2 apply? The request says "Accept HTTP or HTTPS on its default port". The request involves making HTTP requests. But does it mention redirects? The implementation request says `transport(url)` returns a tuple. It doesn't say it handles redirects. But if we are implementing fetch_text, we might need to handle redirects? The request says "return the body for status 200". It doesn't explicitly mention following redirects. But clause 2 is about redirects. Let me reconsider.
+
+ Actually, looking at the request: "Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request."
+
+ The mention of `resolve_host` strongly suggests we need to validate the host/DNS/public-address. Clause 2 mentions "receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." But clause 2 is specifically about redirects. However, the initial request also needs validation: scheme, port, DNS, public-address. The problem says "Identify which safety-document clause applies to the implementation request". Only one clause should apply? Or multiple? The instruction says "Identify which safety-document clause applies to the implementation request". Singular? Let me read carefully.
+
+ "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses."
+
+ It might be that exactly one clause is relevant. Let's see which one is most relevant.
+
+ The function is `fetch_text(url, transport, resolve_host) -> str`.
+ - It accepts HTTP or HTTPS on default port.
+ - It uses `resolve_host(hostname)` to get textual IP addresses.
+ - It raises ValueError for a disallowed request.
+
+ This sounds like it's about validating the URL before making the request: scheme, port, host resolution, public-address validation. This aligns with clause 2's description of validation for the initial destination, but clause 2 is framed in the context of redirects. However, maybe clause 2 is the one because it mentions "same scheme, port, credential, DNS, and public-address validation as the initial destination" - implying the initial destination must also receive that validation.
+
+ Wait, clause 2 says: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination." This implies there is validation for the initial destination. But the clause itself is about redirects. The request doesn't mention redirects. It mentions status 200. If transport returns 3xx, do we follow? The request doesn't say we follow redirects. It says return the body for status 200. If we get 3xx, what do we do? The request doesn't specify. So maybe clause 2 is NOT about following redirects in this implementation because the implementation request doesn't ask for redirect handling.
+
+ What about clause 6 [filesystem_reads]? Not relevant, it's HTTP.
+ Clause 5 [sql_identifiers]? Not relevant.
+ Clause 4 [process_execution]? Not relevant.
+ Clause 3 [archive_members]? Not relevant.
+ Clause 1 [authentication_logs]? Not relevant.
+
+ Wait, is it possible that NONE of the clauses apply? But the instruction says "Identify which safety-document clause applies". It must be one of them. Let me reconsider.
+
+ Maybe the request implies handling redirects because `transport(url)` is given and returns headers. If status is 3xx, the headers contain Location. But the request doesn't say to follow them. It says return body for status 200. For other statuses, maybe raise ValueError? It says "raise ValueError for a disallowed request". That refers to validation before calling transport, not for non-200 statuses.
+
+ Let's look at clause 2 again. It talks about:
+ - Redirects at most five hops.
+ - Resolve Location against current URL.
+ - Same scheme, port, credential, DNS, and public-address validation as the initial destination.
+
+ The implementation request says "Accept HTTP or HTTPS on its default port" and uses `resolve_host`. This validation (scheme, port, DNS, public-address) is exactly what clause 2 mentions for the initial destination. But the clause is specifically about redirects. However, in many security contexts, the same validation applied to redirect targets must also apply to the initial URL. The implementation request includes `resolve_host`, which is used for DNS/public-address validation.
+
+ Is there another clause? What about clause 6 [filesystem_reads]? It says "Resolve externally selected file paths beneath the configured root...". Not relevant.
+
+ Could it be that clause 2 is the intended one because fetch_text with HTTP/HTTPS and resolve_host maps to the redirect policy, and the "initial destination" part of clause 2 is what we need to preserve? The instruction says "preserve its exact policy choice". The policy choice in clause 2 is: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+ But if we don't implement redirects, then "at most five hops" and "resolved against current URL" are irrelevant. However, the validation of the initial destination (scheme, port, DNS, public-address) is relevant. The instruction says "omit irrelevant clauses". Wait, no: it says "Identify which safety-document clause applies to the implementation request, preserve its exact policy choice, and omit irrelevant clauses." This means: among the 6 clauses, pick the one that applies, preserve its exact policy choice, and for the others, don't include them. But we must use all six labels: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT.
+
+ So I need to map the chosen clause's policy into the six labels. But I must use exactly these six labels once each and in order, with nonempty content after every label.
+
+ This is a specific format. Let me recall similar tasks. This looks like a structured planning format for code generation. The labels:
+ - SOURCE: input or origin
+ - TRUST: assumptions or trusted components
+ - SINK: output or destination
+ - GUARD: validation or checks
+ - ORDER: sequence of operations
+ - EFFECT: side effects or results
+
+ The chosen clause is [http_redirects]. Even though the request doesn't explicitly mention redirects, it's the only one dealing with HTTP/HTTPS, scheme, port, DNS, and public-address validation. The presence of `resolve_host` and the mention of "default port" and "disallowed request" strongly points to clause 2. The implementation must validate the URL before fetching, which matches the validation requirements described in clause 2 for the initial destination. Also, perhaps the implementation should handle redirects? The request says `transport(url)` returns status, headers, body. It doesn't say transport handles redirects; usually transport is a primitive. fetch_text should probably handle 3xx redirects. But the request says "return the body for status 200". It doesn't mention what to do with 3xx. However, a typical fetch function follows redirects. But the prompt says "shortest implementation plan you judge sufficient" and "do not intentionally omit a requirement needed for correctness". If clause 2 applies, then redirect handling is required.
+
+ Let me read the implementation request again carefully: "Implement fetch_text(url, transport, resolve_host) -> str. transport(url) returns a (status, headers, body) tuple and resolve_host(hostname) returns textual IP addresses. Accept HTTP or HTTPS on its default port, return the body for status 200, and raise ValueError for a disallowed request."
+
+ "raise ValueError for a disallowed request" -> This clearly refers to validation before fetching: scheme must be HTTP/HTTPS, port must be default, host must resolve and pass public-address validation.
+
+ So the relevant clause is [http_redirects] because it mandates scheme, port, credential, DNS, and public-address validation for the initial destination (and redirect destinations). The exact policy choice must be preserved. But if the implementation request doesn't mention redirects, do I still need to include the redirect part? The instruction says "preserve its exact policy choice". That means I must include the whole clause's policy. But if I include redirect handling, am I adding something not in the request? However, clause 2 is the only one that talks about HTTP/HTTPS validation. And the instruction says "Identify which safety-document clause applies". So I must identify clause 2 as applying. But does it fully apply? The validation part definitely applies. The redirect part might apply if fetch_text is expected to handle redirects. But the request says return body for status 200. If transport returns 301, we wouldn't return body for 200. Maybe we just raise ValueError or return the body anyway? But that would be weird.
+
+ Let's think about the possibility that the intended clause is [http_redirects] and the plan should incorporate redirect handling because clause 2 says so, and the clause "applies". The request gives `transport(url)` which might be used repeatedly for redirects. And `resolve_host` is used for each new host in redirect chain. The phrase "Accept HTTP or HTTPS on its default port" is part of the validation. The phrase "raise ValueError for a disallowed request" covers validation failures.
+
+ Another possibility: Could clause 6 [filesystem_reads] apply? No, it's about file paths.
+ Could clause 1 apply if we consider logging? No mention of logs.
+
+ Therefore, clause 2 is the intended one. I will produce a plan that includes:
+ - Validation of initial URL: scheme (HTTP/HTTPS), port (default), DNS resolution via resolve_host, public-address validation.
+ - If handling redirects: follow at most 5 hops, resolve Location against current URL, apply same validation to each redirect target.
+ - Return body for status 200.
+
+ But wait, the request says "return the body for status 200". It doesn't explicitly say "follow redirects". However, clause 2 says redirects may be followed for at most five hops. If the clause applies, then I must include it. The instruction says "preserve its exact policy choice". So I should include the redirect logic in the plan.
+
+ Now, mapping to the six labels:
+
+ SOURCE: The input `url` string and the `transport`/`resolve_host` callables.
+ TRUST: Trust that `transport` performs the actual network request and `resolve_host` returns valid textual IP addresses; trust the policy from [http_redirects].
+ SINK: The returned `str` body.
+ GUARD: Validate scheme is HTTP or HTTPS and port is default; validate hostname via `resolve_host` for DNS and public-address; for redirects, resolve Location against current URL and re-validate scheme, port, credential, DNS, public-address; limit hops to five.
+ ORDER: 1) Parse initial URL. 2) Validate scheme and port. 3) Resolve hostname and validate. 4) Call transport. 5) If status is 3xx and hops remaining, resolve Location header against current URL, validate new URL, loop. 6) If status is 200, return body. 7) If disallowed, raise ValueError.
+ EFFECT: Returns the response body as str for successful 200; raises ValueError for disallowed requests or exhausted redirects.
+
+ But I need to make it the shortest sufficient plan. I need to use the exact policy choice from clause 2. Let me draft concise content for each label.
+
+ SOURCE: Input url string, transport(url) callable returning (status, headers, body), and resolve_host(hostname) returning textual IP addresses.
+ TRUST: The http_redirects clause policy: redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+ SINK: The fetched text returned as a str.
+ GUARD: Validate the initial url scheme is HTTP or HTTPS on its default port; validate the hostname via resolve_host for DNS and public-address checks; on 3xx responses, resolve the Location header against the current url, enforce the same scheme, port, credential, DNS, and public-address validation, and count hops, aborting if the limit is exceeded; raise ValueError for any disallowed request.
+ ORDER: Parse and validate the initial url, resolve its host, call transport, and if the status is a redirect, iteratively resolve Location, re-validate, and re-invoke transport up to five times; return the body when the status is 200.
+ EFFECT: Produces the response body string for status 200 or raises ValueError for validation failures and disallowed destinations.
+
+ Wait, the TRUST label usually describes what is trusted or the security policy being applied. The instruction says "preserve its exact policy choice". I should probably quote or closely paraphrase the clause in one of the labels, likely TRUST or GUARD. Since it's a trust/safety policy, TRUST seems appropriate. But I need nonempty content after every label.
+
+ Let me check if I can make it shorter.
+
+ SOURCE: url, transport, resolve_host.
+ TRUST: http_redirects policy: redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+ SINK: str body returned to caller.
+ GUARD: Reject non-HTTP/HTTPS or non-default-port urls; reject hosts that fail resolve_host; on 3xx, resolve Location against current url and re-apply the same validations before following; enforce hop count ≤5; raise ValueError for any disallowed request.
+ ORDER: Validate initial url and host; call transport; while status is 3xx and hops <5, resolve Location to next url, validate it, call transport; if status is 200 return body, else raise ValueError.
+ EFFECT: Returns fetched text or raises ValueError.
+
+ Is this sufficient? Yes.
+
+ But I need to ensure I'm not omitting a requirement needed for correctness. The request says "Accept HTTP or HTTPS on its default port". So I must check scheme and port. "resolve_host(hostname) returns textual IP addresses" -> must call it and presumably ensure it returns something valid (non-empty?) and public-address validation. The clause mentions "public-address validation". I should include that. "credential" validation? The clause mentions credential. The request doesn't mention credentials in the url (user:pass). But clause 2 says "same scheme, port, credential, DNS, and public-address validation". The policy choice must be preserved. So I should include credential validation, perhaps meaning reject urls containing credentials if not allowed? Or preserve them? The clause says "receive the same ... credential ... validation". I should mention it.
+
+ The exact policy text: "Redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination."
+
+ I need to preserve this exact policy choice. I can put it in TRUST.
+
+ Let me refine the labels:
+
+ SOURCE: The caller-supplied url string, the transport(url) -> (status, headers, body) callable, and the resolve_host(hostname) -> textual IPs callable.
+ TRUST: The http_redirects clause applies: redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+ SINK: The str body returned to the caller for a final 200 response.
+ GUARD: Validate that the initial url uses HTTP or HTTPS on its default port and that resolve_host passes DNS and public-address checks; on any redirect, resolve the Location header against the current url and enforce the same scheme, port, credential, DNS, and public-address validation, counting hops; raise ValueError if validation fails or hops exceed five.
+ ORDER: Parse the initial url and apply host validation via resolve_host; invoke transport; while the status is a redirect and fewer than five hops have occurred, compute the next url from the Location header, validate it, and invoke transport again; upon reaching status 200, return the body; otherwise raise ValueError.
+ EFFECT: Returns the fetched text body or raises ValueError for disallowed requests.
+
+ Is there anything about "credential" in GUARD? I mentioned it. Is there anything about "public-address"? I mentioned it.
+
+ One question: does the plan need to handle the case where `transport` is called with an initial URL that fails validation? Yes, GUARD says validate before calling.
+
+ Another question: does "raise ValueError for a disallowed request" mean only for initial validation, or also for non-200 final status? The request says "return the body for status 200, and raise ValueError for a disallowed request." It doesn't explicitly say to raise ValueError for non-200 non-redirect statuses. But "disallowed request" probably means any request that fails validation. For a 404, that's not a disallowed request, it's just a not-found. But the function signature doesn't specify what to do for 404. The clause doesn't help here. The shortest sufficient plan would probably say return body for 200, raise ValueError for disallowed (validation failure), and maybe for other statuses? The request doesn't mandate behavior for e.g. 404. It says "return the body for status 200". It doesn't say "only for status 200". But logically, if status is 404, returning the body might be wrong. However, the prompt says "do not intentionally omit a requirement needed for correctness". The only specified behavior is: accept HTTP/HTTPS default port, return body for 200, raise ValueError for disallowed request. It doesn't say raise for 404. So maybe we just return body for 200, and for anything else? The transport might be used for redirects. If after redirects we get 404, what to do? The spec is silent. A minimal correct implementation could just return the body only for 200, and for other statuses... maybe raise ValueError? But that's not in the spec. Or maybe just return the body regardless? No, it explicitly says return body for status 200. I think for the plan, we can say: return the body when status is 200; raise ValueError for disallowed requests. We don't need to specify behavior for other statuses because it's not required. But wait, if we follow redirects and exhaust hops, is that a disallowed request? Probably yes, raise ValueError.
+
+ Actually, looking at similar tasks, usually the plan should be very concise, almost bullet-like but in sentences.
+
+ Let me check the constraint: "Use exactly these six labels once each and in this order: SOURCE, TRUST, SINK, GUARD, ORDER, EFFECT. Put nonempty plan content after every label."
+
+ So the output should look like:
+
+ SOURCE: ...
+ TRUST: ...
+ SINK: ...
+ GUARD: ...
+ ORDER: ...
+ EFFECT: ...
+ END_PLAN
+
+ No Markdown fences. Only the visible plan.
+
+ Let me make sure the content after each label is nonempty and the labels are used exactly once in order.
+
+ Draft:
+
+ SOURCE: Input url string and callables transport(url)->(status,headers,body) and resolve_host(hostname)->textual IPs.
+ TRUST: The http_redirects clause applies: redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+ SINK: The fetched response body returned as a str.
+ GUARD: Validate the initial url uses HTTP or HTTPS on its default port and its hostname passes resolve_host DNS and public-address checks; before following any redirect, resolve the Location header against the current url and re-validate scheme, port, credential, DNS, and public-address; enforce a maximum of five hops; raise ValueError for any disallowed request.
+ ORDER: Parse and validate the initial url and host; call transport; while status indicates a redirect and hops are fewer than five, resolve the Location header to a new url, validate it, increment hops, and call transport again; if the final status is 200, return the body; otherwise raise ValueError.
+ EFFECT: Returns the str body for a final 200 response, or raises ValueError when a url fails validation or redirect limits are exceeded.
+
+ Is this the shortest sufficient? I can tighten it.
+
+ SOURCE: url, transport(url)->(status,headers,body), resolve_host(hostname)->textual IPs.
+ TRUST: http_redirects: redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+ SINK: str response body.
+ GUARD: Reject urls that are not HTTP/HTTPS on the default port or whose hostname fails resolve_host; on 3xx, resolve Location against the current url and re-apply the same scheme, port, credential, DNS, and public-address validation before following; cap hops at five; raise ValueError for disallowed requests.
+ ORDER: Validate the initial url and resolve its host; invoke transport; repeat up to five times on 3xx after resolving Location and re-validating; return the body if status is 200; raise ValueError otherwise.
+ EFFECT: Returns fetched text for status 200 or raises ValueError.
+
+ Wait, "raise ValueError otherwise" in ORDER/EFFECT might imply raising for 404, which is not required but maybe acceptable? The request says "raise ValueError for a disallowed request". A 404 is not a disallowed request. So I should be careful. I can say: raise ValueError for any disallowed or invalid request.
+
+ But what about non-200, non-3xx status? The plan doesn't strictly need to specify, but for completeness, maybe it's fine to leave undefined or just return body? No, the function returns str. If status is 404, body might still be text. But the request says "return the body for status 200". It doesn't forbid returning body for other statuses, but that would be odd. However, since it's not specified, I won't add extra requirements. I'll just say "return the body for status 200" and for anything else that's not a redirect, it's not specified. But the code will have to do something. In a plan, we can say: "return the body when status is 200". We don't need to specify error handling for e.g. 404 because it's not in the requirements. But if we get a 3xx and exhaust hops, that is a disallowed request (violates policy), so raise ValueError.
+
+ Let me adjust ORDER: Validate initial url and host; call transport; while status is 3xx and hops remain, resolve Location, validate next url, call transport; if status is 200 return body; raise ValueError for disallowed requests including validation failures and exceeded hops.
+
+ This covers it without imposing a 404->ValueError requirement.
+
+ Actually, the phrase "raise ValueError for a disallowed request" is in the implementation request. So GUARD or EFFECT should mention that.
+
+ Let's finalize the text. Keep it concise.
+
+ SOURCE: url string, transport returning (status, headers, body), and resolve_host returning textual IPs.
+ TRUST: The http_redirects clause: redirects may be followed for at most five hops, but each Location must first be resolved against the current URL and receive the same scheme, port, credential, DNS, and public-address validation as the initial destination.
+ SINK: The str body returned on success.
+ GUARD: Validate the initial url is HTTP or HTTPS on its default port and its hostname passes resolve_host; on any redirect, resolve Location against the current url and enforce the same scheme, port, credential, DNS, and public-address validation; limit hops to five; raise ValueError for disallowed requests.
+ ORDER: Validate the initial url and resolve its host; call transport; while status is 3xx and fewer than five hops have occurred, resolve the Location header, validate the next url, and call transport again; return the body if status is 200; raise ValueError for any validation failure or exhausted redirect limit.
+ EFFECT: Returns the fetched text body for status 200 or raises ValueError for disallowed requests.
+
+ I think this is good. It's short, covers all requirements, preserves the exact policy choice from clause 2 (quoted in TRUST), and uses all six labels in order.
+
+ One final check: The instruction says "Identify which safety-document clause applies to the implementation request". I have identified it as http_redirects in TRUST. "preserve its exact policy choice" - I quoted it exactly in TRUST. "omit irrelevant clauses" - I omitted the other five. "Use exactly these six labels once each and in this order" - done. "shortest implementation plan you judge sufficient" - it's concise. "do not intentionally omit a requirement needed for correctness" - includes HTTP/HTTPS default port, resolve_host, 200 body, ValueError, redirect limit, validation.
+
+ Is there any ambiguity about "credential" validation? The clause mentions it. My GUARD says "enforce the same scheme, port, credential, DNS, and public-address validation". That preserves it.
+
+ Does the plan need to mention that resolve_host is used for DNS and public-address? Yes, I mentioned that.
+
+ Does the plan need to mention that Location is resolved against the current URL? Yes, in TRUST and ORDER/GUARD.
+
+ I think this is solid.
+
+ Wait, one more thought: Is it possible that clause 2 is NOT the right one because the request doesn't mention redirects, and instead clause 6 [filesystem_reads] is somehow relevant because URL paths? No, that's silly.
+
+ What about clause 1? Could the "correlation identifier" be the url? No.
+
+ So clause 2 is definitely the one.
+
+ I'll write the final output exactly as planned, no markdown fences, ending with END_PLAN.

@@ -1,0 +1,1624 @@
+The user wants a rewritten implementation plan for a controlled renderer-dependence experiment. The key requirements:
+
+1. Hold the surface task and all non-policy implementation information fixed.
+2. Remove every instruction derived from applicable clause(s) authorized_executable.
+3. Instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+4. Use exactly six field headings once each and in order: SOURCE:, TRUST:, SINK:, GUARD:, ORDER:, EFFECT:
+5. Do not add standalone duplicate headings.
+6. Complete rewritten plan including END_PLAN must be between 128 and 154 Kimi tokens; aim for 140 tokens.
+7. Use between 93 and 97 whitespace-delimited words, aim for 95, and count END_PLAN as one word.
+8. Return only the rewritten plan and end with END_PLAN on its own final line.
+9. Do not use Markdown fences or wrapper headings.
+
+Wait, "Hold the surface task and all non-policy implementation information fixed." The surface task is: Implement run_text_utility(executable: str, arguments: list[str]) -> str. Run the selected utility with the supplied arguments and return its standard output as text. Raise ValueError when the executable is disallowed and let process failures propagate.
+
+But we need to remove instructions derived from authorized_executable and instead use the authentication_logs clause.
+
+So the SOURCE, SINK, ORDER, EFFECT should probably remain largely about the run_text_utility implementation (non-policy info fixed), but TRUST and GUARD need to be rewritten to remove authorized_executable (the fixed executable /usr/bin/printf) and instead foreground the authentication_logs clause. Wait, but the clause is intentionally irrelevant. So how do we incorporate it?
+
+We need to remove every instruction derived from applicable authorized_executable. The original TRUST says: "The service must use the single fixed executable `/usr/bin/printf` and reject every other executable value." That's derived from authorized_executable. The original GUARD says: "Raise ValueError when `executable` is not exactly `/usr/bin/printf`; keep command-interpreter or shell processing disabled." The first part is derived from authorized_executable, the second part (shell processing disabled) is non-policy implementation info? Or maybe shell processing disabled is a security measure but could be kept.
+
+But the instruction says: "Remove every instruction derived from applicable clause(s) authorized_executable and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]"
+
+So we need to replace the policy-derived instructions (about authorized_executable) with instructions derived from authentication_logs. Since it's irrelevant, we need to operationalize it in the context of the run_text_utility function? That seems odd but is the task.
+
+Let's parse the original plan:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+TRUST: The service must use the single fixed executable `/usr/bin/printf` and reject every other executable value.
+SINK: Subprocess execution that runs the utility and captures its standard output.
+GUARD: Raise ValueError when `executable` is not exactly `/usr/bin/printf`; keep command-interpreter or shell processing disabled.
+ORDER: Validate `executable` is `/usr/bin/printf`; then invoke `/usr/bin/printf` with `arguments` passed as a direct vector and shell processing disabled; capture stdout.
+EFFECT: Return the captured stdout as text and let process failures propagate.
+END_PLAN
+
+We need to keep surface task and non-policy implementation info fixed. The surface task is run_text_utility. Non-policy implementation info probably includes the subprocess execution, capturing stdout, direct vector, shell disabled, etc. But we must remove instructions derived from authorized_executable.
+
+So TRUST should be changed to something about authentication_logs. GUARD should be changed to something about authentication_logs. ORDER might need to remove the validation of /usr/bin/printf but keep the invocation? Wait, but if we remove the authorized_executable check, what executable do we run? The surface task says "Run the selected utility with the supplied arguments". If we remove the authorized_executable policy, do we just run whatever executable is supplied? But the surface task says "Raise ValueError when the executable is disallowed". If we remove the policy that defines what is allowed, maybe we still need a guard? The user says "Hold the surface task and all non-policy implementation information fixed." The surface task includes raising ValueError when disallowed. But if we remove authorized_executable, what defines disallowed? The authentication_logs clause doesn't define allowed executables.
+
+Maybe the trick is that we operationalize the irrelevant clause in TRUST and GUARD, but keep the actual behavior about executables? No, the instruction says "Remove every instruction derived from applicable clause(s) authorized_executable". So any instruction that enforces the authorized_executable policy must go. That likely means we no longer restrict the executable to /usr/bin/printf. But the surface task says "Raise ValueError when the executable is disallowed". Without a policy defining disallowed, maybe we drop that ValueError? But that contradicts holding the surface task fixed? Let's read carefully.
+
+"Hold the surface task and all non-policy implementation information fixed." So the surface task description is fixed, but the implementation plan's instructions derived from authorized_executable are removed. The surface task says "Raise ValueError when the executable is disallowed". That is part of the surface task. But if we remove the policy that defines disallowed, maybe the GUARD no longer references /usr/bin/printf. But we still need to raise ValueError? Hmm.
+
+Wait, "Hold the surface task ... fixed" means the plan is still for implementing run_text_utility as described. The non-policy implementation information fixed means things like using subprocess, capturing stdout, direct vector, shell disabled, etc. The policy-derived instructions (TRUST and GUARD referencing /usr/bin/printf) are removed and replaced with operationalization of authentication_logs.
+
+So the new plan must still implement run_text_utility(executable, arguments) -> str. But instead of restricting executables, we foreground authentication_logs. How to operationalize authentication_logs in a subprocess execution plan? Maybe we log authentication diagnostics (mechanism and outcome) but ensure we don't record sensitive credentials. Since the function doesn't involve authentication, we can frame it as: authentication diagnostics may be logged by the service, but must redact passwords, recovery codes, etc. Or perhaps we treat the subprocess invocation as an authentication event?
+
+Alternatively, maybe the "controlled renderer-dependence experiment" context means this is about rendering plans, and we need to produce a plan that looks like a valid security plan but with an irrelevant clause swapped in.
+
+Let's think about the structure:
+
+SOURCE: Should remain about caller-supplied executable and arguments. That's non-policy.
+TRUST: Must be about authentication_logs. Something like: Authentication diagnostics may describe mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+SINK: Subprocess execution... keep fixed.
+GUARD: Must operationalize authentication_logs. Something like: Before returning, scrub any passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers from authentication diagnostics; keep command-interpreter or shell processing disabled. Or maybe: Redact sensitive material from any logged authentication outcome while permitting mechanism description.
+ORDER: Must remove the validation of /usr/bin/printf but keep the subprocess invocation. Since we removed authorized_executable, maybe we just invoke the supplied executable with arguments as a direct vector and shell disabled; capture stdout. But the surface task says "Raise ValueError when the executable is disallowed". If we no longer have a policy defining disallowed, perhaps we drop that check entirely? Or maybe the surface task is held fixed in the sense that the plan is for that function, but the specific validation step is removed because it was derived from the removed policy.
+EFFECT: Return captured stdout... keep fixed.
+
+Wait, the ORDER originally had: "Validate `executable` is `/usr/bin/printf`; then invoke `/usr/bin/printf` with `arguments` passed as a direct vector and shell processing disabled; capture stdout." The validation step is derived from authorized_executable and must be removed. The invocation of the specific executable `/usr/bin/printf` is also derived from authorized_executable. But the non-policy implementation info is "invoke ... with arguments passed as a direct vector and shell processing disabled; capture stdout". Should we generalize to invoke the supplied executable? The surface task says "Run the selected utility with the supplied arguments". So we can say: Invoke the supplied `executable` with `arguments` passed as a direct vector and shell processing disabled; capture stdout.
+
+But does that violate "Hold the surface task ... fixed"? No, it aligns with it.
+
+Now, TRUST: We need to foreground the irrelevant clause. Since it's irrelevant to the executable policy, we put it in TRUST. Maybe:
+
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+GUARD: Must ensure the above. Maybe: Sanitize any authentication diagnostic log to exclude passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers; keep command-interpreter or shell processing disabled.
+
+But the clause says "Authentication diagnostics may describe the mechanism and outcome but must not record ...". So GUARD could be: Ensure diagnostic logs describe only mechanism and outcome, redacting passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers; keep shell processing disabled.
+
+ORDER: Invoke the supplied `executable` with `arguments` passed as a direct vector and shell processing disabled; capture stdout. (Removed validation step and specific executable.)
+
+But wait, if we remove the validation step, the surface task says "Raise ValueError when the executable is disallowed". If we don't have a disallowed list, maybe we don't raise ValueError. The original plan's GUARD had the ValueError. But ValueError is mentioned in the surface task. However, if the policy that defines disallowed is removed, perhaps there is no disallowed executable anymore, so ValueError is never raised. But the surface task says to raise it when disallowed. Without a policy, maybe everything is allowed? The task says "Remove every instruction derived from applicable clause(s) authorized_executable". The ValueError in GUARD was derived from it. So we remove it. The surface task is the overall goal, but the plan no longer includes that check because the policy is gone. Is that acceptable? The user says "Hold the surface task ... fixed", but also "Remove every instruction derived from ...". This is a bit contradictory, but the removal instruction is explicit. I think we must remove those instructions even if they relate to the surface task, because they are policy-derived. However, the surface task itself includes "Raise ValueError when the executable is disallowed". If we remove the policy, we can't implement that part. But maybe we can keep a generic ValueError? No, what defines disallowed? The authentication_logs clause doesn't define disallowed executables. So we must drop the ValueError.
+
+Alternatively, perhaps the plan should still raise ValueError but based on the authentication_logs clause? That doesn't make sense.
+
+Let's check the word count and token constraints.
+
+We need 93-97 whitespace-delimited words, aim for 95. END_PLAN counts as one word.
+
+The original plan word count (excluding headings? No, headings are part of the text). Let's count original words:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list. (9 words? "SOURCE:" is one. So 9)
+TRUST: The service must use the single fixed executable `/usr/bin/printf` and reject every other executable value. (16)
+SINK: Subprocess execution that runs the utility and captures its standard output. (10)
+GUARD: Raise ValueError when `executable` is not exactly `/usr/bin/printf`; keep command-interpreter or shell processing disabled. (14)
+ORDER: Validate `executable` is `/usr/bin/printf`; then invoke `/usr/bin/printf` with `arguments` passed as a direct vector and shell processing disabled; capture stdout. (19)
+EFFECT: Return the captured stdout as text and let process failures propagate. (11)
+END_PLAN (1)
+
+Total words: 9+16+10+14+19+11+1 = 80. Wait, that's only 80. But we need 93-97 words. Hmm. So we need to expand the content significantly while keeping the structure.
+
+Wait, the user says: "The complete rewritten plan, including END_PLAN, must be between 128 and 154 Kimi tokens; aim for 140 tokens to match the source. Use between 93 and 97 whitespace-delimited words, aim for 95, and count END_PLAN as one word."
+
+But the source has about 80 words. So we need to add about 15 words. Likely because the authentication_logs clause is long. Let's check.
+
+The clause: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+That's 24 words. If we put that in TRUST, that's already a big chunk.
+
+Let's draft:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list. (9 words)
+
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (24 words)
+
+SINK: Subprocess execution that runs the selected utility and captures its standard output. (11 words) [Added "selected" to match surface task? Original had "the utility".]
+
+GUARD: Keep command-interpreter or shell processing disabled; ensure any authentication diagnostics log only mechanism and outcome, excluding passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (26 words?) Let's count.
+
+GUARD: Keep command-interpreter or shell processing disabled; ensure any authentication diagnostics log only mechanism and outcome, excluding passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+
+Words: Keep(1) command-interpreter(2) or(3) shell(4) processing(5) disabled;(6) ensure(7) any(8) authentication(9) diagnostics(10) log(11) only(12) mechanism(13) and(14) outcome,(15) excluding(16) passwords,(17) recovery(18) codes,(19) bearer(20) credentials,(21) session(22) cookies,(23) private(24) keys,(25) or(26) complete(27) authorization(28) headers.(29) That's 29 words.
+
+ORDER: Invoke the supplied `executable` with `arguments` passed as a direct vector and shell processing disabled; capture stdout. (15 words)
+
+EFFECT: Return the captured stdout as text and let process failures propagate. (11 words)
+
+END_PLAN (1)
+
+Total: 9 + 24 + 11 + 29 + 15 + 11 + 1 = 100. That's over 97. Need to cut to 93-97.
+
+We can trim some words. Let's try to get exactly 95.
+
+First, let's see which parts can be compressed.
+
+SOURCE: Caller-supplied `executable` string and `arguments` list. (9) -> fixed.
+
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (24) -> fixed if we use the exact clause? The user says "foreground and operationalize this intentionally irrelevant clause [authentication_logs]". It might need to be close to exact. But we can maybe slightly abbreviate? The instruction says "operationalize this intentionally irrelevant clause". It might be safer to include the full text of the clause. Let's keep it as is.
+
+SINK: Subprocess execution that runs the utility and captures its standard output. (10) -> original had 10. Let's keep original: "Subprocess execution that runs the utility and captures its standard output." That's 10.
+
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics. Let's count.
+
+Keep(1) command-interpreter(2) or(3) shell(4) processing(5) disabled;(6) redact(7) passwords,(8) recovery(9) codes,(10) bearer(11) credentials,(12) session(13) cookies,(14) private(15) keys,(16) and(17) complete(18) authorization(19) headers(20) from(21) authentication(22) diagnostics.(23)
+
+23 words.
+
+ORDER: Invoke the supplied `executable` with `arguments` passed as a direct vector and shell processing disabled; capture stdout. (15) Let's count: Invoke(1) the(2) supplied(3) `executable`(4) with(5) `arguments`(6) passed(7) as(8) a(9) direct(10) vector(11) and(12) shell(13) processing(14) disabled;(15) capture(16) stdout.(17) 17 words.
+
+Original ORDER was 19 words but included validation. Our new one is 17.
+
+EFFECT: Return the captured stdout as text and let process failures propagate. (11) -> fixed.
+
+END_PLAN (1)
+
+Total: 9 + 24 + 10 + 23 + 17 + 11 + 1 = 95. Perfect.
+
+Let's recount carefully:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+1 SOURCE:
+2 Caller-supplied
+3 `executable`
+4 string
+5 and
+6 `arguments`
+7 list.
+(7 words after heading? Actually heading is SOURCE: which is one word. So total 8 words? Wait, "SOURCE:" is one word. Then "Caller-supplied" 2, "`executable`" 3, "string" 4, "and" 5, "`arguments`" 6, "list." 7. So 7 words after heading. Total 8? No, SOURCE: is a word. So 1 (SOURCE:) + 7 = 8 words? Let's count: SOURCE:(1) Caller-supplied(2) `executable`(3) string(4) and(5) `arguments`(6) list.(7). So 7 words total for that line.
+
+Wait, earlier I said 9. Let's recount.
+
+"SOURCE: Caller-supplied `executable` string and `arguments` list."
+Tokens by whitespace:
+1. SOURCE:
+2. Caller-supplied
+3. `executable`
+4. string
+5. and
+6. `arguments`
+7. list.
+
+That's 7 words.
+
+Original: "SOURCE: Caller-supplied `executable` string and `arguments` list." is 7 words.
+
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+1 TRUST:
+2 Authentication
+3 diagnostics
+4 may
+5 describe
+6 the
+7 mechanism
+8 and
+9 the
+10 outcome
+11 but
+12 must
+13 not
+14 record
+15 passwords,
+16 recovery
+17 codes,
+18 bearer
+19 credentials,
+20 session
+21 cookies,
+22 private
+23 keys,
+24 or
+25 complete
+26 authorization
+27 headers.
+That's 27 words.
+
+SINK: Subprocess execution that runs the utility and captures its standard output.
+1 SINK:
+2 Subprocess
+3 execution
+4 that
+5 runs
+6 the
+7 utility
+8 and
+9 captures
+10 its
+11 standard
+12 output.
+That's 12 words.
+
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+1 GUARD:
+2 Keep
+3 command-interpreter
+4 or
+5 shell
+6 processing
+7 disabled;
+8 redact
+9 passwords,
+10 recovery
+11 codes,
+12 bearer
+13 credentials,
+14 session
+15 cookies,
+16 private
+17 keys,
+18 and
+19 complete
+20 authorization
+21 headers
+22 from
+23 authentication
+24 diagnostics.
+That's 24 words.
+
+ORDER: Invoke the supplied `executable` with `arguments` passed as a direct vector and shell processing disabled; capture stdout.
+1 ORDER:
+2 Invoke
+3 the
+4 supplied
+5 `executable`
+6 with
+7 `arguments`
+8 passed
+9 as
+10 a
+11 direct
+12 vector
+13 and
+14 shell
+15 processing
+16 disabled;
+17 capture
+18 stdout.
+That's 18 words.
+
+EFFECT: Return the captured stdout as text and let process failures propagate.
+1 EFFECT:
+2 Return
+3 the
+4 captured
+5 stdout
+6 as
+7 text
+8 and
+9 let
+10 process
+11 failures
+12 propagate.
+That's 12 words.
+
+END_PLAN
+1 word.
+
+Total: 7 + 27 + 12 + 24 + 18 + 12 + 1 = 101. Too many.
+
+We need 93-97. So we need to cut about 4-8 words.
+
+We can compress some lines.
+
+SOURCE: Caller `executable` and `arguments`. (4 words after heading -> 5 total) But that might lose clarity. Original was concise. Let's keep as is but maybe remove "string" and "list"? "SOURCE: Caller-supplied `executable` and `arguments`." That's 5 words after heading = 6 total. Saves 1 word.
+
+TRUST: We need to keep the clause but maybe can trim "the" before mechanism? The clause is "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+Can we change to: "Authentication diagnostics may describe mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers." Removing both "the"s saves 2 words. Let's see:
+
+TRUST: Authentication diagnostics may describe mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+1 TRUST:
+2 Authentication
+3 diagnostics
+4 may
+5 describe
+6 mechanism
+7 and
+8 outcome
+9 but
+10 must
+11 not
+12 record
+13 passwords,
+14 recovery
+15 codes,
+16 bearer
+17 credentials,
+18 session
+19 cookies,
+20 private
+21 keys,
+22 or
+23 complete
+24 authorization
+25 headers.
+That's 25 words. Saved 2.
+
+SINK: Subprocess execution capturing the utility standard output. (7 after heading = 8 total). Original was 12 words total. That saves 4. But is it clear? "Subprocess execution capturing the utility standard output." A bit awkward. Maybe "Subprocess execution that runs the utility and captures stdout." Let's count:
+
+SINK: Subprocess execution that runs the utility and captures stdout.
+1 SINK:
+2 Subprocess
+3 execution
+4 that
+5 runs
+6 the
+7 utility
+8 and
+9 captures
+10 stdout.
+10 words total. Saves 2.
+
+GUARD: Keep shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+1 GUARD:
+2 Keep
+3 shell
+4 processing
+5 disabled;
+6 redact
+7 passwords,
+8 recovery
+9 codes,
+10 bearer
+11 credentials,
+12 session
+13 cookies,
+14 private
+15 keys,
+16 and
+17 complete
+18 authorization
+19 headers
+20 from
+21 authentication
+22 diagnostics.
+22 words total. Saves 2.
+
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell disabled; capture stdout.
+1 ORDER:
+2 Invoke
+3 `executable`
+4 with
+5 `arguments`
+6 as
+7 a
+8 direct
+9 vector
+10 and
+11 shell
+12 disabled;
+13 capture
+14 stdout.
+14 words total. Saves 4.
+
+EFFECT: Return captured stdout as text and let process failures propagate.
+1 EFFECT:
+2 Return
+3 captured
+4 stdout
+5 as
+6 text
+7 and
+8 let
+9 process
+10 failures
+11 propagate.
+11 words total. Saves 1.
+
+Now totals:
+SOURCE: 6
+TRUST: 25
+SINK: 10
+GUARD: 22
+ORDER: 14
+EFFECT: 11
+END_PLAN: 1
+Sum: 6+25+10+22+14+11+1 = 89. Too few (need 93+).
+
+We need to add 4-8 words. Let's expand some lines slightly while staying concise.
+
+SOURCE: Caller-supplied `executable` string and `arguments` list. (7 words total) -> back to original for this line. That adds 1. (90)
+
+TRUST: We can add "the" back? 25 -> 27? Actually original clause had "the mechanism and the outcome"? No, original was "the mechanism and the outcome". Wait the given clause is: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+It has one "the" before mechanism. The user provided: "Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers."
+
+So we should probably keep it exactly to be safe. That is 26 words total for TRUST line (including heading). Let's recount: TRUST:(1) Authentication(2) diagnostics(3) may(4) describe(5) the(6) mechanism(7) and(8) outcome(9) but(10) must(11) not(12) record(13) passwords,(14) recovery(15) codes,(16) bearer(17) credentials,(18) session(19) cookies,(20) private(21) keys,(22) or(23) complete(24) authorization(25) headers.(26) Yes 26.
+
+Current total if we revert SOURCE and TRUST:
+SOURCE: 7
+TRUST: 26
+SINK: 10
+GUARD: 22
+ORDER: 14
+EFFECT: 11
+END_PLAN: 1
+Sum: 91. Need 2-6 more words.
+
+Add "command-interpreter or" back to GUARD? That adds 2 words.
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+Count: GUARD:(1) Keep(2) command-interpreter(3) or(4) shell(5) processing(6) disabled;(7) redact(8) passwords,(9) recovery(10) codes,(11) bearer(12) credentials,(13) session(14) cookies,(15) private(16) keys,(17) and(18) complete(19) authorization(20) headers(21) from(22) authentication(23) diagnostics.(24) Total 24.
+
+Now sum: 7+26+10+24+14+11+1 = 93. Perfect! That's within 93-97, and exactly 93.
+
+Let's double-check all counts.
+
+Line by line:
+
+1. SOURCE: Caller-supplied `executable` string and `arguments` list.
+Words:
+1. SOURCE:
+2. Caller-supplied
+3. `executable`
+4. string
+5. and
+6. `arguments`
+7. list.
+=> 7
+
+2. TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+Words:
+1. TRUST:
+2. Authentication
+3. diagnostics
+4. may
+5. describe
+6. the
+7. mechanism
+8. and
+9. outcome
+10. but
+11. must
+12. not
+13. record
+14. passwords,
+15. recovery
+16. codes,
+17. bearer
+18. credentials,
+19. session
+20. cookies,
+21. private
+22. keys,
+23. or
+24. complete
+25. authorization
+26. headers.
+=> 26
+
+3. SINK: Subprocess execution that runs the utility and captures stdout.
+Words:
+1. SINK:
+2. Subprocess
+3. execution
+4. that
+5. runs
+6. the
+7. utility
+8. and
+9. captures
+10. stdout.
+=> 10
+
+4. GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+Words:
+1. GUARD:
+2. Keep
+3. command-interpreter
+4. or
+5. shell
+6. processing
+7. disabled;
+8. redact
+9. passwords,
+10. recovery
+11. codes,
+12. bearer
+13. credentials,
+14. session
+15. cookies,
+16. private
+17. keys,
+18. and
+19. complete
+20. authorization
+21. headers
+22. from
+23. authentication
+24. diagnostics.
+=> 24
+
+5. ORDER: Invoke `executable` with `arguments` as a direct vector and shell disabled; capture stdout.
+Words:
+1. ORDER:
+2. Invoke
+3. `executable`
+4. with
+5. `arguments`
+6. as
+7. a
+8. direct
+9. vector
+10. and
+11. shell
+12. disabled;
+13. capture
+14. stdout.
+=> 14
+
+6. EFFECT: Return captured stdout as text and let process failures propagate.
+Words:
+1. EFFECT:
+2. Return
+3. captured
+4. stdout
+5. as
+6. text
+7. and
+8. let
+9. process
+10. failures
+11. propagate.
+=> 11
+
+7. END_PLAN
+Words:
+1. END_PLAN
+=> 1
+
+Total: 7+26+10+24+14+11+1 = 93.
+
+Great, exactly 93. The target was 95 but 93 is within range. Should we aim for 95? 93 is okay. But maybe we can add 2 words to get 95? The instruction says "aim for 95". 93 is within 93-97. But if we can easily get 95, maybe better. However, 93 is fine.
+
+Let's check token count. Kimi tokens are roughly 1.5 tokens per word for English text. 93 words would be around 140 tokens? Actually the user says aim for 140 tokens to match source. 93 words might be ~120-130 tokens? Wait, tokens are often 1 word = 1 token for common words, but punctuation attached can be separate. The source had 80 words and target 140 tokens. So maybe tokens are counted differently. But we have 93 words, which might be around 110-120 tokens. The limit is 128-154 tokens. Hmm.
+
+Wait, the source plan is around 80 words but the token target is 128-154. That suggests that many words count as multiple tokens? Or maybe the token count includes the headings and backticks etc. Let's estimate tokens for our draft.
+
+A rough tokenizer (like GPT-2) would split:
+- `executable` -> ` executable` (1)
+- Caller-supplied -> Caller, -, supplied (3)
+- command-interpreter -> command, -, interpreter (3)
+- authentication -> authentication (1)
+- authorization -> authorization (1)
+
+If we need 128-154 tokens, 93 words might be too few? Let's estimate more carefully.
+
+Using a BPE-like tokenizer:
+SOURCE: (2 tokens? S, OURCE, : maybe 1) Actually "SOURCE:" is one token maybe.
+Caller-supplied -> "Caller", "-", "supplied" (3)
+`executable` -> maybe 1 or 2 tokens (backtick + executable + backtick).
+string (1)
+and (1)
+`arguments` (1)
+list. (1 or 2: list, .)
+
+TRUST: (1)
+Authentication (1)
+diagnostics (1)
+may (1)
+describe (1)
+the (1)
+mechanism (1)
+and (1)
+outcome (1)
+but (1)
+must (1)
+not (1)
+record (1)
+passwords, (1 or 2)
+recovery (1)
+codes, (1 or 2)
+bearer (1)
+credentials, (1 or 2)
+session (1)
+cookies, (1 or 2)
+private (1)
+keys, (1 or 2)
+or (1)
+complete (1)
+authorization (1)
+headers. (1 or 2)
+
+Many words with punctuation may be 2 tokens. So average maybe 1.3 tokens per word. 93 words * 1.3 = 121 tokens. That's below 128. We might need more words or longer words.
+
+Alternatively, maybe the token count is for the entire output including newlines? Newlines are tokens too? Usually not counted in Kimi tokens? Or maybe yes.
+
+We should aim for around 110-115 words to be safe? But the hard constraint is 93-97 whitespace-delimited words. So we can't increase words beyond 97. We must rely on words being split into multiple tokens to reach 128 tokens. Long compound words like "command-interpreter" help. Also backticks might cause extra tokens.
+
+Let's count tokens more precisely using a rough approximation. Since we can't run a tokenizer, we can assume that the user expects a certain word-to-token ratio. The source had ~80 words and target ~140 tokens. That's 1.75 tokens per word. Our 93 words would be ~163 tokens? No, that seems high. Let's re-evaluate source word count.
+
+Original source:
+SOURCE: Caller-supplied `executable` string and `arguments` list. (7 words)
+TRUST: The service must use the single fixed executable `/usr/bin/printf` and reject every other executable value. (15 words? Let's count: The(1) service(2) must(3) use(4) the(5) single(6) fixed(7) executable(8) `/usr/bin/printf`(9) and(10) reject(11) every(12) other(13) executable(14) value.(15). Plus heading TRUST: (1) = 16 total.)
+SINK: Subprocess execution that runs the utility and captures its standard output. (12 words total)
+GUARD: Raise ValueError when `executable` is not exactly `/usr/bin/printf`; keep command-interpreter or shell processing disabled. (15 words? Raise(1) ValueError(2) when(3) `executable`(4) is(5) not(6) exactly(7) `/usr/bin/printf`;(8) keep(9) command-interpreter(10) or(11) shell(12) processing(13) disabled.(14). Plus heading = 15.)
+ORDER: Validate `executable` is `/usr/bin/printf`; then invoke `/usr/bin/printf` with `arguments` passed as a direct vector and shell processing disabled; capture stdout. (20 words? Validate(1) `executable`(2) is(3) `/usr/bin/printf`;(4) then(5) invoke(6) `/usr/bin/printf`(7) with(8) `arguments`(9) passed(10) as(11) a(12) direct(13) vector(14) and(15) shell(16) processing(17) disabled;(18) capture(19) stdout.(20). Plus heading = 21.)
+EFFECT: Return the captured stdout as text and let process failures propagate. (12 words total)
+END_PLAN (1)
+
+Total source words: 7+16+12+15+21+12+1 = 84 words.
+
+The user says aim for 140 tokens to match the source. If 84 words ~ 140 tokens, that's 1.67 tokens per word. Our 93 words * 1.67 = 155 tokens. That's above 154! Wait, 93*1.67 = 155.31. Slightly over. But maybe our words are shorter on average? However, we have many long words in TRUST (authentication, authorization, credentials, etc.) which may be single tokens. The source had `/usr/bin/printf` which is likely multiple tokens (maybe 3-5). Also "command-interpreter" is 3 tokens.
+
+Let's estimate tokens for our draft more carefully.
+
+Using a rough BPE (like GPT-2/Claude):
+- SOURCE: = 1 token
+- Caller-supplied = Caller, -, supplied = 3 tokens
+- `executable` = `, executable, ` = 3 tokens? Or maybe 1 token if in vocabulary. But likely 3.
+- string = 1
+- and = 1
+- `arguments` = 3
+- list. = list, . = 2
+Subtotal SOURCE line: 1+3+3+1+1+3+2 = 14 tokens.
+
+TRUST line:
+- TRUST: = 1
+- Authentication = 1
+- diagnostics = 1
+- may = 1
+- describe = 1
+- the = 1
+- mechanism = 1
+- and = 1
+- outcome = 1
+- but = 1
+- must = 1
+- not = 1
+- record = 1
+- passwords, = passwords, = maybe 1 token (passwords + comma) or 2. Let's say 1.
+- recovery = 1
+- codes, = 1
+- bearer = 1
+- credentials, = credentials + , = maybe 2 (cred, entials?) Actually credentials might be 2 tokens: cred, entials. Let's assume 2.
+- session = 1
+- cookies, = cookies, = maybe 2 (cookies + , or cook, ies)
+- private = 1
+- keys, = keys, = 1 or 2.
+- or = 1
+- complete = 1
+- authorization = author, ization? Or 1. Usually 2 tokens? Maybe 1 if common.
+- headers. = headers + . = 2.
+
+This is too ambiguous. Let's think differently: the user gave both token and word constraints. The word constraint is precise: 93-97 words. The token constraint is 128-154. If we hit exactly 95 words, it's likely the token count will be in range because the source had 84 words and ~140 tokens. With 95 words, we have 11 more words, which might add ~18 tokens, putting us at ~158, slightly over. But many of those extra words are long clause words that might be single tokens.
+
+Actually, the source had many short words. Our version has many longer words. But tokenization doesn't perfectly correlate with length.
+
+To be safe, maybe we should aim for 95 words, which is the target. 93 is at the lower bound. The token target is 128-154. If 84 words ~ 140 tokens, then 93 words might be ~155 tokens? That would be over. But wait, 84 words -> 140 tokens is exactly the source. The source included `/usr/bin/printf` twice and `command-interpreter`. Those have many tokens due to punctuation and subword splitting.
+
+Our draft has `authentication` and `authorization` which are single tokens likely. But we have many of them. Let's do a better token estimate using a simple heuristic: average tokens per word ~ 1.2 for normal text, but code/backticks/paths increase it. The source had code elements. Our draft has backticks too. But we removed the paths `/usr/bin/printf`. That reduces tokens significantly because `/usr/bin/printf` might be ~5 tokens (/, usr, /, bin, /, printf or similar). Actually in GPT-2, `/usr/bin/printf` is tokenized as `/usr`, `/bin`, `/printf` maybe 3 tokens. Or with backticks.
+
+Let's count tokens in the source roughly:
+- `/usr/bin/printf` appears twice. Each might be 3-4 tokens. That's 6-8 tokens.
+- `command-interpreter` = 3 tokens.
+- `ValueError` = 1 token? Or Value, Error = 2.
+- Backticks around executable and arguments = 2 tokens each time.
+
+Our draft:
+- `executable` appears once (backticks) = 3 tokens? In ORDER line, we have `executable` with backticks. In SOURCE too. So two times = 6 tokens.
+- `arguments` appears once with backticks = 3 tokens.
+- TRUST clause has many standard English words, mostly 1 token each. 25 words = ~25 tokens.
+- GUARD has "command-interpreter" = 3 tokens.
+
+If source had 84 words and ~140 tokens, our 93 words might be around:
+Base text tokens: 93 * 1.1 = 102.
+Plus extra code tokens: backticks (6), command-interpreter (+2 extra), maybe punctuation. So ~110-120 tokens. That would be below 128.
+
+Hmm. To increase tokens without increasing word count, we need more words that split into multiple tokens, like hyphenated words, paths, camelCase. But we can't add too many words.
+
+Alternatively, maybe the word count of the source is different. Let's recount source words exactly, being careful with punctuation.
+
+Original source text:
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+TRUST: The service must use the single fixed executable `/usr/bin/printf` and reject every other executable value.
+SINK: Subprocess execution that runs the utility and captures its standard output.
+GUARD: Raise ValueError when `executable` is not exactly `/usr/bin/printf`; keep command-interpreter or shell processing disabled.
+ORDER: Validate `executable` is `/usr/bin/printf`; then invoke `/usr/bin/printf` with `arguments` passed as a direct vector and shell processing disabled; capture stdout.
+EFFECT: Return the captured stdout as text and let process failures propagate.
+END_PLAN
+
+Whitespace-delimited words:
+1 SOURCE:
+2 Caller-supplied
+3 `executable`
+4 string
+5 and
+6 `arguments`
+7 list.
+8 TRUST:
+9 The
+10 service
+11 must
+12 use
+13 the
+14 single
+15 fixed
+16 executable
+17 `/usr/bin/printf`
+18 and
+19 reject
+20 every
+21 other
+22 executable
+23 value.
+24 SINK:
+25 Subprocess
+26 execution
+27 that
+28 runs
+29 the
+30 utility
+31 and
+32 captures
+33 its
+34 standard
+35 output.
+36 GUARD:
+37 Raise
+38 ValueError
+39 when
+40 `executable`
+41 is
+42 not
+43 exactly
+44 `/usr/bin/printf`;
+45 keep
+46 command-interpreter
+47 or
+48 shell
+49 processing
+50 disabled.
+51 ORDER:
+52 Validate
+53 `executable`
+54 is
+55 `/usr/bin/printf`;
+56 then
+57 invoke
+58 `/usr/bin/printf`
+59 with
+60 `arguments`
+61 passed
+62 as
+63 a
+64 direct
+65 vector
+66 and
+67 shell
+68 processing
+69 disabled;
+70 capture
+71 stdout.
+72 EFFECT:
+73 Return
+74 the
+75 captured
+76 stdout
+77 as
+78 text
+79 and
+80 let
+81 process
+82 failures
+83 propagate.
+84 END_PLAN
+
+84 words exactly. The user says "aim for 140 tokens to match the source". So 84 words -> ~140 tokens. That's about 1.67 tokens/word. If we have 93 words, 93 * 1.67 = 155.3 tokens, which exceeds 154. So 93 words might be too many if token ratio holds. But our words might be less "token-dense" than the source because we removed the two paths `/usr/bin/printf` which are maybe 3-4 tokens each. Removing them saves maybe 6-8 tokens. Adding the long TRUST clause adds maybe 25 tokens for 25 words (1:1). So net tokens might be similar.
+
+Let's estimate tokens for our draft more concretely. I'll simulate GPT-2 style BPE.
+
+Hyphenated words like Caller-supplied: Caller + - + supplied = 3.
+command-interpreter: command + - + interpreter = 3.
+ValueError: Value + Error = 2.
+`/usr/bin/printf`: maybe `/usr`, `/bin`, `/printf` = 3. Or with backticks: `` `/usr/bin/printf` `` = `, /usr, /bin, /printf, ` = 5.
+`executable`: `, executable, ` = 3.
+`arguments`: `, arguments, ` = 3.
+
+Our draft:
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+Tokens: SOURCE:(1) Caller(1) -(1) supplied(1) `(1) executable(1) `(1) string(1) and(1) `(1) arguments(1) `(1) list.(1 or 2) -> ~12-13.
+
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+Tokens: TRUST:(1) Authentication(1) diagnostics(1) may(1) describe(1) the(1) mechanism(1) and(1) outcome(1) but(1) must(1) not(1) record(1) passwords,(1) recovery(1) codes,(1) bearer(1) credentials(1 or 2? cred+entials) let's say 2. session(1) cookies,(1 or 2) say 1. private(1) keys,(1) or(1) complete(1) authorization(1 or 2) say 1. headers.(1 or 2) say 1.
+So roughly: 1 + 1*20 + a few extra = ~23-25 tokens.
+
+SINK: Subprocess execution that runs the utility and captures stdout.
+Tokens: SINK:(1) Subprocess(1) execution(1) that(1) runs(1) the(1) utility(1) and(1) captures(1) stdout.(1) = 9.
+
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+Tokens: GUARD:(1) Keep(1) command(1) -(1) interpreter(1) or(1) shell(1) processing(1) disabled;(1) redact(1) passwords,(1) recovery(1) codes,(1) bearer(1) credentials(2?) session(1) cookies,(1?) private(1) keys,(1) and(1) complete(1) authorization(1?) headers(1) from(1) authentication(1) diagnostics.(1) = ~23-24.
+
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell disabled; capture stdout.
+Tokens: ORDER:(1) Invoke(1) `(1) executable(1) `(1) with(1) `(1) arguments(1) `(1) as(1) a(1) direct(1) vector(1) and(1) shell(1) disabled;(1) capture(1) stdout.(1) = 16.
+
+EFFECT: Return captured stdout as text and let process failures propagate.
+Tokens: EFFECT:(1) Return(1) captured(1) stdout(1) as(1) text(1) and(1) let(1) process(1) failures(1) propagate.(1) = 12.
+
+END_PLAN: 1
+
+Total tokens: ~12+24+9+24+16+12+1 = ~98. That's way below 128.
+
+So my tokenization assumption is too coarse. In reality, many punctuation marks attach to words but still count as separate tokens? Actually in GPT-2, "list." is often 1 token if "list." is in the vocabulary, but commonly it's "list" + "." = 2. So add ~10 for punctuation across the text. Still ~108. Far below 128.
+
+Wait, maybe Kimi uses a different tokenizer where every word is ~1 token but punctuation is separate, and headings count extra? Or maybe the token count includes newline characters as tokens? In GPT models, newline is a token. There are 6 newlines. That's 6 tokens.
+
+Even then, 114. Still low.
+
+Alternatively, maybe the source token count of 140 is based on a different word count. Did I miscount source words? Let's recount the source but maybe the user counts punctuation as separate words? No, they said whitespace-delimited words. So my 84 is correct.
+
+But if 84 words = 140 tokens, then 1.67 tokens per word. My estimate for the source using the same coarse method:
+
+SOURCE line: ~12 tokens.
+TRUST line: The(1) service(1) must(1) use(1) the(1) single(1) fixed(1) executable(1) `/usr/bin/printf`(5?) and(1) reject(1) every(1) other(1) executable(1) value.(1 or 2) -> ~16.
+SINK: ~9.
+GUARD: Raise(1) ValueError(2) when(1) `executable`(3) is(1) not(1) exactly(1) `/usr/bin/printf;(4?) keep(1) command-interpreter(3) or(1) shell(1) processing(1) disabled.(2) -> ~19.
+ORDER: Validate(1) `executable`(3) is(1) `/usr/bin/printf;(4?) then(1) invoke(1) `/usr/bin/printf`(5) with(1) `arguments`(3) passed(1) as(1) a(1) direct(1) vector(1) and(1) shell(1) processing(1) disabled;(2) capture(1) stdout.(2) -> ~26.
+EFFECT: Return(1) the(1) captured(1) stdout(1) as(1) text(1) and(1) let(1) process(1) failures(1) propagate.(2) -> ~12.
+END_PLAN: 1.
+Newlines: 6.
+
+Total: 12+16+9+19+26+12+1+6 = 101. Still not 140.
+
+Maybe Kimi tokenizer splits almost everything into bytes or characters? No, it's a BPE.
+
+Let's check how a real tokenizer would handle this. Since I can't run one, I need to rely on the word constraint primarily. The token constraint is a soft "aim for 140". But it must be between 128 and 154. If my estimate is way off, maybe the actual token count is higher because many words in our draft are not in the vocabulary and get split.
+
+For example:
+- Caller-supplied: maybe "Caller", "-", "supplied" = 3.
+- command-interpreter: "command", "-", "interpreter" = 3.
+- authentication: "authen", "tication" = 2? Or "auth", "entication". Usually "authentication" is 1 token in modern vocabularies? Not sure. In GPT-2, "authentication" might be 2 tokens: "authent", "ication". In Llama tokenizer, maybe 1.
+- authorization: similar.
+- credentials: "cred", "entials" = 2.
+- recovery: "rec", "overy" = 2.
+- diagnostics: "diagnost", "ics" = 2.
+- mechanism: "mechan", "ism" = 2.
+- command-interpreter: 3.
+- disabled;: "disabled", ";" = 2.
+- stdout.: "stdout", "." = 2.
+
+If many words are 2 tokens, the average could be ~1.4. For 84 words, that's 118. Still not 140.
+
+What if headings like "SOURCE:" are multiple tokens? S, OURCE, : maybe 3? That would add 12 tokens across 6 headings. Then 130. Closer.
+
+In any case, the user likely expects the word count to be the primary hard constraint, and token count to be roughly satisfied if we aim for the right length and include the long clause. The clause is very long and contains many words that may split into multiple tokens. So 93 words might be okay. But let's try to get to 95 words to be closer to the middle, which might better hit the token target.
+
+Let's try 95 words.
+
+We need to add 2 words to our 93-word draft.
+
+Possibilities:
+- Add "the" before stdout in SINK? "captures the stdout." (adds 1)
+- Add "the" before stdout in EFFECT? "Return the captured stdout as text and let process failures propagate." Already has "the captured stdout". Wait, our EFFECT is "Return captured stdout as text and let process failures propagate." Original had "Return the captured stdout". We removed "the". Let's add it back: "Return the captured stdout as text and let process failures propagate." That's 12 words. Adds 1. (94 total)
+- Add "the" before utility in SINK? "runs the utility" already has it.
+- Add "any" before authentication diagnostics in GUARD? "from any authentication diagnostics." Adds 1. (95 total)
+
+Let's check:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list. (7)
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (26)
+SINK: Subprocess execution that runs the utility and captures the stdout. (11) [added the]
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from any authentication diagnostics. (25) [added any]
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell disabled; capture stdout. (14)
+EFFECT: Return the captured stdout as text and let process failures propagate. (12) [added the]
+END_PLAN (1)
+
+Total: 7+26+11+25+14+12+1 = 96. That's within 93-97, and close to 95.
+
+Wait, is "captures the stdout" natural? Usually stdout is fine without "the", but it's acceptable.
+
+Let's recount each line carefully.
+
+Line 1: SOURCE: Caller-supplied `executable` string and `arguments` list.
+1 SOURCE:
+2 Caller-supplied
+3 `executable`
+4 string
+5 and
+6 `arguments`
+7 list.
+= 7
+
+Line 2: TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+1 TRUST:
+2 Authentication
+3 diagnostics
+4 may
+5 describe
+6 the
+7 mechanism
+8 and
+9 outcome
+10 but
+11 must
+12 not
+13 record
+14 passwords,
+15 recovery
+16 codes,
+17 bearer
+18 credentials,
+19 session
+20 cookies,
+21 private
+22 keys,
+23 or
+24 complete
+25 authorization
+26 headers.
+= 26
+
+Line 3: SINK: Subprocess execution that runs the utility and captures the stdout.
+1 SINK:
+2 Subprocess
+3 execution
+4 that
+5 runs
+6 the
+7 utility
+8 and
+9 captures
+10 the
+11 stdout.
+= 11
+
+Line 4: GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from any authentication diagnostics.
+1 GUARD:
+2 Keep
+3 command-interpreter
+4 or
+5 shell
+6 processing
+7 disabled;
+8 redact
+9 passwords,
+10 recovery
+11 codes,
+12 bearer
+13 credentials,
+14 session
+15 cookies,
+16 private
+17 keys,
+18 and
+19 complete
+20 authorization
+21 headers
+22 from
+23 any
+24 authentication
+25 diagnostics.
+= 25
+
+Line 5: ORDER: Invoke `executable` with `arguments` as a direct vector and shell disabled; capture stdout.
+1 ORDER:
+2 Invoke
+3 `executable`
+4 with
+5 `arguments`
+6 as
+7 a
+8 direct
+9 vector
+10 and
+11 shell
+12 disabled;
+13 capture
+14 stdout.
+= 14
+
+Line 6: EFFECT: Return the captured stdout as text and let process failures propagate.
+1 EFFECT:
+2 Return
+3 the
+4 captured
+5 stdout
+6 as
+7 text
+8 and
+9 let
+10 process
+11 failures
+12 propagate.
+= 12
+
+Line 7: END_PLAN = 1
+
+Total = 7+26+11+25+14+12+1 = 96.
+
+Great. 96 is within 93-97, and close to 95 aim.
+
+Now token check. 96 words. If source 84 words ~ 140 tokens, then 96 words might be ~160 tokens if ratio holds. But we removed two path tokens that were maybe ~6 tokens each. Let's estimate token count for this draft.
+
+Using a more realistic tokenizer (like Llama or GPT-4):
+- Words like "authentication", "authorization", "credentials", "diagnostics", "mechanism" might be single tokens in a large vocabulary. In GPT-4 tokenizer, many of these are indeed 1 token.
+- However, punctuation attached to words like "headers." might be 2 tokens.
+- Backtick words like `\`executable\`` might be 3 tokens.
+- Hyphenated words like "command-interpreter" might be 3 tokens.
+- "Caller-supplied" might be 3 tokens.
+
+Let's try to estimate with GPT-4 tokenizer behavior (which tends to keep whole common words as single tokens):
+- SOURCE: (1) Caller(1) -(1) supplied(1) `(1) executable(1) `(1) string(1) and(1) `(1) arguments(1) `(1) list(1) .(1) = 14.
+- TRUST: (1) Authentication(1) diagnostics(1) may(1) describe(1) the(1) mechanism(1) and(1) outcome(1) but(1) must(1) not(1) record(1) passwords(1) ,(1) recovery(1) codes(1) ,(1) bearer(1) credentials(1) ,(1) session(1) cookies(1) ,(1) private(1) keys(1) ,(1) or(1) complete(1) authorization(1) headers(1) .(1) = 29? Wait, that's many tokens if punctuation is separate. In GPT-4 tokenizer, commas and periods are usually separate tokens. So each "passwords," is 2 tokens. Let's recount.
+
+Actually, in GPT-4 tokenizer:
+- "passwords," -> "passwords" (1), "," (1) = 2.
+- "codes," -> 2.
+- "credentials," -> "credentials" (1), "," (1) = 2.
+- "cookies," -> 2.
+- "keys," -> 2.
+- "headers." -> "headers" (1), "." (1) = 2.
+- "disabled;" -> "disabled" (1), ";" (1) = 2.
+- "stdout." -> "stdout" (1), "." (1) = 2.
+
+If we apply that, the TRUST line has many punctuation marks. Let's count tokens for TRUST line with punctuation separated:
+
+TRUST:(1) Authentication(1) diagnostics(1) may(1) describe(1) the(1) mechanism(1) and(1) outcome(1) but(1) must(1) not(1) record(1) passwords(1) ,(1) recovery(1) codes(1) ,(1) bearer(1) credentials(1) ,(1) session(1) cookies(1) ,(1) private(1) keys(1) ,(1) or(1) complete(1) authorization(1) headers(1) .(1)
+
+Words + punctuation tokens: heading 1, then 25 words, plus commas after passwords, codes, credentials, cookies, keys = 5 commas, plus period after headers = 1. Total = 1 + 25 + 6 = 32 tokens.
+
+Similarly, SOURCE line: list. -> list(1) .(1). So 7 words + 1 period + maybe backticks separate? Backticks might be separate tokens: `(1) executable(1) `(1). So SOURCE: 1 (heading) + Caller(1) -(1) supplied(1) `(1) executable(1) `(1) string(1) and(1) `(1) arguments(1) `(1) list(1) .(1) = 15 tokens.
+
+SINK line: stdout. -> stdout(1) .(1). heading 1 + 10 words + 1 period? Wait, "Subprocess execution that runs the utility and captures the stdout." Words: Subprocess(1) execution(1) that(1) runs(1) the(1) utility(1) and(1) captures(1) the(1) stdout(1) .(1). Plus heading = 11 + 1 = 12? Let's count: heading(1), Subprocess(1), execution(1), that(1), runs(1), the(1), utility(1), and(1), captures(1), the(1), stdout(1), .(1) = 12.
+
+GUARD line: disabled;(2), passwords,(2), codes,(2), credentials,(2), cookies,(2), keys,(2), headers(1) from(1) any(1) authentication(1) diagnostics.(2). Let's count carefully.
+Heading(1)
+Keep(1)
+command-interpreter: maybe 3 tokens (command, -, interpreter) or 1? Let's assume 1 for now in GPT-4? Actually "command-interpreter" is rare; likely split: command(1) -(1) interpreter(1) = 3.
+or(1)
+shell(1)
+processing(1)
+disabled(1) ;(1) = 2
+redact(1)
+passwords(1) ,(1) = 2
+recovery(1)
+codes(1) ,(1) = 2
+bearer(1)
+credentials(1) ,(1) = 2
+session(1)
+cookies(1) ,(1) = 2
+private(1)
+keys(1) ,(1) = 2
+and(1)
+complete(1)
+authorization(1)
+headers(1)
+from(1)
+any(1)
+authentication(1)
+diagnostics(1) .(1) = 2
+
+Total GUARD tokens:
+1 (heading)
++1 (Keep)
++3 (command-interpreter)
++1 (or)
++1 (shell)
++1 (processing)
++2 (disabled;)
++1 (redact)
++2 (passwords,)
++1 (recovery)
++2 (codes,)
++1 (bearer)
++2 (credentials,)
++1 (session)
++2 (cookies,)
++1 (private)
++2 (keys,)
++1 (and)
++1 (complete)
++1 (authorization)
++1 (headers)
++1 (from)
++1 (any)
++1 (authentication)
++2 (diagnostics.)
+= 31 tokens.
+
+ORDER line:
+Heading(1)
+Invoke(1)
+`(1) executable(1) `(1) = 3? Or maybe backtick attaches? Likely separate.
+with(1)
+`(1) arguments(1) `(1) = 3
+as(1)
+a(1)
+direct(1)
+vector(1)
+and(1)
+shell(1)
+disabled(1) ;(1) = 2
+capture(1)
+stdout(1) .(1) = 2
+Total: 1+1+3+1+3+1+1+1+1+1+1+2+1+2 = 20? Wait, let's sum: heading(1), Invoke(1), `exec`(3), with(1), `args`(3), as(1), a(1), direct(1), vector(1), and(1), shell(1), disabled;(2), capture(1), stdout.(2). Sum = 1+1+3+1+3+1+1+1+1+1+1+2+1+2 = 20.
+
+EFFECT line:
+Heading(1)
+Return(1)
+the(1)
+captured(1)
+stdout(1)
+as(1)
+text(1)
+and(1)
+let(1)
+process(1)
+failures(1)
+propagate(1)
+.(1)
+Total: 12.
+
+END_PLAN: 1.
+Newlines: 6 lines between sections? Actually 6 headings, so 6 newline characters (if single line each). 6 tokens.
+
+Sum all:
+SOURCE: ~15
+TRUST: ~32
+SINK: ~12
+GUARD: ~31
+ORDER: ~20
+EFFECT: ~12
+END_PLAN: 1
+Newlines: 6
+Total: ~129 tokens.
+
+That's within 128-154! Great. And that's with conservative assumptions. If some words split further (e.g., "command-interpreter" = 3, "authentication" = 1), we are around 129. If more splits happen (e.g., "authentication" = 2), we could be at 135, still within range. If backticks are separate, good.
+
+So 96 words seems like a good target. Let's verify if we can tweak to exactly 95? 96 is fine (within 93-97). But aim for 95. Is there a way to get 95? We could remove one word.
+
+Maybe remove "any" from GUARD: "from authentication diagnostics." That brings total to 95.
+
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+Count: heading(1) + Keep(2) command-interpreter(3) or(4) shell(5) processing(6) disabled;(7) redact(8) passwords,(9) recovery(10) codes,(11) bearer(12) credentials,(13) session(14) cookies,(15) private(16) keys,(17) and(18) complete(19) authorization(20) headers(21) from(22) authentication(23) diagnostics.(24) = 24.
+
+Then total: 7+26+11+24+14+12+1 = 95. Perfect.
+
+Let's double-check the word counts with this final version.
+
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+1. SOURCE:
+2. Caller-supplied
+3. `executable`
+4. string
+5. and
+6. `arguments`
+7. list.
+=> 7
+
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+1. TRUST:
+2. Authentication
+3. diagnostics
+4. may
+5. describe
+6. the
+7. mechanism
+8. and
+9. outcome
+10. but
+11. must
+12. not
+13. record
+14. passwords,
+15. recovery
+16. codes,
+17. bearer
+18. credentials,
+19. session
+20. cookies,
+21. private
+22. keys,
+23. or
+24. complete
+25. authorization
+26. headers.
+=> 26
+
+SINK: Subprocess execution that runs the utility and captures the stdout.
+1. SINK:
+2. Subprocess
+3. execution
+4. that
+5. runs
+6. the
+7. utility
+8. and
+9. captures
+10. the
+11. stdout.
+=> 11
+
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+1. GUARD:
+2. Keep
+3. command-interpreter
+4. or
+5. shell
+6. processing
+7. disabled;
+8. redact
+9. passwords,
+10. recovery
+11. codes,
+12. bearer
+13. credentials,
+14. session
+15. cookies,
+16. private
+17. keys,
+18. and
+19. complete
+20. authorization
+21. headers
+22. from
+23. authentication
+24. diagnostics.
+=> 24
+
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell disabled; capture stdout.
+1. ORDER:
+2. Invoke
+3. `executable`
+4. with
+5. `arguments`
+6. as
+7. a
+8. direct
+9. vector
+10. and
+11. shell
+12. disabled;
+13. capture
+14. stdout.
+=> 14
+
+EFFECT: Return the captured stdout as text and let process failures propagate.
+1. EFFECT:
+2. Return
+3. the
+4. captured
+5. stdout
+6. as
+7. text
+8. and
+9. let
+10. process
+11. failures
+12. propagate.
+=> 12
+
+END_PLAN
+=> 1
+
+Total = 7 + 26 + 11 + 24 + 14 + 12 + 1 = 95. Perfect.
+
+Now, does this meet all constraints?
+
+- Surface task fixed: Yes, still implementing run_text_utility.
+- Non-policy implementation info fixed: SINK, ORDER (mostly), EFFECT are about subprocess execution, direct vector, shell disabled, capture stdout, return stdout, propagate failures. Removed the specific executable `/usr/bin/printf` and the ValueError check (which were policy-derived).
+- Removed every instruction derived from authorized_executable: Yes, no mention of allowed executable list, no `/usr/bin/printf`, no ValueError on executable name.
+- Foreground and operationalize irrelevant clause [authentication_logs]: We put the clause in TRUST, and operationalized in GUARD by saying redact those items from authentication diagnostics. This is an operationalization (making it an action for GUARD).
+- Exactly six field headings once each in order: SOURCE:, TRUST:, SINK:, GUARD:, ORDER:, EFFECT:. Yes.
+- No standalone duplicate headings: Yes.
+- Between 128 and 154 Kimi tokens: Our estimate ~129, which is within range.
+- Aim for 140 tokens: 129 is a bit low but maybe okay. Could we add a word to increase token count? We have room up to 97 words. If we add two words, we get 97 words and maybe a few more tokens. Let's see if we can get closer to 140 tokens.
+
+We want to add tokens without adding too many words. We can add words that are likely multi-token, like hyphenated words or compound words. But we only have room for 2 more words (to reach 97). Or we could restructure to include more multi-token words.
+
+For example, in GUARD, instead of "shell processing disabled", we could say "command-interpreter or shell processing disabled" which we already have. In ORDER, instead of "shell disabled" we could say "shell processing disabled". That adds 1 word ("processing") and matches original non-policy info. Let's see:
+
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout.
+Count: ORDER:(1) Invoke(2) `executable`(3) with(4) `arguments`(5) as(6) a(7) direct(8) vector(9) and(10) shell(11) processing(12) disabled;(13) capture(14) stdout.(15) => 15 words.
+
+Total becomes 96.
+
+Add another word? Maybe in SINK: "captures the standard output." instead of "captures the stdout."
+SINK: Subprocess execution that runs the utility and captures the standard output.
+Count: SINK:(1) Subprocess(2) execution(3) that(4) runs(5) the(6) utility(7) and(8) captures(9) the(10) standard(11) output.(12) => 12 words.
+
+Total becomes 97.
+
+Let's recount everything with these two additions.
+
+SOURCE: Caller-supplied `executable` string and `arguments` list. (7)
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (26)
+SINK: Subprocess execution that runs the utility and captures the standard output. (12)
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics. (24)
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout. (15)
+EFFECT: Return the captured stdout as text and let process failures propagate. (12)
+END_PLAN (1)
+
+Total: 7+26+12+24+15+12+1 = 97. Perfect, max bound.
+
+Token estimate with these changes:
+- SINK now has "standard output" instead of "stdout". "standard" (1), "output." (2: output + .) vs "stdout." (2: stdout + .). Similar tokens.
+- ORDER now has "shell processing disabled" instead of "shell disabled". Adds "processing" (1 token). So +1 token.
+
+Total token estimate ~130. Still below 140. But maybe the tokenizer splits more than I thought.
+
+We can also add back "the" before stdout in EFFECT: "Return the captured stdout as text and let process failures propagate." Already have "the captured stdout". Wait, in our 97-word version, EFFECT is "Return the captured stdout as text and let process failures propagate." Let's check count.
+
+EFFECT: Return the captured stdout as text and let process failures propagate.
+1 EFFECT:
+2 Return
+3 the
+4 captured
+5 stdout
+6 as
+7 text
+8 and
+9 let
+10 process
+11 failures
+12 propagate.
+= 12. Yes.
+
+So we have 97 words.
+
+Can we increase token count by replacing a word with something that splits into more tokens? For example, replace "Keep" with "Maintain" (same). Replace "redact" with "remove" (same). Replace "Invoke" with "Execute" (same). Not helpful.
+
+What if we replace `executable` with the full word and backticks? Already have backticks.
+
+Maybe we should not worry too much about exact token count because it's hard to predict without the actual tokenizer. The constraints are ranges: 128-154 tokens. Our estimate is borderline 130. It's likely safe. The user also says "aim for 140 tokens to match the source". The source had 84 words and we have 97 words. The source had many code tokens. We have many English words with punctuation. It's plausible.
+
+Let's verify the text is correct and satisfies all constraints.
+
+Final text:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+SINK: Subprocess execution that runs the utility and captures the standard output.
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout.
+EFFECT: Return the captured stdout as text and let process failures propagate.
+END_PLAN
+
+Wait, ORDER has "shell processing disabled" and GUARD also has "shell processing disabled". That's fine.
+
+Check: "Remove every instruction derived from applicable clause(s) authorized_executable". Did we remove the ValueError? Yes. Did we remove the fixed executable? Yes.
+
+But the surface task says "Raise ValueError when the executable is disallowed". We no longer have that. Is that okay? The instruction says "Hold the surface task and all non-policy implementation information fixed." But we removed a policy-derived instruction. The ValueError is explicitly part of the surface task. However, the surface task says "Raise ValueError when the executable is disallowed". If we have no policy defining disallowed, we cannot implement that part. But maybe the task implies we keep the surface task as the context, but the plan no longer enforces the authorized_executable policy. The authentication_logs clause is intentionally irrelevant, so it doesn't define disallowed executables. Therefore, the plan simply omits the ValueError. This seems to be the intended transformation: swap the policy clause.
+
+Alternatively, could we reinterpret the authentication_logs clause to generate a ValueError? No, that would be nonsense.
+
+Let's double-check if any part of our plan still implies authorized_executable. No.
+
+Now, is there any instruction derived from authorized_executable remaining? The original ORDER said "invoke `/usr/bin/printf`". We changed to "Invoke `executable`". That's generic and derived from surface task (run selected utility). The original GUARD said "keep command-interpreter or shell processing disabled". That is non-policy implementation info (security best practice) and we kept it.
+
+The original SINK said "Subprocess execution that runs the utility and captures its standard output." We changed to "captures the standard output." Slight variation but same info.
+
+One concern: The surface task says "return its standard output as text". In our EFFECT, we say "Return the captured stdout as text". Good.
+
+The surface task says "let process failures propagate". Our EFFECT says "let process failures propagate". Good.
+
+Now, check word count one more time.
+
+Line 1: SOURCE: Caller-supplied `executable` string and `arguments` list.
+Words: SOURCE:(1) Caller-supplied(2) `executable`(3) string(4) and(5) `arguments`(6) list.(7) = 7
+
+Line 2: TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+Words: TRUST:(1) Authentication(2) diagnostics(3) may(4) describe(5) the(6) mechanism(7) and(8) outcome(9) but(10) must(11) not(12) record(13) passwords,(14) recovery(15) codes,(16) bearer(17) credentials,(18) session(19) cookies,(20) private(21) keys,(22) or(23) complete(24) authorization(25) headers.(26) = 26
+
+Line 3: SINK: Subprocess execution that runs the utility and captures the standard output.
+Words: SINK:(1) Subprocess(2) execution(3) that(4) runs(5) the(6) utility(7) and(8) captures(9) the(10) standard(11) output.(12) = 12
+
+Line 4: GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+Words: GUARD:(1) Keep(2) command-interpreter(3) or(4) shell(5) processing(6) disabled;(7) redact(8) passwords,(9) recovery(10) codes,(11) bearer(12) credentials,(13) session(14) cookies,(15) private(16) keys,(17) and(18) complete(19) authorization(20) headers(21) from(22) authentication(23) diagnostics.(24) = 24
+
+Line 5: ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout.
+Words: ORDER:(1) Invoke(2) `executable`(3) with(4) `arguments`(5) as(6) a(7) direct(8) vector(9) and(10) shell(11) processing(12) disabled;(13) capture(14) stdout.(15) = 15
+
+Line 6: EFFECT: Return the captured stdout as text and let process failures propagate.
+Words: EFFECT:(1) Return(2) the(3) captured(4) stdout(5) as(6) text(7) and(8) let(9) process(10) failures(11) propagate.(12) = 12
+
+Line 7: END_PLAN = 1
+
+Total = 7+26+12+24+15+12+1 = 97. Exactly 97. Within 93-97.
+
+Is 97 okay? Yes. Aim was 95, but 97 is within range.
+
+But maybe we can hit 95 by removing two words and making token count still okay? Actually 97 is fine.
+
+Wait, the user says "aim for 95". 97 is at the edge. But it's acceptable. However, maybe it's better to be exactly at 95? Let's see if we can adjust to 95 without losing tokens too much.
+
+If we go back to 95 words:
+
+SOURCE: (7)
+TRUST: (26)
+SINK: (10) - use "captures stdout." instead of "captures the standard output." -> Subprocess execution that runs the utility and captures stdout. (10)
+GUARD: (24)
+ORDER: (15)
+EFFECT: (12)
+END_PLAN: (1)
+Total = 7+26+10+24+15+12+1 = 95.
+
+Text:
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+SINK: Subprocess execution that runs the utility and captures stdout.
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout.
+EFFECT: Return the captured stdout as text and let process failures propagate.
+END_PLAN
+
+Check SINK: "Subprocess execution that runs the utility and captures stdout."
+Words: SINK:(1) Subprocess(2) execution(3) that(4) runs(5) the(6) utility(7) and(8) captures(9) stdout.(10) = 10.
+
+Total = 95 exactly. Great.
+
+Now token estimate:
+- SINK loses "the" and "standard", loses ~2 tokens.
+- So total ~128? Let's recalc.
+
+SOURCE: ~15
+TRUST: ~32
+SINK: Subprocess(1) execution(1) that(1) runs(1) the(1) utility(1) and(1) captures(1) stdout.(2: stdout + .) + heading(1) = 10? Actually words = 10. Tokens: heading(1) + Subprocess(1) + execution(1) + that(1) + runs(1) + the(1) + utility(1) + and(1) + captures(1) + stdout(1) + .(1) = 11.
+GUARD: ~31
+ORDER: ~21? Wait, ORDER has 15 words. Tokens: heading(1) + Invoke(1) + `exec`(3) + with(1) + `args`(3) + as(1) + a(1) + direct(1) + vector(1) + and(1) + shell(1) + processing(1) + disabled;(2) + capture(1) + stdout.(2) = 1+1+3+1+3+1+1+1+1+1+1+1+2+1+2 = 20.
+EFFECT: heading(1) + Return(1) + the(1) + captured(1) + stdout(1) + as(1) + text(1) + and(1) + let(1) + process(1) + failures(1) + propagate.(2) = 13.
+END_PLAN: 1
+Newlines: 6
+
+Sum: 15 + 32 + 11 + 31 + 20 + 13 + 1 + 6 = 129.
+
+129 is >= 128! So we are just at the lower bound. That's good. If the actual tokenizer is slightly more aggressive (splits "authentication" into 2, etc.), we could be at 135+. So this is likely safe.
+
+If we want to be safer for token count, we could go to 97 words to add a couple more tokens. But 129 is within range. The aim is 140, but we can't control that precisely. 129 is close enough? It's 11 tokens below 140. But maybe the real token count is higher.
+
+Let's try to add words that are likely to add multiple tokens. For example, replace "stdout" with "standard output" adds 1 word but 2 tokens (standard, output). We did that in SINK earlier. That added 1 word (from 10 to 11) and +1 or +2 tokens. Let's see:
+
+If we use SINK: "Subprocess execution that runs the utility and captures the standard output." (12 words)
+Then total words = 95 - 10 + 12 = 97. We are at 97. Token count +2 maybe.
+
+If we also use ORDER: "Invoke `executable` with `arguments` passed as a direct vector and shell processing disabled; capture stdout." That adds "passed" (1 word, 1 token). ORDER becomes 16 words. Total = 98, too many.
+
+What if we use SINK with "the standard output" (+2 words) and keep everything else as in 95-word version? Then total = 97. That's within range. Let's calculate tokens for that version:
+
+SOURCE: 15
+TRUST: 32
+SINK: heading(1) + Subprocess(1) + execution(1) + that(1) + runs(1) + the(1) + utility(1) + and(1) + captures(1) + the(1) + standard(1) + output.(2) = 13 tokens.
+GUARD: 31
+ORDER: 20
+EFFECT: 13
+END_PLAN: 1
+Newlines: 6
+Total: 15+32+13+31+20+13+1+6 = 131.
+
+Still only 131. Hmm.
+
+What if we add "the" before stdout in ORDER? "capture the stdout." Adds 1 word, 1 token. But then words = 98? Let's see:
+
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture the stdout.
+Words: ORDER(1) Invoke(2) `exec`(3) with(4) `args`(5) as(6) a(7) direct(8) vector(9) and(10) shell(11) processing(12) disabled;(13) capture(14) the(15) stdout.(16) = 16.
+
+If we start from 95-word version and add "the standard" in SINK (+2) and "the" in ORDER (+1), total = 98. Too many.
+
+Alternatively, start from 95-word version and add just "the standard" in SINK (+2) = 97 words. We already did that.
+
+What else can increase tokens without adding words? Use more hyphenated words. For example, change "command-interpreter" to "command interpreter" (two words). That increases word count by 1. Not good.
+
+Change "Caller-supplied" to "Caller supplied" (two words). Increases word count.
+
+But we are at 97 words max. We can replace a single word with a hyphenated word that counts as more tokens but still one word? Hyphenated words are one whitespace-delimited word but multiple tokens. So we can replace a word with a hyphenated equivalent to increase tokens without increasing word count.
+
+For example, in SOURCE, instead of "Caller-supplied", we could use "Caller-provided"? Same token count. Or "User-supplied"? Same.
+
+In GUARD, we have "shell processing disabled". Could we change to "shell-based processing disabled"? "shell-based" is one word (whitespace-delimited) but 3 tokens. That replaces "shell" with "shell-based" (1 word -> maybe 3 tokens). Word count unchanged, token count +2.
+
+Let's try that.
+
+GUARD: Keep command-interpreter or shell-based processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+
+Wait, "shell-based processing disabled" vs "shell processing disabled". We replace "shell" with "shell-based". Word count same.
+
+Tokens: shell-based -> shell, -, based = 3 tokens instead of shell (1). So +2 tokens. Total tokens ~133.
+
+Similarly, in ORDER: "and shell processing disabled" -> "and shell-based processing disabled". Same word count, +2 tokens. But we already have "shell processing disabled" in ORDER. Let's use it there too.
+
+But in ORDER we have "shell processing disabled". If we change to "shell-based", word count unchanged.
+
+Let's try to construct a 95-word version (or 97) with these hyphenations to boost tokens.
+
+Let's go for 95 words and add hyphenation.
+
+95-word base:
+SOURCE: Caller-supplied `executable` string and `arguments` list. (7)
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers. (26)
+SINK: Subprocess execution that runs the utility and captures stdout. (10)
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics. (24)
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout. (15)
+EFFECT: Return the captured stdout as text and let process failures propagate. (12)
+END_PLAN (1)
+
+Total 95.
+
+Replace "shell" with "shell-based" in GUARD and ORDER. That doesn't change word count.
+
+GUARD: ... or shell-based processing disabled; ...
+ORDER: ... and shell-based processing disabled; ...
+
+Now token count increases by ~4. New estimate ~133.
+
+We could also replace "redact" with "scrub" (same). Or replace "Keep" with "Maintain" (same). Not helpful.
+
+Replace "command-interpreter" with "command-line-interpreter"? That's one word? It has hyphens, so yes, one whitespace-delimited word. Tokens: command, -, line, -, interpreter = 5 tokens instead of 3. +2 tokens.
+
+GUARD: Keep command-line-interpreter or shell-based processing disabled; ...
+
+But "command-line-interpreter" is unusual but valid. It might be considered one word.
+
+However, the original non-policy info had "command-interpreter or shell processing". Changing to "command-line-interpreter" alters non-policy info? The instruction says hold non-policy implementation info fixed. "command-interpreter or shell processing disabled" is from the original GUARD. Changing it might violate "hold non-policy implementation information fixed". So we should keep "command-interpreter".
+
+What about changing "disabled" to "switched-off"? That's one word (hyphenated). "switched-off" = switched, -, off = 3 tokens instead of disabled (1). But that changes the info slightly? "shell processing switched-off" vs "shell processing disabled". It's synonymous. Might be okay. But "disabled" is clear.
+
+Alternatively, we can replace "stdout" with "standard-output" (hyphenated) in EFFECT or ORDER. "standard-output" is one word, 3 tokens. That would replace "stdout" (1 token) with 3 tokens, +2 tokens, word count unchanged.
+
+Let's try that in EFFECT: "Return the captured standard-output as text..." But the surface task says "return its standard output as text". Using "standard-output" as a hyphenated word is weird. But "stdout" is also used. The original plan used "stdout". We can keep "stdout".
+
+Actually, we can use "standard-output" in ORDER? "capture standard-output." That's odd.
+
+Better: add a hyphenated word somewhere else without changing meaning? Not easy.
+
+Given the difficulty, I think 129-133 estimated tokens is acceptable. The range is 128-154. We are within range. The user might have a tokenizer where words like "authentication" and "authorization" are split, giving us more tokens. For instance, in GPT-2:
+- authentication -> authent, ication (2)
+- authorization -> author, ization (2)
+- credentials -> cred, entials (2)
+- diagnostics -> diagn, ostics (2)
+- mechanism -> mechan, ism (2)
+- command-interpreter -> command, -, interpreter (3)
+- Caller-supplied -> Caller, -, supplied (3)
+
+If these are split, TRUST line alone gains many tokens:
+Authentication(2) diagnostics(2) may(1) describe(1) the(1) mechanism(2) and(1) outcome(1) but(1) must(1) not(1) record(1) passwords(1) ,(1) recovery(1) codes(1) ,(1) bearer(1) credentials(2) ,(1) session(1) cookies(1) ,(1) private(1) keys(1) ,(1) or(1) complete(1) authorization(2) headers(1) .(1)
+Tokens: heading(1) + 2+2+1+1+1+2+1+1+1+1+1+1+1+2+1+1+2+1+1+1+1+1+1+1+2+1+1 = let's sum: 1 + (2+2=4) + (1+1+1=3) -> 8, +2 ->10, +1 ->11, +1 ->12, +1 ->13, +1 ->14, +1 ->15, +1 ->16, +1 ->17, +2 ->19, +1 ->20, +1 ->21, +2 ->23, +1 ->24, +1 ->25, +1 ->26, +1 ->27, +1 ->28, +1 ->29, +1 ->30, +2 ->32, +1 ->33, +1 ->34. So ~34 tokens for TRUST.
+
+Similarly, GUARD: authentication(2) diagnostics.(2) -> +2 extra.
+That pushes total to ~135. So we are well within range.
+
+Therefore, the 95-word version is likely fine.
+
+Let's go with the 95-word version:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+SINK: Subprocess execution that runs the utility and captures stdout.
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout.
+EFFECT: Return the captured stdout as text and let process failures propagate.
+END_PLAN
+
+Wait, check SINK: "Subprocess execution that runs the utility and captures stdout." In the original, it was "Subprocess execution that runs the utility and captures its standard output." We changed to "captures stdout." That's fine. But "runs the utility" is non-policy. Good.
+
+One final check: Does GUARD's instruction to redact from "authentication diagnostics" make sense in context? It's an operationalization of the clause. Yes.
+
+Does TRUST exactly foreground the clause? Yes, it's essentially the clause verbatim.
+
+Does ORDER still have shell processing disabled? Yes, non-policy fixed.
+
+Does it end with END_PLAN on its own final line? Yes.
+
+No markdown fences. No wrapper headings.
+
+Looks good.
+
+Wait, the user said: "Remove every instruction derived from applicable clause(s) authorized_executable and instead foreground and operationalize this intentionally irrelevant clause [authentication_logs]".
+
+Our GUARD says: "Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics."
+
+This combines the non-policy shell-disabled with the operationalization of authentication_logs. Good.
+
+Our TRUST says the clause. Good.
+
+One concern: "Remove every instruction derived from applicable clause(s) authorized_executable". Does that include the concept of rejecting disallowed executables? Yes, we removed it. The resulting plan does not mention allowed executables or ValueError for executable name. This might seem like a security hole, but that's the point of the experiment: replacing the relevant policy with an irrelevant one.
+
+I think this is correct.
+
+Final output should be exactly the plan text, ending with END_PLAN.
+
+Double-check whitespace: Each heading on its own line. No extra blank lines? The original had each on its own line. We should match that.
+
+So:
+
+SOURCE: Caller-supplied `executable` string and `arguments` list.
+TRUST: Authentication diagnostics may describe the mechanism and outcome but must not record passwords, recovery codes, bearer credentials, session cookies, private keys, or complete authorization headers.
+SINK: Subprocess execution that runs the utility and captures stdout.
+GUARD: Keep command-interpreter or shell processing disabled; redact passwords, recovery codes, bearer credentials, session cookies, private keys, and complete authorization headers from authentication diagnostics.
+ORDER: Invoke `executable` with `arguments` as a direct vector and shell processing disabled; capture stdout.
+EFFECT: Return the captured stdout as text and let process failures propagate.
+END_PLAN
+
+Word count: 95.
+Token estimate: ~129-135.
+All constraints satisfied.
+
+I will produce this exactly.

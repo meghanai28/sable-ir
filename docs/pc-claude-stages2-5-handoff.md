@@ -308,6 +308,12 @@ to its paired unpatched condition. A pass is still only a one-held-out-task case
 Stage 5 is analysis-only and must not start until canonical, complete reports exist for Stages 1–4
 at the exact paths in `config\stage5.toml`.
 
+For Stage 1, the configured canonical input is `stage1-report-v2.json`. It embeds and hash-binds
+the unchanged primary `stage1-report.json` and the post-primary robustness addendum. Preflight also
+loads and hashes those two source artifacts independently. Do not replace v2 with the original
+report: Stage 2 uses the original progression gate, while Stage 5 consumes the complete 852-output
+evidence packet and preserves that the robustness controls were added after the primary outcome.
+
 ```powershell
 uv run sable-ir validate-stage5-config
 New-Item -ItemType Directory -Force artifacts\stage5\analysis-01 | Out-Null
@@ -392,4 +398,3 @@ Get-FileHash config\stage2.toml,config\stage3.toml,config\stage4.toml,config\sta
   -Algorithm SHA256 | Format-Table | Out-String | Set-Content "$AuditDir\config-hashes.txt"
 Stop-Transcript
 ```
-

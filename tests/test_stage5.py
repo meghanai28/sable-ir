@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from sable_ir.schema import PolicyValue
 from sable_ir.scoring import RawOutcome
+from sable_ir.stage1_addendum import Stage1CompletionReportV2
 from sable_ir.stage1_analysis import ClauseSelection, PolicyVisibility
 from sable_ir.stage2 import SplitName
 from sable_ir.stage5 import (
@@ -129,9 +130,23 @@ def test_config_is_analysis_only_and_does_not_require_finished_artifacts() -> No
     config = load_stage5_config(ROOT / "config/stage5.toml")
     summary = validate_stage5_config(ROOT / "config/stage5.toml", ROOT)
     assert summary.analysis_only
-    assert summary.configured_inputs == 18
+    assert summary.configured_inputs == 20
     assert summary.tasks == 5
     assert config.analysis.ambiguity_min_functional_classifiable == 8
+
+
+def test_canonical_stage1_v2_binds_primary_and_addendum() -> None:
+    report = Stage1CompletionReportV2.model_validate_json(
+        (ROOT / "artifacts/stage1/reports/stage1-report-v2.json").read_text(encoding="utf-8")
+    )
+    primary = ROOT / "artifacts/stage1/reports/stage1-report.json"
+    addendum = ROOT / "artifacts/stage1/reports/stage1-robustness-addendum-20260904.json"
+    assert report.primary_stage1_report_sha256 == hashlib.sha256(primary.read_bytes()).hexdigest()
+    assert report.robustness_addendum_sha256 == hashlib.sha256(addendum.read_bytes()).hexdigest()
+    assert report.robustness_controls_added_after_primary_outcome
+    assert not report.primary_progression_gate_modified
+    assert report.robustness_effect_size_stop_gate is None
+    assert report.output_accounting.total == 852
 
 
 def test_ambiguity_floor_hu_and_task_clustering(tmp_path: Path) -> None:

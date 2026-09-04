@@ -442,8 +442,13 @@ def build_behavioral_metrics(
             "render evaluation",
         )
         plan_label = audit_rows.get(job.source_plan_job_id)
-        if plan_label is None and manifest.condition == "wrong_clause":
-            plan_label = audit_rows[job.source_plan_job_id.removesuffix("__control_wrong_clause")]
+        if plan_label is None and manifest.condition in {"wrong_clause", "clause_order"}:
+            suffix = (
+                "__control_wrong_clause"
+                if manifest.condition == "wrong_clause"
+                else "__control_clause_order"
+            )
+            plan_label = audit_rows[job.source_plan_job_id.removesuffix(suffix)]
         if plan_label is None:
             raise Stage1Error(f"render source lacks a blinded plan label: {job.job_id}")
         outcomes = _evaluation_outcomes(evaluation)

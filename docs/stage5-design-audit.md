@@ -26,6 +26,12 @@ case-study limits. The Stage 2 config is a direct frozen input, and current task
 with both the Stage 1 render manifest and the applicable Stage 2 evaluation manifests before any
 observation table can be assembled. Plot-ready CSVs are exported from completed JSON reports
 without recomputation.
+
+Stage 5 now consumes the immutable Stage 1 v2 completion packet. That packet embeds and binds the
+unchanged primary report plus the separately frozen robustness addendum, explicitly records that
+the clause-order and shuffled-task controls were added after the primary outcome, and leaves their
+numerical effect-size stop gate null. Stage 5 also binds the two source files directly, so an edited
+or substituted primary report/addendum fails preflight even if the v2 path itself exists.
 Unit tests exercise the eight-output ambiguity floor, AAB calculation, task-cluster counting,
 policy-suite invalidation, and held-out collision withholding. Repository-wide verification results
 are recorded in the implementation manifest: Ruff passed, strict mypy passed for 29 source files,

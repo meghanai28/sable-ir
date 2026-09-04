@@ -244,6 +244,16 @@ def test_plan_parser_requires_marker_and_structured_fields() -> None:
     assert plan.endswith("END_PLAN\n")
     assert extraction == "structured_end_plan"
 
+    whitespace_inline = (
+        "SOURCE x\nTRUST untrusted\nSINK y\nGUARD g\nORDER before\n"
+        "EFFECT result\nEND_PLAN"
+    )
+    reparsed, reparse_extraction = extract_plan(
+        whitespace_inline, Stage1PlanFormat.STRUCTURED
+    )
+    assert reparsed == whitespace_inline + "\n"
+    assert reparse_extraction == "structured_end_plan"
+
     with pytest.raises(Stage1Error, match="END_PLAN"):
         extract_plan("SOURCE: x", Stage1PlanFormat.STRUCTURED)
     with pytest.raises(Stage1Error, match="EFFECT"):
