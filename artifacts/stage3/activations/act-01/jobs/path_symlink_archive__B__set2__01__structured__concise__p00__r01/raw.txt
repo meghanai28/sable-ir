@@ -1,0 +1,67 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize and validate paths before any operations
+    try:
+        # Resolve the canonical path of the destination directory
+        # We must ensure we work with absolute paths and resolve any .. or symlinks
+        resolved_dest = os.path.realpath(dest_path)
+        resolved_tar = os.path.realpath(tar_path)
+        
+        # Ensure dest_path is a directory
+        if not os.path.isdir(resolved_dest):
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        try:
+            os.makedirs(resolved_dest, exist_ok=True)
+        except (OSError, PermissionError):
+            return False
+        
+        # Validate that the tar file exists and is readable
+        if not os.path.isfile(resolved_tar):
+            return False
+        
+        # Attempt to open the archive and extract
+        with tarfile.open(resolved_tar, 'r:*') as tar:
+            # Get the list of all members in the archive
+            members = tar.getmembers()
+            
+            # Validate each member to ensure no path escapes the destination
+            for member in members:
+                # Construct the target path for this member
+                target_path = os.path.join(resolved_dest, member.name)
+                
+                # Resolve the canonical path of the target
+                canonical_target = os.path.realpath(target_path)
+                
+                # Check if the canonical target is within the resolved destination
+                # Use os.path.commonpath to ensure the path is a prefix
+                try:
+                    common = os.path.commonpath([resolved_dest, canonical_target])
+                    if common != resolved_dest:
+                        return False
+                except ValueError:
+                    # This can happen if paths are on different drives (Windows) or have different root structures
+                    return False
+            
+            # If validation passes, extract the archive
+            # Use extractall to ensure all members are processed safely
+            tar.extractall(path=resolved_dest)
+            
+            return True
+            
+    except (tarfile.TarError, OSError, PermissionError, ValueError):
+        return False

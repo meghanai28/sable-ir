@@ -1,0 +1,220 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import re
+
+def resolve_host(hostname):
+    """
+    Resolve hostname to textual IP addresses.
+    In a real secure implementation, this would validate against a known-good list.
+    For this module, we assume the environment has a safe DNS resolver or the caller
+    ensures the hostname is trusted. We will perform the resolution but note
+    that without a specific trusted set, we proceed with the resolution logic.
+    """
+    try:
+        # Attempt to resolve the hostname.
+        # In a constrained environment without external DNS, this might fail or return localhost.
+        # We use socket.gethostbyname for a single IP, but getaddrinfo for all.
+        addresses = socket.getaddrinfo(hostname, None)
+        # Return textual IP addresses (IPv4 or IPv6)
+        ips = []
+        for info in addresses:
+            ip = info[4][0]
+            if isinstance(ip, bytes):
+                ip = ip.decode('utf-8')
+            if ip:
+                ips.append(ip)
+        return ips
+    except socket.gaierror:
+        raise ValueError(f"Cannot resolve hostname: {hostname}")
+
+def is_finite_ip(ip):
+    """
+    Check if an IP address is finite (not loopback, multicast, link-local, etc.).
+    """
+    try:
+        addr = socket.inet_aton(ip)
+        # Check for loopback (127.x.x.x)
+        if addr[0] == 127:
+            return False
+        # Check for link-local (169.254.x.x)
+        if addr[0] == 169 and addr[1] == 254:
+            return False
+        # Check for multicast (224.0.0.0 - 239.255.255.255)
+        if addr[0] >= 224 and addr[0] <= 239:
+            return False
+        # Check for broadcast (255.x.x.x)
+        if addr[0] == 255:
+            return False
+        return True
+    except socket.error:
+        return False
+
+def is_public_address(ip):
+    """
+    Check if an IP address is public (not private).
+    This is a simplified check; in a real scenario, it would query a public DNS blacklist.
+    """
+    # Private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 0.0.0.0/8, 224.0.0.0/4, 240.0.0.0/4, 255.0.0.0/8
+    try:
+        addr = socket.inet_aton(ip)
+        if addr[0] == 0:
+            return False
+        if 10 <= addr[0] <= 10:
+            return False
+        if 112 <= addr[0] <= 127:
+            return False
+        if 169 <= addr[0] <= 169 and 254 <= addr[1] <= 254:
+            return False
+        if 172 <= addr[0] <= 172 and 16 <= addr[1] <= 31:
+            return False
+        if 192 <= addr[0] <= 192 and 168 <= addr[1] <= 168:
+            return False
+        if 224 <= addr[0] <= 239:
+            return False
+        if 240 <= addr[0] <= 247:
+            return False
+        if 255 <= addr[0] <= 255:
+            return False
+        return True
+    except socket.error:
+        return False
+
+def validate_url(url, scheme, port):
+    """
+    Validate the URL against the initial scheme and port.
+    Checks for absolute URLs, .. segments, and malformed URLs.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        # Check for absolute URLs (should be handled by urlparse, but explicit check)
+        if parsed.scheme == '':
+            raise ValueError("URL must be absolute")
+        
+        # Check for .. segments in path
+        path = parsed.path
+        if '..' in path:
+            raise ValueError("URL contains .. segments")
+        
+        # Check for malformed URLs
+        if not parsed.netloc or not parsed.path:
+            raise ValueError("Malformed URL")
+        
+        # Check scheme and port
+        if parsed.scheme != scheme:
+            raise ValueError("Scheme mismatch")
+        
+        # Extract port
+        port_str = parsed.port
+        if port_str is None:
+            if scheme == 'http':
+                port_str = 80
+            elif scheme == 'https':
+                port_str = 443
+        else:
+            if not (port_str == 80 or port_str == 443):
+                raise ValueError("Port mismatch")
+        
+        return True
+    except Exception as e:
+        raise ValueError(f"Invalid URL: {str(e)}")
+
+def fetch_text(url, transport, resolve_host_func):
+    """
+    Fetch text from a URL.
+    :param url: The URL to fetch.
+    :param transport: A function that takes a URL and returns (status, headers, body).
+    :param resolve_host_func: A function that resolves a hostname to IP addresses.
+    :return: The response body text.
+    :raises: ValueError for disallowed requests.
+    """
+    # Default scheme and port
+    scheme = 'http'
+    port = 80
+    
+    # Check if URL is absolute
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError("URL must be absolute")
+    
+    # Parse initial URL
+    initial_parsed = urllib.parse.urlparse(url)
+    initial_scheme = initial_parsed.scheme
+    initial_port = initial_parsed.port
+    initial_host = initial_parsed.netloc
+    
+    # Resolve initial hostname
+    if initial_port is None:
+        if initial_scheme == 'http':
+            initial_port = 80
+        elif initial_scheme == 'https':
+            initial_port = 443
+    
+    # Validate initial URL
+    validate_url(url, initial_scheme, initial_port)
+    
+    # Resolve initial hostname
+    try:
+        initial_ips = resolve_host_func(initial_host)
+        if not initial_ips:
+            raise ValueError("Hostname did not resolve to any IP")
+        for ip in initial_ips:
+            if not is_finite_ip(ip):
+                raise ValueError(f"Invalid IP address: {ip}")
+            if not is_public_address(ip):
+                raise ValueError(f"Private IP address detected: {ip}")
+    except ValueError as e:
+        raise ValueError(f"Initial hostname validation failed: {e}")
+    
+    current_url = url
+    current_scheme = initial_scheme
+    current_port = initial_port
+    current_host = initial_host
+    
+    # Follow redirects (max 5)
+    redirect_count = 0
+    while redirect_count < 5:
+        # Prepare the request
+        # We need to construct the full URL for the request
+        # If current_url is absolute, use it. If not, use base + path.
+        # However, the input url is expected to be absolute based on the guard.
+        # We need to handle the case where the URL might be relative if it was passed as such,
+        # but the guard says "reject absolute URLs", implying we should only accept absolute.
+        # So we assume current_url is always absolute.
+        
+        # Construct the request URL
+        # We need to ensure the port is included if it's not the default
+        if current_port == 80 and current_scheme == 'http':
+            request_url = current_url
+        elif current_port == 443 and current_scheme == 'https':
+            request_url = current_url
+        else:
+            # Remove default port from URL if present, then add explicit port
+            # Simple approach: just use the URL as is, assuming it's well-formed
+            request_url = current_url
+        
+        # Create the request
+        req = urllib.request.Request(request_url, method='GET')
+        
+        # Attempt to fetch
+        try:
+            response = transport(request_url)
+            status, headers, body = response
+            
+            # Check status code
+            if status != 200:
+                raise ValueError(f"Status code {status} is not 200")
+            
+            # Check for redirects
+            if 'Location' in headers:
+                redirect_url = headers['Location']
+                # Resolve redirect URL
+                # It must have the same scheme and port as the initial destination
+                redirect_parsed = urllib.parse.urlparse(redirect_url)
+                
+                # Check for absolute URLs in redirect
+                if redirect_parsed.scheme == '':
+                    # Treat as relative
+                    base_url = current_url
+                    # Parse base URL to get netloc
+                    base_parsed =

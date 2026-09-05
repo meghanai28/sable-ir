@@ -1,0 +1,41 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (path traversal or unsafe symlinks).
+    """
+    # Resolve the base directory
+    reports_root_resolved = os.path.realpath(reports_root)
+    
+    # Normalize the requested filename to prevent traversal
+    requested_path = os.path.normpath(filename)
+    
+    # Construct the full path
+    full_path = os.path.join(reports_root_resolved, requested_path)
+    
+    # Resolve the path to check for traversal
+    resolved_path = os.path.realpath(full_path)
+    
+    # Ensure the resolved path is within the reports_root directory
+    # We must check that the resolved path starts with the reports_root directory
+    # and that it matches exactly (to prevent .. tricks after resolution)
+    if not resolved_path.startswith(reports_root_resolved + os.sep) and resolved_path != reports_root_resolved:
+        raise ValueError("Path traversal detected or unsafe path")
+    
+    # Check if it's a symbolic link
+    if os.path.islink(full_path):
+        # Resolve the link target
+        link_target = os.path.realpath(full_path)
+        # The requirement states: "a symbolic link whose resolved target points inside reports_root is still not acceptable"
+        # This means we must raise ValueError if it's a symlink, regardless of where it points.
+        raise ValueError("Symbolic links are not allowed")
+    
+    # Check if it's an ordinary file
+    if not os.path.isfile(full_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file
+    with open(full_path, 'r', encoding='utf-8') as f:
+        return f.read()

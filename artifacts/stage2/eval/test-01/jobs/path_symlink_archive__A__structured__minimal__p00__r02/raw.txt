@@ -1,0 +1,78 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Returns True only if extraction completes successfully.
+    Returns False if validation fails, extraction is interrupted, or any
+    security violation is detected (e.g., escape attempts, symlinks, hard links).
+    No files are written outside dest_path on failure.
+    """
+    try:
+        # Resolve and normalize the destination path to prevent path traversal
+        dest_path = os.path.normpath(os.path.abspath(dest_path))
+        
+        # Verify the destination directory exists
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Security checks before extraction
+            # 1. Check for symbolic links and hard links
+            for member in tar.getnames():
+                # Skip . and ..
+                if member in ('.', '..'):
+                    continue
+                
+                # Get the member's metadata
+                member_info = tar.getmember(member)
+                
+                # Check for symbolic links
+                if member_info.issym():
+                    return False
+                
+                # Check for hard links
+                if member_info.islnk():
+                    return False
+                
+                # Check for device files
+                if member_info.isdev():
+                    return False
+                
+                # Check for directory entries that might be symlinks
+                if member_info.isdir() and member_info.linkname:
+                    return False
+            
+            # 2. Extract the archive
+            # We need to extract carefully to ensure we don't write outside dest_path
+            for member in tar.getnames():
+                # Skip . and ..
+                if member in ('.', '..'):
+                    continue
+                
+                # Resolve the member's path relative to dest_path
+                # We use os.path.normpath and os.path.abspath to ensure no traversal
+                member_path = os.path.normpath(os.path.join(dest_path, member))
+                
+                # Ensure the member path is within dest_path
+                # This check is critical to prevent path traversal attacks
+                if not member_path.startswith(dest_path + os.sep) and member_path != dest_path:
+                    # This handles cases where dest_path is a prefix but not exact
+                    # We also need to handle the case where member is '.' or '..' which we already filtered
+                    # But we should also check for cases like "dest_path/../../../etc/passwd"
+                    # The normpath and abspath should handle most cases, but we need to be strict
+                    if not (os.path.commonpath([dest_path, member_path]) == dest_path):
+                        return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+        
+        return True
+        
+    except Exception:
+        return False

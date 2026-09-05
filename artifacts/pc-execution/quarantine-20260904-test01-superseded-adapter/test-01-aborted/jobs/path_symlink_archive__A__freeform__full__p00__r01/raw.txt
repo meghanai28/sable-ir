@@ -1,0 +1,108 @@
+import os
+import tarfile
+import stat
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validations.
+    
+    Returns True only if extraction completes successfully.
+    Returns False if any validation or extraction fails, without writing outside dest_path.
+    """
+    # Validate dest_path: must not be absolute
+    if os.path.isabs(dest_path):
+        return False
+    
+    # Create a temporary directory for safe extraction and validation
+    temp_dir = None
+    try:
+        # Use a temporary directory to safely extract and validate
+        temp_dir = tempfile.mkdtemp()
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # First, validate all members before extracting
+            for member in tar.getmembers():
+                # Resolve the member's name relative to dest_path
+                # We need to check if the member would escape dest_path
+                # Calculate the full path the member would be extracted to
+                member_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the path to resolve . and ..
+                # We must ensure the normalized path is still within dest_path
+                # Use os.path.normpath but be careful with symlinks
+                normalized_path = os.path.normpath(member_path)
+                
+                # Check if the normalized path escapes dest_path
+                # The parent directory of the normalized path must be dest_path or a subdirectory
+                parent_dir = os.path.dirname(normalized_path)
+                
+                # If parent_dir is not dest_path or a subdirectory, it's unsafe
+                if parent_dir != dest_path and not parent_dir.startswith(dest_path + os.sep):
+                    return False
+                
+                # Check if the member is a symbolic link or hard link
+                if member.issym() or member.islnk():
+                    # For symlinks and hard links, we need to check the target
+                    # The target must be inside dest_path
+                    if member.isdir():
+                        # If it's a symlink pointing to a directory, check the directory
+                        pass
+                    else:
+                        # If it's a symlink pointing to a file, check the file
+                        pass
+                    
+                    # Get the target path
+                    target_path = member.linkname
+                    
+                    # Normalize the target path
+                    normalized_target = os.path.normpath(target_path)
+                    
+                    # Check if the target is inside dest_path
+                    if normalized_target.startswith(dest_path + os.sep):
+                        pass
+                    else:
+                        return False
+                    
+                    # Additional check: ensure the target doesn't escape via ..
+                    # If the target is a relative path, normalize it and check
+                    if not normalized_target.startswith(os.sep):
+                        # Check if the normalized target is within dest_path
+                        if not (normalized_target == dest_path or normalized_target.startswith(dest_path + os.sep)):
+                            return False
+                elif member.islnk():
+                    # Hard link: check if the target is inside dest_path
+                    target_path = member.linkname
+                    normalized_target = os.path.normpath(target_path)
+                    
+                    if not (normalized_target == dest_path or normalized_target.startswith(dest_path + os.sep)):
+                        return False
+                else:
+                    # Regular file or directory: check if the path is within dest_path
+                    if not (normalized_path == dest_path or normalized_path.startswith(dest_path + os.sep)):
+                        return False
+            
+            # If all validations pass, extract the archive
+            # Use a temporary directory to ensure we don't write outside dest_path
+            # Extract to temp_dir first, then move to dest_path
+            for member in tar:
+                member_path = os.path.join(temp_dir, member.name)
+                member.extract(temp_dir, member=member)
+                
+                # Now move the extracted file to dest_path
+                # We need to handle the case where the file is a symlink or hard link
+                if member.isdir():
+                    shutil.move(member_path, os.path.join(dest_path, member.name))
+                else:
+                    shutil.move(member_path, os.path.join(dest_path, member.name))
+            
+            return True
+            
+    except Exception:
+        return False
+    finally:
+        # Clean up the temporary directory
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)

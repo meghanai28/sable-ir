@@ -1,0 +1,23 @@
+import subprocess
+import sys
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    if executable != "/usr/bin/printf":
+        raise ValueError("Executable is disallowed")
+    
+    # Use subprocess with shell=False to prevent shell metacharacter injection
+    # Pass arguments as a list to ensure they are treated as separate arguments
+    process = subprocess.Popen(
+        [executable] + arguments,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False
+    )
+    
+    stdout, stderr = process.communicate()
+    
+    if process.returncode != 0:
+        # Let process failures propagate by re-raising the exception
+        raise RuntimeError(f"Process failed with return code {process.returncode}: {stderr.decode()}")
+    
+    return stdout.decode()

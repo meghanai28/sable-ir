@@ -1,0 +1,48 @@
+import socket
+import urllib.parse
+from urllib.parse import urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    parsed = urlparse(url)
+    scheme = parsed.scheme
+    port = parsed.port
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL")
+    
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    default_port = 80 if scheme == 'http' else 443
+    if port is None:
+        port = default_port
+    
+    if port != default_port:
+        raise ValueError("Only default ports are allowed")
+    
+    if not hostname:
+        raise ValueError("Invalid hostname")
+    
+    resolved_ips = resolve_host(hostname)
+    if not resolved_ips:
+        raise ValueError("Hostname resolution failed")
+    
+    final_url = url
+    while True:
+        if parsed.scheme not in ('http', 'https'):
+            raise ValueError("Invalid scheme")
+        if parsed.port is not None and parsed.port != default_port:
+            raise ValueError("Non-default port not allowed")
+        
+        status, headers, body = transport(final_url)
+        
+        if status != 200:
+            raise ValueError("Non-200 status code")
+        
+        content_type = headers.get('Content-Type', '').split(';')[0].strip().lower()
+        if 'text' not in content_type and 'html' not in content_type:
+            raise ValueError("Non-text content type")
+        
+        return body
+    
+    raise ValueError("Unexpected response")

@@ -1,0 +1,147 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL following Location headers with strict constraints.
+    
+    Args:
+        url: The initial URL (absolute or relative).
+        transport: A callable(url) -> (status, headers, body) for HTTP/HTTPS.
+        resolve_host: A callable(hostname) -> list of IP addresses.
+    
+    Returns:
+        The body string for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme, port, or resolved address is disallowed.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Determine the scheme and port
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    # Validate scheme and port
+    allowed_schemes = ['http', 'https']
+    allowed_ports = {
+        'http': 80,
+        'https': 443
+    }
+    
+    if scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    if port is None:
+        port = allowed_ports[scheme]
+    elif port not in allowed_ports:
+        raise ValueError(f"Disallowed port: {port} for scheme {scheme}")
+    
+    # Resolve the initial host
+    initial_host = parsed_url.hostname
+    if not initial_host:
+        raise ValueError("URL must have a hostname")
+    
+    try:
+        resolved_ips = resolve_host(initial_host)
+    except Exception as e:
+        raise ValueError(f"DNS resolution failed: {e}")
+    
+    if not resolved_ips:
+        raise ValueError(f"No public addresses found for {initial_host}")
+    
+    # Check if any resolved IP is public (simplified check: not localhost or private ranges)
+    # Note: A robust public IP check requires more comprehensive logic, but we assume resolve_host handles filtering or we do a basic check.
+    # For this specification, we assume the caller's resolve_host returns public IPs, or we perform a basic check.
+    # Let's do a basic check for obvious private/localhost IPs.
+    private_ips = {'127.0.0.1', '::1', 'localhost', '0.0.0.0'}
+    is_public = False
+    for ip in resolved_ips:
+        if not ip.startswith(('127.', '::1', 'localhost', '0.')):
+            # Further validation of private ranges (e.g., 10.x, 192.168.x, 172.16-31.x) would be ideal,
+            # but given the constraint to use the supplied plan and resolve_host, we assume resolve_host returns valid public IPs.
+            # However, to be safe per "must have a public address", we check against common private prefixes.
+            if not (ip.startswith('10.') or ip.startswith('192.168.') or ip.startswith('172.') or ip.startswith('172.16.') or ip.startswith('172.17.') or 
+                    ip.startswith('172.18.') or ip.startswith('172.19.') or ip.startswith('172.20.') or ip.startswith('172.21.') or ip.startswith('172.22.') or 
+                    ip.startswith('172.23.') or ip.startswith('172.24.') or ip.startswith('172.25.') or ip.startswith('172.26.') or ip.startswith('172.27.') or 
+                    ip.startswith('172.28.') or ip.startswith('172.29.') or ip.startswith('172.30.') or ip.startswith('172.31.') or
+                    ip.startswith('169.254.') or ip.startswith('::ffff:') or ip.startswith('fc')):
+                is_public = True
+                break
+    if not is_public:
+        raise ValueError(f"Address {resolved_ips[0]} is not public")
+    
+    current_url = parsed_url
+    max_redirects = 5
+    
+    while True:
+        # Call transport
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if not location_header:
+            continue
+        
+        # Parse the Location header
+        try:
+            location_parsed = urllib.parse.urlparse(location_header)
+        except Exception:
+            raise ValueError(f"Invalid Location header format: {location_header}")
+        
+        # Check if it's an absolute URL
+        if location_parsed.scheme:
+            next_url = location_header
+        else:
+            # Relative URL, resolve against current_url
+            next_url = urllib.parse.urljoin(current_url.geturl(), location_header)
+            next_parsed = urllib.parse.urlparse(next_url)
+        
+        # Check scheme
+        next_scheme = next_parsed.scheme.lower()
+        if next_scheme != scheme:
+            raise ValueError(f"Scheme mismatch: expected {scheme}, got {next_scheme}")
+        
+        # Check port
+        next_port = next_parsed.port
+        if next_port is None:
+            next_port = port
+        elif next_port != port:
+            raise ValueError(f"Port mismatch: expected {port}, got {next_port}")
+        
+        # Resolve the new host
+        next_host = next_parsed.hostname
+        if not next_host:
+            raise ValueError("Location URL must have a hostname")
+        
+        try:
+            resolved_ips = resolve_host(next_host)
+        except Exception as e:
+            raise ValueError(f"DNS resolution failed for {next_host}: {e}")
+        
+        if not resolved_ips:
+            raise ValueError(f"No public addresses found for {next_host}")
+        
+        # Check if public
+        is_public = False
+        for ip in resolved_ips:
+            if not (ip.startswith(('127.', '::1', 'localhost', '0.')) or 
+                    ip.startswith('10.') or ip.startswith('192.168.') or ip.startswith('172.') or
+                    ip.startswith('169.254.') or ip.startswith('::ffff:') or ip.startswith('fc')):
+                is_public = True
+                break
+        if not is_public:
+            raise ValueError(f"Address {resolved_ips[0]} is not public")
+        
+        # Update current_url
+        current_url = next_parsed
+    
+    raise ValueError("Too many redirects")

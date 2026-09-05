@@ -1,0 +1,66 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, rejecting symbolic and hard links.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Validate that tar_path exists
+    if not os.path.isfile(tar_path):
+        return False
+    
+    # Create the destination directory if it doesn't exist
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception:
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the absolute path of the destination
+            abs_dest_path = os.path.abspath(dest_path)
+            
+            # Process each member
+            for member in tar.getmembers():
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Check for hard links
+                if member.islnk() or (member.issym() and member.linkname == member.name):
+                    return False
+                
+                # Construct the full path for the member
+                if member.isdir():
+                    member_path = os.path.join(abs_dest_path, member.name)
+                else:
+                    member_path = os.path.join(abs_dest_path, member.name)
+                
+                # Ensure the parent directory exists
+                parent_dir = os.path.dirname(member_path)
+                os.makedirs(parent_dir, exist_ok=True)
+                
+                # Validate that the member path is within the destination directory
+                # by checking if the absolute path starts with the destination path
+                if not (member_path.startswith(abs_dest_path + os.sep) or member_path == abs_dest_path):
+                    return False
+                
+                # Extract the member
+                try:
+                    tar.extract(member, dest_path)
+                except Exception:
+                    return False
+                    
+    except Exception:
+        return False
+    
+    return True

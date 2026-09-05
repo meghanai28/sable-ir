@@ -1,0 +1,122 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetches text from a URL following the specified safety constraints.
+    
+    Args:
+        url: The target URL string.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., absolute URL, non-finite IP, etc.).
+    """
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Guard: Reject absolute URLs (scheme present)
+    if parsed.scheme:
+        raise ValueError("Absolute URLs are disallowed.")
+    
+    current_url = url
+    
+    # Follow redirects (at most 5)
+    for _ in range(5):
+        # Resolve the hostname to IP addresses
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid hostname in URL.")
+        
+        ip_addresses = resolve_host(hostname)
+        if not ip_addresses:
+            raise ValueError("Hostname does not resolve to a finite IP address.")
+        
+        # Guard: Check the resolved destination before opening the connection
+        # We need to ensure the public address (IP) matches the initial destination's IP
+        initial_ip = resolve_host(parsed.hostname)
+        if not initial_ip:
+            raise ValueError("Initial hostname does not resolve to a finite IP address.")
+        
+        if not ip_addresses or initial_ip != ip_addresses[0]:
+            raise ValueError("DNS mismatch: resolved IP does not match initial destination.")
+        
+        # Check credentials and port consistency if they were in the initial URL
+        # Since we reject absolute URLs, we assume no credentials/port in the initial URL,
+        # but if they exist, they must match.
+        if parsed.username or parsed.password or parsed.port:
+            if parsed.port:
+                # If initial URL had a port, the redirect must keep it
+                pass
+            else:
+                # If initial URL had no port, the redirect must not introduce one
+                if parsed.port is None:
+                    pass
+                else:
+                    # This case is handled by the logic below, but we ensure consistency
+                    pass
+        
+        # Check scheme consistency
+        if parsed.scheme != parsed.scheme:
+            raise ValueError("Scheme mismatch in redirect.")
+        
+        # Build the new URL
+        new_parsed = urllib.parse.urlparse(parsed.geturl())
+        
+        # Check if the new URL has a different scheme, port, or credentials
+        if new_parsed.scheme != parsed.scheme:
+            raise ValueError("Redirect changes scheme.")
+        if new_parsed.port != parsed.port:
+            raise ValueError("Redirect changes port.")
+        if new_parsed.username != parsed.username or new_parsed.password != parsed.password:
+            raise ValueError("Redirect changes credentials.")
+        
+        # Check for path traversal or other unsafe components
+        # We rely on the fact that we are checking the final URL before opening
+        # But we must ensure we don't fall into a loop or go back
+        if new_parsed.path == parsed.path and new_parsed.query == parsed.query:
+            raise ValueError("Redirect loop detected.")
+        
+        # Update current URL
+        current_url = new_parsed.geturl()
+        parsed = urllib.parse.urlparse(current_url)
+        
+        # Check for .. segments in path
+        if '..' in parsed.path:
+            raise ValueError("Path contains .. segments.")
+        
+        # Check for malformed URL
+        if not parsed.netloc or not parsed.path:
+            raise ValueError("Malformed URL.")
+    
+    # Final check before opening connection
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid hostname in final URL.")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Hostname does not resolve to a finite IP address.")
+    
+    # Ensure the IP matches the initial destination
+    initial_ip = resolve_host(parsed.hostname)
+    if not initial_ip:
+        raise ValueError("Initial hostname does not resolve to a finite IP address.")
+    
+    if not ip_addresses or initial_ip != ip_addresses[0]:
+        raise ValueError("DNS mismatch: resolved IP does not match initial destination.")
+    
+    # Open the connection using the transport function
+    status, headers, body = transport(current_url)
+    
+    # Return the body only for status 200
+    if status == 200:
+        return body.decode('utf-8') if isinstance(body, bytes) else str(body)
+    else:
+        raise ValueError(f"Unexpected status code: {status}")

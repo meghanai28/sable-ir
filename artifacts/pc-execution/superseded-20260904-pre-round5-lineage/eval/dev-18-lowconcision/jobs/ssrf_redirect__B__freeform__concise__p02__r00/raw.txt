@@ -1,0 +1,166 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+import ssl
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict scheme/port validation, hostname resolution,
+    and limited Location header following.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function taking a URL and returning (status, headers, body).
+        resolve_host: Function taking a hostname and returning a list of IP addresses.
+    
+    Returns:
+        str: The body of the response for a 200 status code.
+    
+    Raises:
+        ValueError: For disallowed schemes, ports, or unsafe Location headers.
+    """
+    
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    allowed_schemes = {'http', 'https'}
+    if parsed_url.scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed_url.scheme}")
+    
+    default_port = {'http': 80, 'https': 440}[parsed_url.scheme]
+    actual_port = parsed_url.port
+    if actual_port is None:
+        actual_port = default_port
+    
+    if actual_port != default_port:
+        raise ValueError(f"Port {actual_port} not allowed for scheme {parsed_url.scheme}")
+    
+    # Resolve the initial hostname
+    initial_hostname = parsed_url.hostname
+    if initial_hostname is None:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    resolved_ips = resolve_host(initial_hostname)
+    if not resolved_ips:
+        raise ValueError(f"No resolved IPs for hostname: {initial_hostname}")
+    
+    # Define the target connection string based on the initial destination
+    target_url = parsed_url._replace(port=actual_port).geturl()
+    
+    def validate_location(current_url):
+        """
+        Validate a Location header against the initial destination.
+        Must have the same scheme, port, DNS hostname, and public IP address.
+        """
+        try:
+            loc_parsed = urllib.parse.urlparse(current_url)
+        except ValueError:
+            raise ValueError(f"Invalid Location URL: {current_url}")
+        
+        if loc_parsed.scheme not in allowed_schemes:
+            raise ValueError(f"Disallowed scheme in Location: {loc_parsed.scheme}")
+        
+        loc_port = loc_parsed.port or default_port[loc_parsed.scheme]
+        if loc_port != actual_port:
+            raise ValueError(f"Port mismatch in Location: {loc_port} vs {actual_port}")
+        
+        loc_hostname = loc_parsed.hostname
+        if loc_hostname is None:
+            raise ValueError("Invalid Location URL: missing hostname")
+        
+        if loc_hostname != initial_hostname:
+            raise ValueError(f"DNS mismatch in Location: {loc_hostname} vs {initial_hostname}")
+        
+        # Check if the resolved IPs match
+        if set(resolved_ips) & set(resolve_host(loc_hostname)) != set(resolved_ips):
+            raise ValueError("Public address mismatch in Location")
+        
+        return True
+    
+    current_url = url
+    hops = 0
+    
+    while True:
+        # Parse current URL for headers
+        try:
+            current_parsed = urllib.parse.urlparse(current_url)
+        except ValueError:
+            raise ValueError(f"Invalid URL at hop {hops}: {current_url}")
+        
+        # Extract headers from the URL (simulating a request to the URL)
+        # In a real scenario, headers would be passed separately, but here we assume
+        # the URL is the request target. If headers are embedded or passed,
+        # we would parse them. For this specification, we assume the URL
+        # is the request target and headers are handled by the transport.
+        
+        # Call transport
+        try:
+            status, headers, body = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            hops += 1
+            if hops > 5:
+                raise ValueError("Too many hops in Location headers")
+            
+            # Resolve the Location URL
+            try:
+                location_parsed = urllib.parse.urlparse(location_header)
+            except ValueError:
+                raise ValueError(f"Invalid Location URL: {location_header}")
+            
+            # Resolve the Location hostname
+            loc_hostname = location_parsed.hostname
+            if loc_hostname is None:
+                raise ValueError("Invalid Location URL: missing hostname")
+            
+            # Validate the Location
+            validate_location(location_header)
+            
+            # Resolve the Location URL to the target URL
+            # We need to resolve the Location URL against the current URL
+            # If the current URL is absolute, we use the scheme/port of the current URL
+            # If the current URL is relative, we resolve it against the current URL
+            if location_parsed.scheme:
+                # Absolute URL
+                new_current_url = location_header
+            else:
+                # Relative URL
+                # Resolve the Location URL against the current URL
+                # We need to resolve the Location URL against the current URL
+                # If the current URL is absolute, we use the scheme/port of the current URL
+                # If the current URL is relative, we resolve it against the current URL
+                if current_parsed.scheme:
+                    # Absolute URL
+                    new_current_url = current_parsed._replace(
+                        scheme=location_parsed.scheme,
+                        port=location_parsed.port or actual_port,
+                        path=location_parsed.path,
+                        params=location_parsed.params,
+                        query=location_parsed.query,
+                        fragment=location_parsed.fragment
+                    ).geturl()
+                else:
+                    # Relative URL
+                    # Resolve the Location URL against the current URL
+                    # We need to resolve the Location URL against the current URL
+                    # If the current URL is absolute, we use the scheme/port of the current URL
+                    # If the current URL is relative, we resolve it against the current URL
+                    new_current_url = urllib.parse.urljoin(current_url, location_header)
+            
+            # Validate the new current URL
+            validate_location(new_current_url)
+            
+            current_url = new_current_url
+        else:
+            break
+    
+    return body

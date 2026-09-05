@@ -1,0 +1,105 @@
+import os
+import tarfile
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory safely.
+    
+    This function validates that the extraction will not escape the intended
+    destination directory, checks for security issues like symlinks pointing
+    outside the destination, and performs the extraction. It returns True only
+    if the entire extraction succeeds without any errors.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        bool: True if extraction completed successfully, False otherwise.
+    """
+    try:
+        # Normalize the destination path to resolve any symbolic links or .. segments
+        # and ensure it's an absolute path if possible
+        dest_path = os.path.normpath(dest_path)
+        
+        # If dest_path is relative, resolve it against the current working directory
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Ensure the destination directory exists
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        
+        # Open the tar file for reading
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members in the archive
+            members = tar.getmembers()
+            
+            # Define the root directory for safety checks
+            root_dir = os.path.abspath(dest_path)
+            
+            # Validate each member before extraction
+            for member in members:
+                # Calculate the absolute destination path for this member
+                # Use os.path.join to ensure proper path handling
+                dest_member_path = os.path.join(root_dir, member.name)
+                
+                # Normalize the path to resolve any .. or symlinks
+                dest_member_path = os.path.normpath(dest_member_path)
+                
+                # Ensure the destination is within the root directory
+                # This check prevents path traversal attacks
+                if not dest_member_path.startswith(root_dir + os.sep) and dest_member_path != root_dir:
+                    raise ValueError(f"Member {member.name} would escape the destination directory")
+                
+                # Check for symlinks that point outside the destination
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    
+                    # Normalize the link target to check for escapes
+                    link_target = os.path.normpath(link_target)
+                    
+                    # If the link target is absolute, check if it escapes
+                    if os.path.isabs(link_target):
+                        link_target = os.path.normpath(link_target)
+                        if not link_target.startswith(root_dir + os.sep) and link_target != root_dir:
+                            raise ValueError(f"Symlink {member.name} points outside the destination directory")
+                    else:
+                        # If relative, resolve it relative to the member's directory
+                        member_dir = os.path.dirname(member.name)
+                        resolved_link = os.path.normpath(os.path.join(member_dir, link_target))
+                        if not resolved_link.startswith(root_dir + os.sep) and resolved_link != root_dir:
+                            raise ValueError(f"Symlink {member.name} points outside the destination directory")
+            
+            # Perform the extraction
+            tar.extractall(dest_path)
+            
+            return True
+            
+    except Exception as e:
+        # Ensure no partial extraction occurred by removing any created files/directories
+        _cleanup_partial_extraction(dest_path)
+        return False
+
+
+def _cleanup_partial_extraction(dest_path: str) -> None:
+    """
+    Clean up any files or directories that may have been created during a failed extraction.
+    This ensures no partial state remains if validation fails partway through.
+    """
+    try:
+        # Remove the destination directory and all its contents if it exists
+        if os.path.exists(dest_path):
+            for root, dirs, files in os.walk(dest_path, topdown=False):
+                for name in files:
+                    os.remove(os.path.join(root, name))
+                for name in dirs:
+                    os.rmdir(os.path.join(root, name))
+            # Remove the destination directory itself
+            if os.path.exists(dest_path):
+                os.rmdir(dest_path)
+    except Exception:
+        # If cleanup fails, just return - the caller should handle any remaining issues
+        pass

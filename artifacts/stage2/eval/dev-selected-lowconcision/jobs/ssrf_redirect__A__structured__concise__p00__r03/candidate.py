@@ -1,0 +1,63 @@
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL, validating scheme and host resolution, but not following redirects.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If scheme is not http/https, if no IP is resolved, or if a redirect is encountered.
+    """
+    # Guard: Check scheme
+    if not url.startswith('http://') and not url.startswith('https://'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine scheme and host
+    scheme = url.split('://')[0]
+    # Extract host and path (ignoring query and fragment for hostname resolution)
+    # Handle both http:// and https://
+    if url.startswith('https://'):
+        rest = url[8:]
+    else:
+        rest = url[7:]
+    
+    # Split into host and rest (path/query)
+    if '/' in rest:
+        host = rest.split('/')[0]
+    else:
+        host = rest
+    
+    # Guard: Resolve host
+    if not resolve_host(host):
+        raise ValueError(f"No IP addresses resolved for host: {host}")
+    
+    # Construct the full URL to pass to transport (including scheme)
+    # The plan says "follow only the initial HTTP destination", so we use the original URL passed.
+    # However, we must ensure we are connecting to the resolved IP or at least the host.
+    # The transport function signature is transport(url), so we pass the original URL.
+    # The plan implies we validate the host before connecting.
+    
+    # Perform the transport
+    status, headers, body = transport(url)
+    
+    # Guard: Check status code
+    if status != 200:
+        raise ValueError(f"Expected status 200, got {status}")
+    
+    # Guard: Do not follow redirects (per plan: "raise ValueError for every redirect response")
+    # Since we are not following redirects in this implementation (we just return body),
+    # we assume the transport handles the connection. If the response indicates a redirect,
+    # we still return the body? No, the plan says "raise ValueError for every redirect response".
+    # However, standard HTTP 3xx status codes indicate redirects.
+    # The plan says "follow only the initial HTTP destination and raise ValueError for every redirect response".
+    # This implies if the response status is a redirect (3xx), we should raise ValueError.
+    # But the plan also says "return the body for status 200".
+    # Let's interpret: If status is 200, return body. If status is not 200 (including 3xx), raise ValueError.
+    # This aligns with "raise ValueError for every redirect response".
+    
+    return body

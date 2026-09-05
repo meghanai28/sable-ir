@@ -1,0 +1,71 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetches text from a URL using the provided transport function.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) that performs the HTTP request.
+        resolve_host: A function(hostname) -> list of IP addresses that resolves hostnames.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (invalid scheme, port, or non-public address).
+    """
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    hostname = parsed_url.hostname
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Determine default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Validate port
+    port = parsed_url.port
+    if port is not None and port != default_port:
+        raise ValueError(f"Disallowed port: {port}")
+    
+    # Resolve hostname
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    
+    if not resolved_ips:
+        raise ValueError(f"No public addresses found for hostname: {hostname}")
+    
+    # Check if any resolved IP is public (simple check: not starting with 127.0.0.1 or ::1)
+    is_public = False
+    for ip in resolved_ips:
+        if not (ip.startswith('127.') or ip.startswith('::1') or ip.startswith('10.') or 
+                ip.startswith('192.168.') or ip.startswith('172.16.') or ip.startswith('172.17.') or
+                ip.startswith('172.24.') or ip.startswith('172.25.') or ip.startswith('172.26.') or
+                ip.startswith('172.27.') or ip.startswith('172.28.') or ip.startswith('172.29.') or
+                ip.startswith('172.30.') or ip.startswith('172.31.') or
+                ip.startswith('169.254.') or ip.startswith('0.') or ip.startswith('255.')):
+            is_public = True
+            break
+    
+    if not is_public:
+        raise ValueError(f"Non-public address detected: {resolved_ips}")
+    
+    # Build the request URL
+    if port is None:
+        port = default_port
+    request_url = f"{scheme}://{hostname}:{port}{parsed_url.path}{parsed_url.query}"
+    
+    # Call transport
+    status, headers, body = transport(request_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Disallowed status code: {status}")
+    
+    return body

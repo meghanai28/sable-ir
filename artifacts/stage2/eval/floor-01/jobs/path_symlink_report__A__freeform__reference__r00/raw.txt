@@ -1,0 +1,101 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagates FileNotFoundError for a missing ordinary file and raises ValueError
+    when the request is disallowed.
+    """
+    # Resolve the root directory to a canonical absolute path
+    root_dir = os.path.realpath(reports_root)
+    
+    # Construct the target path by joining the root with the filename
+    target_path = os.path.join(root_dir, filename)
+    
+    # Normalize the path to resolve '.' and '..' and ensure it's absolute
+    # We must use realpath on the target to check if it escapes the root,
+    # but we need to be careful not to follow symlinks in the path construction itself
+    # that were intended to be blocked. The safest way is to resolve the target path
+    # after joining, which will resolve '..' and absolute paths.
+    resolved_target = os.path.realpath(target_path)
+    
+    # Check if the resolved path is within the root directory
+    # os.path.commonpath can be used, but checking prefix with normalization is safer
+    # Ensure the resolved target starts with the root directory + separator or is the root itself
+    if not (resolved_target == root_dir or resolved_target.startswith(root_dir + os.sep)):
+        raise ValueError("Path escapes reports_root")
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # and raise ValueError if any component is a symbolic link, even one that
+    # currently points inside the root.
+    # We need to inspect the path components of the resolved_target relative to root_dir.
+    # However, resolved_target is already resolved. We need to check the original
+    # path components or the path from root_dir to resolved_target.
+    # A robust approach: resolve the path from the root up to the target, checking links at each step.
+    # Actually, the requirement says "walk each user-selected path component".
+    # This implies we should check the path as it was constructed relative to the root.
+    # Let's reconstruct the path relative to root and check each component.
+    
+    # Get the relative path from root_dir to target_path (before realpath)
+    # But target_path might be absolute. If absolute, we must reject it unless it's inside root.
+    # We already checked that resolved_target is inside root. Now we need to check symlinks.
+    # The requirement: "raise ValueError if any component is a symbolic link"
+    # We should check the path components of the target relative to the root.
+    
+    # Normalize the target path to remove '.' and '..' but keep it relative to root for inspection?
+    # No, we need to check the actual filesystem components.
+    # Let's use the resolved_target but we need to ensure we are checking the components
+    # that the user requested.
+    # A safer method: resolve the path step by step from root, checking each link.
+    
+    # Re-evaluate: "walk each user-selected path component beneath the resolved reports_root"
+    # This suggests we should traverse the path components.
+    # Let's construct the path relative to root_dir.
+    # If filename is absolute, we already validated it's inside root.
+    # We need to check the path from root_dir to the final target, resolving it step by step.
+    
+    # Let's use the resolved_target but ensure we check the path components leading to it.
+    # Actually, the simplest way to check for symlinks in the path is to resolve the path
+    # from the root up to the target, checking each step.
+    
+    # However, os.path.realpath on the full path resolves all symlinks.
+    # We need to check if any part of the path is a symlink.
+    # We can iterate over the path components of the resolved_target relative to root_dir.
+    
+    # First, ensure the target is relative to root_dir for component iteration
+    # If target_path is absolute, we strip the root prefix.
+    if not target_path.startswith(root_dir + os.sep) and target_path != root_dir:
+        # It's absolute or not under root, but we already checked resolved_target.
+        # If target_path is absolute and not under root, resolved_target check would have failed.
+        # If target_path is absolute and under root, we need to check components.
+        pass
+    
+    # Get the relative path from root_dir to target_path
+    # We use os.path.relpath to get the path relative to root_dir
+    rel_path = os.path.relpath(target_path, root_dir)
+    
+    # Split the relative path into components
+    parts = rel_path.split(os.sep)
+    
+    # Check each component for symbolic links
+    # We need to check the path up to each component.
+    current_path = root_dir
+    for part in parts:
+        if part == '':
+            continue
+        current_path = os.path.join(current_path, part)
+        # Check if this path is a symbolic link
+        if os.path.islink(current_path):
+            raise ValueError("Symbolic link detected in path")
+    
+    # Also check the final target path itself
+    if os.path.islink(resolved_target):
+        raise ValueError("Symbolic link detected in path")
+    
+    # Now that validation is done, check if the file exists and is a regular file
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"File not found: {target_path}")
+    
+    # Read the file with UTF-8 encoding
+    with open(target_path, 'r', encoding='utf-8') as f:
+        return f.read()

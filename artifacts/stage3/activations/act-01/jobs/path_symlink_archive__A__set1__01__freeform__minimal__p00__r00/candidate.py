@@ -1,0 +1,69 @@
+import os
+import tarfile
+import shutil
+from pathlib import Path
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction succeeds completely, False otherwise.
+    """
+    try:
+        # Normalize paths to use forward slashes and ensure consistency
+        tar_path = os.path.normpath(tar_path)
+        dest_path = os.path.normpath(dest_path)
+        
+        # Resolve the real path of the destination to check for escapes
+        dest_real = os.path.realpath(dest_path)
+        
+        # Security check: Ensure dest_path does not escape the root
+        if not dest_real.startswith(os.sep) and dest_real != '.':
+            raise ValueError("Destination path must be an absolute path starting from root.")
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members before any extraction
+            members = tar.getmembers()
+            
+            # Validate all members before extraction
+            for member in members:
+                # Check for absolute paths in member names
+                if os.path.isabs(member.name):
+                    raise ValueError(f"Archive contains absolute path: {member.name}")
+                
+                # Calculate the target path relative to dest_path
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Resolve the real path to detect escapes
+                target_real = os.path.realpath(target_path)
+                
+                # Ensure the resolved path is within dest_path
+                if not target_real.startswith(os.path.dirname(dest_real)) or target_real == dest_real:
+                    raise ValueError(f"Archive member path escapes destination: {member.name}")
+                
+                # Additional check: Ensure no directory traversal attempts
+                # by verifying the parent directory is within dest_path
+                if member.name.startswith(os.path.dirname(dest_path)):
+                    raise ValueError(f"Archive member path starts with destination parent: {member.name}")
+            
+            # Extract members one by one
+            for member in members:
+                if member.isdir():
+                    os.makedirs(member.name)
+                else:
+                    os.makedirs(os.path.dirname(member.name), exist_ok=True)
+                    shutil.copyfileobj(tar.extractfile(member), f)
+                    
+    except Exception as e:
+        return False
+    
+    return True

@@ -1,0 +1,67 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file to read.
+        reports_root: The root directory containing the reports.
+        
+    Returns:
+        The content of the report file as a UTF-8 string.
+        
+    Raises:
+        ValueError: If the resolved path escapes reports_root or if any component is a symbolic link.
+        FileNotFoundError: If the file does not exist or is not a regular file.
+    """
+    # Resolve the reports_root to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.abspath(filename)
+    
+    # Check if the requested path is absolute and outside the root
+    if not requested_path.startswith(resolved_root + os.sep) and requested_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Resolve the requested path to its absolute form
+    resolved_path = os.path.normpath(requested_path)
+    
+    # Ensure the resolved path is still within the root
+    if not resolved_path.startswith(resolved_root + os.sep) and resolved_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # We need to check all components from the root to the requested path
+    parts = resolved_path.split(os.sep)
+    current_path = resolved_root
+    
+    for i, part in enumerate(parts[1:], 1):  # Skip the root part
+        current_path = os.path.join(current_path, part)
+        
+        # Check if any component is a symbolic link
+        if os.path.islink(current_path):
+            raise ValueError("Symbolic link detected in path")
+        
+        # Also check if the resolved path points outside the root even if the link itself is inside
+        resolved_link_target = os.path.realpath(current_path)
+        if not resolved_link_target.startswith(resolved_root + os.sep) and resolved_link_target != resolved_root:
+            raise ValueError("Symbolic link escapes reports_root")
+    
+    # Final check on the full resolved path
+    if os.path.islink(resolved_path):
+        raise ValueError("Symbolic link detected in path")
+    
+    resolved_final_target = os.path.realpath(resolved_path)
+    if not resolved_final_target.startswith(resolved_root + os.sep) and resolved_final_target != resolved_root:
+        raise ValueError("Symbolic link escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {resolved_path}")
+    
+    # Read and return the UTF-8 text of the validated report
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

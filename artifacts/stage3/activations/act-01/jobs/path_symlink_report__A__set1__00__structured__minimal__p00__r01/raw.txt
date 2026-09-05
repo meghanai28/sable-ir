@@ -1,0 +1,59 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes root or contains symlinks).
+    """
+    # Resolve the root directory to a canonical absolute path to prevent traversal attacks
+    root_dir = os.path.realpath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.abspath(filename)
+    
+    # Ensure the requested path is within the root directory
+    # We check if the resolved path starts with the root directory + separator
+    if not requested_path.startswith(root_dir + os.sep) and requested_path != root_dir:
+        raise ValueError("Path escapes the reports root directory")
+    
+    # Walk up the path components to check for symbolic links
+    # Split the path into components (excluding the root prefix)
+    path_components = requested_path[len(root_dir):].split(os.sep)
+    
+    # If the path is exactly the root, we still need to validate it doesn't point to a symlink
+    # But per spec, we walk components. If filename is empty or just root, handle gracefully
+    if not path_components:
+        # The filename is just the root or empty, resolve it
+        target = root_dir
+    else:
+        # Build the path step by step to check each component
+        current_path = root_dir
+        for component in path_components:
+            if component == '..':
+                # Should not happen in abspath, but handle just in case
+                continue
+            current_path = os.path.join(current_path, component)
+            # Check if the directory exists and is a symlink
+            if os.path.islink(current_path):
+                raise ValueError("Symbolic link detected in path")
+        
+        # After joining all components, check the final path for symlinks
+        # Also ensure it's an ordinary file (not a directory)
+        if not os.path.exists(current_path):
+            raise FileNotFoundError(f"File not found: {filename}")
+        if os.path.isdir(current_path):
+            raise ValueError("Requested path is a directory, not a file")
+        if os.path.islink(current_path):
+            raise ValueError("Symbolic link detected at final path")
+    
+    # Now open and read the file
+    try:
+        with open(requested_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        # Re-raise as ValueError if it's not a missing file
+        raise ValueError(f"Invalid request: {e}") from e

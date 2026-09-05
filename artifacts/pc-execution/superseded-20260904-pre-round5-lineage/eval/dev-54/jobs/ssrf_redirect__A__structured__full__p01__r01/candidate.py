@@ -1,0 +1,85 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetches text from a URL with strict safety constraints.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that returns (status, headers, body) for an HTTP request.
+        resolve_host: A function that resolves a hostname to a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the URL is not HTTP/HTTPS on the default port,
+                   if host resolution fails, or if the final destination
+                   differs in scheme or port from the initial request.
+    """
+    # Parse the initial URL to extract scheme, netloc, and path
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Guard: Check if the scheme is HTTP or HTTPS
+    if parsed_url.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Guard: Check if the port is the default for the scheme
+    default_port = {'http': 80, 'https': 443}.get(parsed_url.scheme)
+    if default_port is None or parsed_url.port != default_port:
+        raise ValueError("Only HTTP (port 80) or HTTPS (port 443) on default ports are allowed.")
+    
+    # Guard: Resolve the host
+    hostname = parsed_url.netloc
+    if not hostname:
+        raise ValueError("Invalid URL: missing netloc.")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Host resolution failed.")
+    
+    if not resolved_ips:
+        raise ValueError("No IP addresses resolved for the host.")
+    
+    # Use the first resolved IP to construct the base URL for the request
+    # We need to ensure the URL we pass to transport maintains the scheme and port
+    # and that we can track the final destination.
+    # Since transport is an abstract interface, we assume it handles the URL string correctly.
+    # However, to enforce the "same scheme and default port" rule on the final destination,
+    # we must inspect the final URL before reading the body.
+    
+    # Construct the full URL for the initial request
+    initial_url = parsed_url._replace(netloc=hostname).geturl()
+    
+    # Perform the request using the transport
+    status, headers, body = transport(initial_url)
+    
+    # Guard: Check for redirects
+    # The plan states: "follow the initial destination but never follow a redirect"
+    # We need to check if there is a Location header.
+    location_header = headers.get('Location')
+    
+    if location_header:
+        # Reject every redirect without following
+        raise ValueError("Redirects are not allowed.")
+    
+    # Guard: Check the final destination before reading the body
+    # Since we are not following redirects, the final destination is the initial one.
+    # However, if the transport implementation internally modifies the URL or if we were to follow redirects,
+    # we would need to check. Here, we strictly follow the initial destination.
+    # The initial URL was already validated for scheme and port.
+    # We re-verify to ensure consistency, especially if the transport might have normalized the URL.
+    # But since we pass the exact initial_url to transport, and we don't follow redirects,
+    # the final destination is the same as the initial one.
+    # We assume the transport returns the body for the requested URL.
+    
+    # Guard: Only return body for status 200
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed.")
+    
+    # Return the response body text
+    return body

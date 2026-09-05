@@ -1,0 +1,54 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL after validating scheme, status code, and resolving host.
+    
+    Args:
+        url: The URL to fetch (untrusted input).
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If scheme is not http/https, status is not 200, or other validation fails.
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Determine the port based on scheme
+    if scheme == 'http':
+        default_port = 80
+    else:
+        default_port = 443
+    
+    # Extract hostname from netloc (remove port if present)
+    hostname = parsed.netloc
+    if ':' in hostname:
+        hostname, _ = hostname.rsplit(':', 1)
+    
+    # Resolve hostname
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname {hostname}: {e}")
+    
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for hostname {hostname}")
+    
+    # Validate status code before making request
+    status, headers, body = transport(url)
+    
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Return the body as text
+    return body.decode('utf-8') if isinstance(body, bytes) else body

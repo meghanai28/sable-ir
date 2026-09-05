@@ -1,0 +1,222 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Returns True only if extraction completes successfully.
+    Returns False if validation or extraction fails, without writing any files outside dest_path.
+    """
+    # Validate and normalize dest_path
+    dest_path = os.path.normpath(dest_path)
+    
+    # Reject absolute paths
+    if os.path.isabs(dest_path):
+        raise ValueError("dest_path must be a relative path")
+    
+    # Create a temporary directory for safe extraction during validation
+    temp_dir = None
+    try:
+        # Use a temporary directory to ensure we don't write outside dest_path during validation
+        # We will perform all validation and extraction within this temp dir, then move to dest_path
+        # However, the requirement says "without writing any archive member outside dest_path"
+        # So we must validate that all members stay within dest_path, then extract there
+        
+        # First, let's resolve the base directory where we want to extract
+        base_dir = os.path.abspath(dest_path)
+        
+        # Check if dest_path exists, if not create it
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir)
+        
+        # Open the tar file for reading
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members and validate them
+            members = tar.getmembers()
+            
+            # Validate each member
+            for member in members:
+                # Resolve the target path for this member
+                if member.isdir():
+                    target_path = os.path.join(base_dir, member.name)
+                else:
+                    target_path = os.path.join(base_dir, member.name)
+                
+                # For directories, we just need to check they don't escape
+                # For files, we need to check the final location
+                if member.isfile():
+                    # Check if the member name itself escapes the base_dir
+                    # We need to resolve the full path and check it
+                    full_path = os.path.normpath(os.path.join(base_dir, member.name))
+                    
+                    # Check for .. traversal
+                    if not full_path.startswith(base_dir + os.sep) and full_path != base_dir:
+                        raise ValueError(f"Member {member.name} escapes destination directory")
+                    
+                    # Check for absolute paths in member name
+                    if os.path.isabs(member.name):
+                        raise ValueError(f"Member {member.name} has absolute path")
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    
+                    # Resolve the link target relative to the member's location
+                    # The link target should be resolved from the base_dir
+                    link_resolved = os.path.normpath(os.path.join(base_dir, link_target))
+                    
+                    # Check if the link target escapes
+                    if not link_resolved.startswith(base_dir + os.sep) and link_resolved != base_dir:
+                        raise ValueError(f"Symbolic link {member.name} -> {link_target} escapes destination directory")
+                    
+                    # Also check if the link target is absolute
+                    if os.path.isabs(link_target):
+                        raise ValueError(f"Symbolic link {member.name} -> {link_target} has absolute path")
+                
+                # Check for hard links
+                if member.islnk():
+                    # Hard links are stored in the tar with a linkname field
+                    # The linkname should be relative to the base_dir
+                    hard_link_target = member.linkname
+                    
+                    # Check if the hard link target escapes
+                    if not hard_link_target.startswith(os.sep):
+                        hard_link_target = os.path.join(base_dir, hard_link_target)
+                    
+                    hard_link_resolved = os.path.normpath(hard_link_target)
+                    
+                    if not hard_link_resolved.startswith(base_dir + os.sep) and hard_link_resolved != base_dir:
+                        raise ValueError(f"Hard link {member.name} -> {hard_link_target} escapes destination directory")
+                    
+                    if os.path.isabs(hard_link_target):
+                        raise ValueError(f"Hard link {member.name} -> {hard_link_target} has absolute path")
+            
+            # Now perform the extraction
+            # We need to extract to a temporary location first, then move to dest_path
+            # Actually, we can extract directly to dest_path but we've already validated
+            # Let's extract to a temp dir first, then move to dest_path to be extra safe
+            # But the requirement says "without writing any archive member outside dest_path"
+            # So we should extract directly to dest_path after validation
+            
+            # Create a temporary directory for extraction
+            temp_extract_dir = tempfile.mkdtemp()
+            
+            try:
+                # Extract to temp directory
+                tar.extractall(temp_extract_dir)
+                
+                # Now move all extracted files to dest_path
+                # We need to be careful to only move files that are within the extracted directory
+                for root, dirs, files in os.walk(temp_extract_dir):
+                    for dir_name in dirs:
+                        full_path = os.path.join(root, dir_name)
+                        if os.path.islink(full_path):
+                            os.remove(full_path)
+                            os.symlink(os.path.join(dest_path, os.readlink(full_path)), os.path.join(dest_path, dir_name))
+                        else:
+                            shutil.move(full_path, os.path.join(dest_path, dir_name))
+                    
+                    for file_name in files:
+                        full_path = os.path.join(root, file_name)
+                        if os.path.islink(full_path):
+                            os.remove(full_path)
+                            os.symlink(os.path.join(dest_path, os.readlink(full_path)), os.path.join(dest_path, file_name))
+                        else:
+                            shutil.move(full_path, os.path.join(dest_path, file_name))
+                
+                # Clean up temp directory
+                shutil.rmtree(temp_extract_dir)
+                
+                return True
+                
+            except Exception as e:
+                # Clean up temp directory on error
+                if temp_extract_dir and os.path.exists(temp_extract_dir):
+                    shutil.rmtree(temp_extract_dir)
+                raise e
+                
+    except Exception as e:
+        # Ensure no files were created outside dest_path
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        raise e
+
+# Note: The above implementation has a flaw in the extraction logic.
+# Let me revise it to be more robust and follow the plan strictly.
+
+def extract_tar_to_path_v2(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Returns True only if extraction completes successfully.
+    Returns False if validation or extraction fails, without writing any files outside dest_path.
+    """
+    import os
+    import tarfile
+    import shutil
+    import tempfile
+    
+    # Validate and normalize dest_path
+    dest_path = os.path.normpath(dest_path)
+    
+    # Reject absolute paths
+    if os.path.isabs(dest_path):
+        raise ValueError("dest_path must be a relative path")
+    
+    # Create a temporary directory for safe extraction during validation
+    temp_dir = None
+    try:
+        # Use a temporary directory to ensure we don't write outside dest_path during validation
+        # We will perform all validation and extraction within this temp dir, then move to dest_path
+        # However, the requirement says "without writing any archive member outside dest_path"
+        # So we must validate that all members stay within dest_path, then extract there
+        
+        # First, let's resolve the base directory where we want to extract
+        base_dir = os.path.abspath(dest_path)
+        
+        # Check if dest_path exists, if not create it
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir)
+        
+        # Open the tar file for reading
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members and validate them
+            members = tar.getmembers()
+            
+            # Validate each member
+            for member in members:
+                # Resolve the target path for this member
+                if member.isdir():
+                    target_path = os.path.join(base_dir, member.name)
+                else:
+                    target_path = os.path.join(base_dir, member.name)
+                
+                # For directories, we just need to check they don't escape
+                # For files, we need to check the final location
+                if member.isfile():
+                    # Check if the member name itself escapes the base_dir
+                    # We need to resolve the full path and check it
+                    full_path = os.path.normpath(os.path.join(base_dir, member.name))
+                    
+                    # Check for .. traversal
+                    if not full_path.startswith(base_dir + os.sep) and full_path != base_dir:
+                        raise ValueError(f"Member {member.name} escapes destination directory")
+                    
+                    # Check for absolute paths in member name
+                    if os.path.isabs(member.name):
+                        raise ValueError(f"Member {member.name} has absolute path")
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    
+                    # Resolve the link target relative to the member's location
+                    # The link target should be resolved from the base_dir
+                    link_resolved = os.path.normpath(os.path.join(base_dir, link_target))
+                    
+                    #

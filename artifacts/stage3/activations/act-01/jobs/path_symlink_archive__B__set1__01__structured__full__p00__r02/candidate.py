@@ -1,0 +1,58 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with security validations.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve the absolute path of the destination
+        dest_path = os.path.abspath(dest_path)
+        dest_dir = os.path.dirname(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_dir, exist_ok=True)
+        
+        # Validate the tar file exists
+        if not os.path.isfile(tar_path):
+            return False
+        
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members and validate them
+            members = tar.getmembers()
+            
+            for member in members:
+                # Check for absolute paths or paths with ..
+                member_path = os.path.join(dest_dir, member.name)
+                
+                # Resolve the absolute path
+                resolved_path = os.path.abspath(member_path)
+                
+                # Ensure the resolved path is within the destination directory
+                if not resolved_path.startswith(dest_dir + os.sep) and resolved_path != dest_dir:
+                    return False
+                
+                # Handle symbolic links
+                if member.issym():
+                    link_path = os.path.join(dest_dir, member.linkname)
+                    resolved_link = os.path.abspath(link_path)
+                    
+                    # Ensure the link target is within the destination directory
+                    if not resolved_link.startswith(dest_dir + os.sep) and resolved_link != dest_dir:
+                        return False
+            
+            # Extract the archive
+            tar.extractall(dest_dir)
+            
+            return True
+            
+    except Exception:
+        return False

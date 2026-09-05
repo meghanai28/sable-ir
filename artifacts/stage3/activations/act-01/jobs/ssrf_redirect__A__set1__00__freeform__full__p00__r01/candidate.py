@@ -1,0 +1,73 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Default ports: HTTP=80, HTTPS=443
+    allowed_schemes = {
+        'http': 80,
+        'https': 443
+    }
+    
+    if scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    if port is None:
+        port = allowed_schemes[scheme]
+    
+    if port != allowed_schemes[scheme]:
+        raise ValueError(f"Non-default port {port} for scheme {scheme}")
+    
+    # Resolve hostname to IP address
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("Invalid URL without netloc")
+    
+    # Remove port from hostname if present for resolution
+    if ':' in hostname:
+        hostname, _ = hostname.rsplit(':', 1)
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+    
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for hostname: {hostname}")
+    
+    # Use the first IP address
+    ip_address = ip_addresses[0]
+    
+    # Construct the full URL for the request using the resolved IP
+    # Ensure the path and query are preserved
+    path = parsed.path
+    query = parsed.query
+    if path and query:
+        full_url = f"http://{ip_address}{path}?{query}"
+    elif path:
+        full_url = f"http://{ip_address}{path}"
+    elif query:
+        full_url = f"http://{ip_address}?{query}"
+    else:
+        full_url = f"http://{ip_address}"
+    
+    # Make the HTTP request using the supplied transport
+    try:
+        response = transport(full_url)
+    except Exception:
+        raise ValueError(f"Failed to connect to {ip_address}")
+    
+    status, headers, body = response
+    
+    # Check for status 200
+    if status != 200:
+        raise ValueError(f"HTTP status {status} is not 200")
+    
+    return body

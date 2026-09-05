@@ -1,0 +1,72 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # 1. Validate dest_path is not absolute
+        if os.path.isabs(dest_path):
+            raise ValueError("Destination path must be relative to the current working directory.")
+        
+        # 2. Normalize dest_path and check it doesn't escape root
+        dest_path = os.path.normpath(dest_path)
+        if dest_path.startswith('..') or dest_path.startswith('/'):
+            raise ValueError("Destination path escapes root or is absolute.")
+        
+        # Ensure dest_path is a directory
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        # 3. Open the tar archive and iterate over members
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # 4. Resolve the member's full path relative to dest_path
+                member_dir = os.path.dirname(member.name)
+                member_name = os.path.basename(member.name)
+                
+                # Resolve the full path for validation
+                full_member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check for path traversal
+                if not full_member_path.startswith(dest_path):
+                    raise ValueError(f"Member path escapes destination: {member.name}")
+                
+                # 5. Validate hard links
+                if member.type == tarfile.HARDLINK or member.type == tarfile.SYMLINK:
+                    # Hard links: check the target file exists and is within dest_path
+                    if member.linkname:
+                        # Resolve the target of the hard link
+                        target_path = os.path.normpath(os.path.join(dest_path, member.linkname))
+                        if not target_path.startswith(dest_path):
+                            raise ValueError(f"Hard link target escapes destination: {member.linkname}")
+                        # Ensure the target file exists before extraction
+                        if not os.path.isfile(target_path):
+                            raise ValueError(f"Hard link target does not exist: {target_path}")
+                
+                # 6. Validate symbolic links
+                if member.type == tarfile.SYMLINK:
+                    # Resolve the target of the symbolic link
+                    target_path = os.path.normpath(os.path.join(dest_path, member.linkname))
+                    if not target_path.startswith(dest_path):
+                        raise ValueError(f"Symbolic link target escapes destination: {member.linkname}")
+                    # Check if the target exists and is a file or directory
+                    if not os.path.isfile(target_path) and not os.path.isdir(target_path):
+                        raise ValueError(f"Symbolic link target does not exist: {target_path}")
+                
+                # 7. Extract the member
+                tar.extract(member, dest_path)
+                
+    except Exception:
+        return False
+    
+    return True

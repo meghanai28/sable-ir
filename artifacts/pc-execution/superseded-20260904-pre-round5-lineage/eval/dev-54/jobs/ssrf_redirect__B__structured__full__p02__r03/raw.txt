@@ -1,0 +1,125 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolver.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The response body for a 200 status code.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., non-HTTP/HTTPS, port mismatch, resolution failure).
+    """
+    import socket
+    import urllib.parse
+    from urllib.parse import urlparse, urljoin
+    
+    def validate_url(url_str):
+        parsed = urlparse(url_str)
+        scheme = parsed.scheme.lower()
+        port = parsed.port
+        
+        # Check scheme
+        if scheme not in ('http', 'https'):
+            raise ValueError(f"Only HTTP and HTTPS schemes are allowed. Got: {scheme}")
+        
+        # Check port
+        default_port = {'http': 80, 'https': 443}[scheme]
+        if port is not None and port != default_port:
+            raise ValueError(f"Only default ports are allowed for {scheme}. Got: {port}")
+        
+        # Resolve hostname
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid URL: missing hostname")
+        
+        try:
+            ip_addresses = resolve_host(hostname)
+            if not ip_addresses:
+                raise ValueError(f"Failed to resolve hostname: {hostname}")
+        except Exception as e:
+            raise ValueError(f"Failed to resolve hostname: {hostname}: {e}")
+    
+    def validate_redirect(current_url, new_location):
+        """
+        Validate that the redirect location meets security constraints:
+        - Same scheme
+        - Same port (default port only)
+        - Same credentials (empty or identical)
+        - Same public address (hostname)
+        """
+        current_parsed = urlparse(current_url)
+        new_parsed = urlparse(new_location)
+        
+        # Scheme must match
+        if new_parsed.scheme != current_parsed.scheme:
+            raise ValueError(f"Redirect scheme mismatch: {current_parsed.scheme} -> {new_parsed.scheme}")
+        
+        # Port must match (default port only)
+        current_port = current_parsed.port
+        new_port = new_parsed.port
+        
+        if current_port is not None and new_port is not None:
+            if current_port != new_port:
+                raise ValueError(f"Redirect port mismatch: {current_port} -> {new_port}")
+        elif current_port is None and new_port is not None:
+            raise ValueError(f"Redirect requires default port but got: {new_port}")
+        
+        # Credentials must match (both empty or identical)
+        if current_parsed.username != new_parsed.username or current_parsed.password != new_parsed.password:
+            raise ValueError("Redirect credentials mismatch")
+        
+        # Hostname must match
+        if current_parsed.hostname != new_parsed.hostname:
+            raise ValueError(f"Redirect hostname mismatch: {current_parsed.hostname} -> {new_parsed.hostname}")
+    
+    def get_public_address(parsed):
+        """Return the public address (hostname) for comparison."""
+        return parsed.hostname
+    
+    # Initial validation
+    validate_url(url)
+    
+    current_url = url
+    hop_count = 0
+    max_hops = 5
+    
+    while True:
+        # Resolve current URL to check final destination
+        current_parsed = urlparse(current_url)
+        validate_url(current_url)  # Re-validate to ensure no changes
+        
+        # Get transport response
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for redirect
+        location = headers.get('Location')
+        if location:
+            hop_count += 1
+            if hop_count > max_hops:
+                raise ValueError(f"Too many redirects: {hop_count}")
+            
+            # Resolve redirect location
+            resolved_location = urljoin(current_url, location)
+            
+            # Validate redirect
+            validate_redirect(current_url, resolved_location)
+            
+            # Update current URL
+            current_url = resolved_location
+        else:
+            break
+    
+    # Final validation before reading body
+    final_parsed = urlparse(current_url)
+    validate_url(current_url)
+    
+    # Read and return body
+    return body.decode('utf-8') if isinstance(body, bytes) else body

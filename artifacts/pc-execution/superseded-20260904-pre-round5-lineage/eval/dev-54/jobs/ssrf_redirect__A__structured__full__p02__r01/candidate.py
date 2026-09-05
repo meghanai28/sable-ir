@@ -1,0 +1,113 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of IP addresses.
+    
+    Returns:
+        The body text for a successful 200 response.
+    
+    Raises:
+        ValueError: If the URL is disallowed, host resolution fails, or redirect logic is violated.
+    """
+    # Parse the initial URL
+    parsed = urlparse(url)
+    
+    # Validate scheme and port
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {parsed.scheme}")
+    
+    if parsed.scheme == 'http' and parsed.port != 80:
+        raise ValueError(f"HTTP must use port 80, got {parsed.port}")
+    if parsed.scheme == 'https' and parsed.port != 443:
+        raise ValueError(f"HTTPS must use port 443, got {parsed.port}")
+    
+    # Resolve host
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve host: {hostname}")
+    
+    if not resolved_ips:
+        raise ValueError(f"No IP addresses found for: {hostname}")
+    
+    # Ensure we are using one of the resolved IPs for the host check
+    # (The actual connection will use the one returned by transport, but we validate the hostname)
+    
+    # Build the canonical URL for comparison (without fragment)
+    canonical_base = f"{parsed.scheme}://{hostname}"
+    
+    # Initial destination
+    current_url = parsed._replace(net=resolved_ips[0], path=parsed.path, params=parsed.params, query=parsed.query)
+    canonical_current = current_url._replace(net=resolved_ips[0])
+    
+    # Check if the initial URL is already disallowed (e.g., contains .. segments in path)
+    # We need to normalize the path to check for traversal
+    path = parsed.path
+    if path:
+        # Split path by / and check for ..
+        parts = path.split('/')
+        if '..' in parts:
+            raise ValueError("Path contains unsafe '..' segment")
+    
+    # Make a copy of headers to track Location
+    headers = {}
+    
+    while True:
+        # Call transport
+        status, headers, body = transport(current_url.geturl())
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header and prevent following
+        if 'Location' in headers:
+            raise ValueError("Redirects are disallowed")
+        
+        # Final destination check
+        # We must ensure the current_url (which has been normalized for host) 
+        # is still beneath the requested public URL.
+        # Since we only follow the initial destination and never follow Location,
+        # and we validate the initial URL, we just need to ensure we haven't
+        # drifted outside the base. However, the prompt says "check the final destination 
+        # before reading the body and raise ValueError unless it remains beneath the requested public URL".
+        # Since we don't follow redirects, the final destination is the same as the initial 
+        # (after host resolution). We already validated the initial URL.
+        # We just need to make sure the path doesn't go above the base.
+        
+        # Re-evaluate canonical_base vs current_url path
+        # The canonical_base is the scheme://host part.
+        # We need to ensure the path is relative to this base.
+        
+        # Actually, the constraint "remains beneath the requested public URL" implies 
+        # we should not allow paths like /../etc/passwd if the base is /safe/path.
+        # But since we resolve the host and don't follow redirects, the path remains the same.
+        # The only way it changes is if the URL itself had .. segments, which we check at start.
+        # However, to be safe and strictly follow "check the final destination", 
+        # we re-verify the path structure.
+        
+        # Normalize the path again to be sure
+        normalized_path = unquote(path)
+        if normalized_path.startswith('..'):
+            raise ValueError("Path traversal detected")
+        
+        # Construct the full URL for the final check
+        final_url = f"{canonical_base}{path}"
+        
+        # Ensure the final URL starts with the canonical base
+        if not final_url.startswith(canonical_base):
+            raise ValueError("Destination drifted outside requested URL")
+        
+        return body.decode('utf-8')
+    
+    # This part is theoretically unreachable given the loop logic, but for completeness:
+    # If status is 200 and no Location, we return body.
+    # The loop handles the check.

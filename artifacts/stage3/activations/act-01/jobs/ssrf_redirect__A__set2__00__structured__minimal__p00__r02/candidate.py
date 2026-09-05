@@ -1,0 +1,62 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL, validating the path against a safe extraction directory.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (function): A function that takes a URL and returns (status, headers, body).
+        resolve_host (function): A function that resolves a hostname to IP addresses.
+    
+    Returns:
+        str: The body of the response for a successful HTTP request (status 200).
+    
+    Raises:
+        ValueError: If the request is disallowed or the path escapes the extraction directory.
+    """
+    # Validate the URL scheme
+    if not (url.startswith('http://') or url.startswith('https://')):
+        raise ValueError("Only HTTP and HTTPS URLs are allowed.")
+    
+    # Resolve the hostname
+    hostname = url.split('://')[1].split('/')[0]
+    ip_addresses = resolve_host(hostname)
+    
+    # Determine the port and construct the full URL for transport
+    scheme = 'http' if url.startswith('http://') else 'https'
+    default_port = {
+        'http': 80,
+        'https': 443
+    }
+    
+    # Extract port if present
+    port = None
+    if '?' in url:
+        path_start = url.find('?')
+        path = url[path_start + 1:]
+    else:
+        path = url
+    
+    if '/' in path:
+        path = path.split('/')[0]
+    
+    if ':' in path:
+        port_str = path.split(':')[0]
+        if port_str.isdigit():
+            port = int(port_str)
+        else:
+            path = path.split(':')[1]
+    
+    # Construct the full URL for transport
+    if port:
+        full_url = f"{scheme}://{hostname}:{port}/{path}"
+    else:
+        full_url = f"{scheme}://{hostname}/{path}"
+    
+    # Call transport
+    status, headers, body = transport(full_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only HTTP requests with status 200 are allowed.")
+    
+    return body

@@ -1,0 +1,59 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Resolve the absolute path for the destination root
+    dest_root = os.path.abspath(dest_path)
+    
+    # Ensure the destination directory exists
+    try:
+        os.makedirs(dest_root, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Open the tar archive
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Resolve the member's path relative to the destination root
+                member_path = os.path.join(dest_root, member.name)
+                # Normalize to ensure no .. escapes
+                normalized_path = os.path.normpath(member_path)
+                
+                # Security check: ensure the normalized path is within the dest_root
+                if not normalized_path.startswith(dest_root + os.sep) and normalized_path != dest_root:
+                    return False
+            
+            # Perform extraction with safe settings
+            # Use safe settings to prevent directory traversal
+            for member in tar.getmembers():
+                # Check if the member is a directory
+                if member.isdir():
+                    os.makedirs(os.path.join(dest_root, member.name), exist_ok=True)
+                else:
+                    # Create parent directories if needed
+                    parent_dir = os.path.dirname(os.path.join(dest_root, member.name))
+                    if parent_dir and not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+                    
+                    # Extract the member
+                    tar.extract(member, dest_root, set_attrs=True)
+            
+            return True
+            
+    except (tarfile.TarError, OSError, IOError) as e:
+        return False
+    except Exception:
+        return False

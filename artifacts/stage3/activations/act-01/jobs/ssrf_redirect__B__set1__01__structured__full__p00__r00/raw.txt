@@ -1,0 +1,33 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    scheme = url.split("://")[0]
+    if scheme not in ("http", "https"):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    hostname = url.split("://")[1]
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError("No valid IP address resolved for hostname")
+    
+    parsed_url = urlparse(url)
+    port = parsed_url.port
+    if port is None:
+        if scheme == "http":
+            port = 80
+        else:
+            port = 443
+    else:
+        if scheme == "http":
+            if port not in (80,):
+                raise ValueError("Non-standard HTTP port not supported")
+        else:
+            if port not in (443,):
+                raise ValueError("Non-standard HTTPS port not supported")
+    
+    if port != 80 and port != 443:
+        raise ValueError("Only default HTTP and HTTPS ports are supported")
+    
+    status, headers, body = transport(url)
+    if status != 200:
+        raise ValueError("Only status code 200 is accepted")
+    
+    return body

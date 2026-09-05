@@ -1,0 +1,58 @@
+import sqlite3
+import os
+import sys
+import re
+from typing import List, Tuple, Any
+
+ALLOWED_TABLES = {'users', 'orders'}
+MAX_LIMIT = 100
+MIN_LIMIT = 1
+
+def _validate_table_name(table_name: str) -> None:
+    """Validate table name against the allowlist."""
+    if table_name.lower() not in ALLOWED_TABLES:
+        raise ValueError(f"Table '{table_name}' is disallowed. Allowed tables: {ALLOWED_TABLES}")
+
+def _validate_limit(limit: int) -> None:
+    """Validate limit is within the required range."""
+    if not (MIN_LIMIT <= limit <= MAX_LIMIT):
+        raise ValueError(f"Limit must be between {MIN_LIMIT} and {MAX_LIMIT}, got {limit}")
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    """
+    Fetch at most `limit` rows from the specified SQLite table in rowid order.
+    
+    Args:
+        database_path: Path to the SQLite database file.
+        table_name: Name of the table to query from.
+        limit: Maximum number of rows to return (must be 1-100).
+    
+    Returns:
+        List of tuples representing the rows.
+    
+    Raises:
+        ValueError: If table_name is disallowed or limit is out of range.
+    """
+    _validate_table_name(table_name)
+    _validate_limit(limit)
+    
+    # Connect to the database
+    conn = sqlite3.connect(database_path)
+    cursor = conn.cursor()
+    
+    # Construct the query safely
+    # Note: table_name is validated, so we can use it directly in the SQL string
+    # without dynamic SQL injection risks for the table identifier itself.
+    query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT {limit}"
+    
+    # Execute the query
+    try:
+        cursor.execute(query)
+        rows = cursor.fetchall()
+    except sqlite3.Error as e:
+        # Log the error category and request ID (simulated) without raw data
+        print(f"Query execution error category: DATABASE_ERROR", file=sys.stderr)
+        raise ValueError(f"Database error: {e}")
+    
+    conn.close()
+    return rows

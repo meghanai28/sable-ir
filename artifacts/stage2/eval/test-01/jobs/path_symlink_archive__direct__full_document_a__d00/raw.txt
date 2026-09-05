@@ -1,0 +1,51 @@
+import tarfile
+import os
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Security measures applied:
+    1. Archive extraction rejects symbolic links and hard links.
+    2. Validation ensures no members are extracted outside dest_path.
+    """
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the absolute path of the destination
+            abs_dest_path = os.path.abspath(dest_path)
+            
+            for member in tar.getmembers():
+                # Check if the member is a symbolic link or hard link
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Calculate the absolute path where the member would be extracted
+                # For directories, we need to ensure the directory exists and is within dest_path
+                # For files, we check the parent directory of the file
+                
+                # Resolve the member's name relative to dest_path
+                member_path = os.path.join(abs_dest_path, member.name)
+                abs_member_path = os.path.abspath(member_path)
+                
+                # Ensure the member path is within the destination directory
+                # This handles cases where ../ might be used in the archive
+                if not abs_member_path.startswith(abs_dest_path + os.sep) and abs_member_path != abs_dest_path:
+                    return False
+                
+                # Create directory structure if needed
+                if member.isdir():
+                    os.makedirs(abs_member_path, exist_ok=True)
+                else:
+                    # Create parent directories if they don't exist
+                    parent_dir = os.path.dirname(abs_member_path)
+                    if parent_dir and not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+            
+            # Extract the archive
+            tar.extractall(path=abs_dest_path)
+            
+            return True
+    
+    except Exception:
+        return False

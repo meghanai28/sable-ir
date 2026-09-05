@@ -1,0 +1,157 @@
+import urllib.request
+import urllib.parse
+import urllib.error
+import socket
+import sys
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict scheme/port validation and redirect handling.
+    
+    Args:
+        url: The target URL string.
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of IP strings.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme/port is invalid or status is not 200.
+    """
+    # Parse the initial URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    valid_schemes = ('http', 'https')
+    if parsed.scheme not in valid_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed.scheme}")
+    
+    # Determine default port based on scheme
+    default_port = {'http': 80, 'https': 443}.get(parsed.scheme)
+    
+    # Extract port from URL, defaulting to None if not specified
+    port_str = parsed.port
+    if port_str is None:
+        port_str = default_port
+    else:
+        # Ensure port is an integer
+        try:
+            port_str = int(port_str)
+        except ValueError:
+            raise ValueError(f"Invalid port in URL: {port_str}")
+    
+    # Validate port
+    if port_str != default_port:
+        raise ValueError(f"Port {port_str} not allowed, expected {default_port}")
+    
+    # Resolve the initial hostname
+    initial_hostname = parsed.netloc
+    if not initial_hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Remove port from hostname for resolution if present
+    if port_str:
+        initial_hostname = initial_hostname.split(':')[0]
+    
+    try:
+        resolved_hosts = resolve_host(initial_hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname {initial_hostname}: {e}")
+    
+    if not resolved_hosts:
+        raise ValueError(f"No valid IP addresses found for {initial_hostname}")
+    
+    # Use the first resolved IP
+    target_host = resolved_hosts[0]
+    
+    # Parse the URL for the base path/query
+    base_url = parsed._replace(netloc=target_host, port=port_str).geturl()
+    
+    # Track redirect history
+    redirect_count = 0
+    max_redirects = 5
+    
+    # Current URL to follow redirects against
+    current_url = base_url
+    
+    while True:
+        # Create a request object
+        req = urllib.request.Request(current_url)
+        
+        # Get the response using transport
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        status, headers, body = response
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Non-200 status code: {status}")
+        
+        # Decode body to string
+        if isinstance(body, bytes):
+            body = body.decode('utf-8', errors='replace')
+        
+        return body
+        
+        # Handle redirects
+        if 'location' in headers:
+            redirect_url = headers['location']
+            
+            # Parse the redirect URL
+            redirect_parsed = urllib.parse.urlparse(redirect_url)
+            
+            # Check if the redirect URL has a scheme
+            if not redirect_parsed.scheme:
+                # Treat as relative to current URL
+                # Reconstruct full URL
+                if '?' in current_url:
+                    current_url = current_url.split('?', 1)[0] + '?' + redirect_url
+                else:
+                    current_url = current_url + redirect_url
+            else:
+                # Absolute URL
+                current_url = redirect_url
+            
+            # Check for infinite redirect loop
+            if current_url == base_url:
+                raise ValueError("Redirect loop detected")
+            
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError(f"Too many redirects: {redirect_count}")
+            
+            # Resolve the new hostname
+            new_hostname = redirect_parsed.netloc
+            if not new_hostname:
+                raise ValueError("Invalid redirect URL: missing hostname")
+            
+            if redirect_parsed.port:
+                new_hostname = new_hostname.split(':')[0]
+            
+            try:
+                new_resolved = resolve_host(new_hostname)
+            except Exception as e:
+                raise ValueError(f"Failed to resolve redirect hostname {new_hostname}: {e}")
+            
+            if not new_resolved:
+                raise ValueError(f"No valid IP addresses found for redirect hostname {new_hostname}")
+            
+            # Update target host and base URL for next iteration
+            target_host = new_resolved[0]
+            base_url = redirect_parsed._replace(netloc=target_host, port=redirect_parsed.port).geturl()
+            
+            # Ensure we maintain the same scheme and port as the initial destination
+            # The redirect URL should already have the correct scheme/port, but we enforce it here
+            if redirect_parsed.scheme != parsed.scheme:
+                raise ValueError(f"Redirect scheme {redirect_parsed.scheme} differs from initial scheme {parsed.scheme}")
+            if redirect_parsed.port != port_str:
+                raise ValueError(f"Redirect port {redirect_parsed.port} differs from initial port {port_str}")
+            
+            current_url = base_url
+        else:
+            # No redirect, break loop
+            break

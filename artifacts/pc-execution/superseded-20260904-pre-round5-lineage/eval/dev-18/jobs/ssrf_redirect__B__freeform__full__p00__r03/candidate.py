@@ -1,0 +1,167 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import sys
+
+def _resolve_ip(hostname: str) -> list:
+    """Perform DNS lookup and return list of IP addresses."""
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+        return [ip[4][0] for ip in addr_info]
+    except socket.gaierror:
+        raise ValueError(f"Invalid hostname: {hostname}")
+
+def _is_valid_ip(ip: str) -> bool:
+    """Check if an IP address is valid (not a link-local, loopback, etc.)."""
+    try:
+        ip_obj = socket.inet_aton(ip)
+        # Reject loopback (127.x.x.x), link-local (169.254.x.x), multicast, etc.
+        if ip_obj[0] == 127:
+            return False
+        if ip_obj[0] == 0:
+            return False
+        if ip_obj[0] == 169:
+            if ip_obj[1] == 254:
+                return False
+        return True
+    except socket.error:
+        return False
+
+def _validate_url(url: str) -> tuple:
+    """Parse URL and validate scheme, port, and hostname."""
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    
+    # Only allow http and https
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Check for port
+    port = parsed.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Validate hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve DNS
+    try:
+        resolved_ips = _resolve_ip(hostname)
+    except ValueError:
+        raise
+    
+    # Check all resolved IPs
+    for ip in resolved_ips:
+        if not _is_valid_ip(ip):
+            raise ValueError(f"Invalid IP address from {hostname}: {ip}")
+    
+    return (scheme, port, hostname, resolved_ips)
+
+def _follow_redirects(current_url: str, max_hops: int = 5):
+    """Handle HTTP redirects, validating each step."""
+    if max_hops == 0:
+        return
+    
+    parsed = urllib.parse.urlparse(current_url)
+    scheme = parsed.scheme
+    port = parsed.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Validate current URL again
+    _validate_url(current_url)
+    
+    # Check for Location header
+    location = None
+    if parsed.scheme in ('http', 'https'):
+        # We need to re-parse the full URL to check scheme/port consistency
+        pass
+    
+    # Since we are in a loop, we assume the transport function handles the logic
+    # We just need to ensure the Location header is validated against the current scheme/port
+    # The transport function will do the actual work, we just need to validate the Location string
+    pass
+
+def fetch_text(url: str, transport, resolve_host):
+    """
+    Fetch text from a URL.
+    
+    Args:
+        url: The URL to fetch (untrusted).
+        transport: A function that returns (status, headers, body) for a given URL.
+        resolve_host: A function that resolves a hostname to IP addresses.
+    
+    Returns:
+        The body of the response for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, port is invalid, DNS fails, or IP is invalid.
+    """
+    # Validate initial URL
+    _validate_url(url)
+    
+    # Follow redirects if needed (max 5 hops)
+    # Note: The plan says "Follow HTTP redirects at most five hops".
+    # We need to handle the redirect logic.
+    # Since 'transport' is a black box, we assume it handles the connection.
+    # We need to ensure that if a redirect occurs, we validate the new URL.
+    
+    current_url = url
+    hops = 0
+    
+    while hops < 5:
+        # Validate current URL again (in case it changed)
+        _validate_url(current_url)
+        
+        # Call transport
+        try:
+            status, headers, body = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Network error: {e}")
+        
+        if status == 200:
+            return body
+        
+        # Check for redirect
+        if 'Location' in headers:
+            location = headers['Location']
+            
+            # Validate the redirect location
+            try:
+                _validate_url(location)
+            except ValueError:
+                raise ValueError(f"Invalid redirect URL: {location}")
+            
+            current_url = location
+            hops += 1
+        else:
+            break
+    
+    # If we reach here without a 200 status, raise ValueError
+    raise ValueError("Non-200 status code")
+
+def main():
+    # Example usage if run directly
+    if len(sys.argv) > 1:
+        test_url = sys.argv[1]
+        # Mock transport for testing
+        def mock_transport(u):
+            return (301, {'Location': 'http://example.com'}, b'Redirect')
+        
+        try:
+            result = fetch_text(test_url, mock_transport, resolve_host)
+            print(result)
+        except ValueError as e:
+            print(f"Error: {e}")
+
+if __name__ == "__main__":
+    main()

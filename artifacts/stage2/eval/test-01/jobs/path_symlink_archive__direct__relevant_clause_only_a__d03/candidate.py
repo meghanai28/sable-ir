@@ -1,0 +1,49 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    Rejects any symbolic links or hard links, including those whose targets
+    appear to be within the destination. Returns True on complete success,
+    False otherwise, without writing any members outside dest_path on failure.
+    """
+    # Create a temporary directory to hold the extracted files during validation
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        try:
+            # Open the tar file and extract to the temporary directory
+            with tarfile.open(tar_path, 'r:*') as tar:
+                for member in tar.getmembers():
+                    # Check if the member is a symlink or hardlink
+                    if member.issym() or member.islnk():
+                        return False
+                    
+                    # Resolve the member's target path relative to the extraction root
+                    # and check if it falls outside the intended destination
+                    target_path = os.path.join(tmp_dir, member.name)
+                    resolved_target = os.path.realpath(target_path)
+                    
+                    # Ensure the resolved target is within the destination directory
+                    # We need to handle the case where dest_path is a directory
+                    dest_dir = os.path.dirname(dest_path) if os.path.isdir(dest_path) else dest_path
+                    
+                    # If the resolved target is outside the destination, reject
+                    if not (resolved_target.startswith(dest_dir + os.sep) or resolved_target == dest_dir):
+                        return False
+                    
+                    # Also check the member's name for path traversal attempts
+                    # by ensuring it doesn't go above the extraction root
+                    if not member.name.startswith(os.sep):
+                        # This check is redundant in Python's tarfile but good for safety
+                        pass
+
+            # If all members pass validation, extract to the destination
+            with tarfile.open(tar_path, 'r:*') as tar:
+                tar.extractall(dest_path)
+            
+            return True
+
+        except Exception:
+            return False

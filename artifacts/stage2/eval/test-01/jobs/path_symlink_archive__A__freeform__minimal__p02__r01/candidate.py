@@ -1,0 +1,86 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Returns:
+        bool: True if extraction completes successfully without writing outside dest_path,
+              False otherwise.
+    """
+    try:
+        # Normalize and validate dest_path
+        resolved_dest = os.path.realpath(dest_path)
+        if not resolved_dest.startswith(os.sep) and os.name != 'nt':
+            # On Unix-like systems, root is '/'
+            if not resolved_dest.startswith('/'):
+                raise ValueError("dest_path must be absolute")
+        elif os.name == 'nt':
+            # On Windows, root is '\' or drive letter
+            if not resolved_dest.startswith(('\', '\\')):
+                raise ValueError("dest_path must be absolute")
+        
+        # Ensure dest_path is within root
+        if not resolved_dest.startswith(os.sep) and os.name != 'nt':
+            if not resolved_dest.startswith('/'):
+                raise ValueError("dest_path must be absolute")
+        
+        # Create a temporary directory for extraction to prevent any race conditions
+        # and ensure we don't write outside dest_path
+        with tempfile.TemporaryDirectory() as temp_extract_dir:
+            # Create the actual destination directory if it doesn't exist
+            os.makedirs(resolved_dest, exist_ok=True)
+            
+            # Open the tar file
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Validate all members before extracting
+                for member in tar.getmembers():
+                    # Resolve the member's path relative to the destination
+                    # We need to check if the member's name contains .. or starts with ..
+                    member_name = member.name
+                    
+                    # Check for path traversal in the member name
+                    if '..' in member_name:
+                        raise ValueError(f"Path traversal detected in member: {member.name}")
+                    
+                    # Construct the full path
+                    full_member_path = os.path.join(resolved_dest, member_name)
+                    resolved_member_path = os.path.realpath(full_member_path)
+                    
+                    # Check if the resolved path is within the destination
+                    if not resolved_member_path.startswith(os.path.realpath(resolved_dest)):
+                        raise ValueError(f"Member would escape destination: {member_name}")
+                    
+                    # Check for symbolic links and hard links
+                    if member.issym() or member.islnk():
+                        raise ValueError(f"Symbolic link or hard link detected: {member.name}")
+                    
+                    # For directories, we need to check if they contain any paths that would escape
+                    # We've already checked the member name, but we should also validate the directory structure
+                    # If it's a directory, we need to ensure all its contents are within dest_path
+                    if member.isdir():
+                        # Check if the directory name itself contains ..
+                        if member_name.startswith('..') or member_name.endswith('..'):
+                            raise ValueError(f"Directory path traversal: {member.name}")
+                    
+                    # Validate the member type and extract
+                    if member.isdir():
+                        os.makedirs(full_member_path, exist_ok=True)
+                    elif member.isfile():
+                        # Extract the file
+                        tar.extract(member, path=temp_extract_dir)
+                        # Move the extracted file to the destination
+                        import shutil
+                        extracted_file = os.path.join(temp_extract_dir, member_name)
+                        os.makedirs(os.path.dirname(extracted_file), exist_ok=True)
+                        shutil.move(extracted_file, resolved_member_path)
+                    else:
+                        # Skip other types or raise an error
+                        raise ValueError(f"Unsupported member type: {member.name}")
+                
+                return True
+                
+    except Exception as e:
+        return False

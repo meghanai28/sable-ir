@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__freeform__full__p01__r01",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__freeform__full__p01",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport stat\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to a destination path with strict security validation.\n    \n    Args:\n        tar_path: Path to the tar archive.\n        dest_path: Destination directory for extraction.\n    \n    Returns:\n        True if extraction completed successfully, False otherwise.\n    \"\"\"\n    # Normalize dest_path to an absolute path, resolving any relative components\n    # but not following symlinks yet. We need the absolute path for validation.\n    try:\n        dest_path = os.path.realpath(dest_path)\n    except (OSError, ValueError):\n        return False\n    \n    # Ensure dest_path exists and is a directory\n    if not os.path.isdir(dest_path):\n        return False\n    \n    # Open the tar file\n    try:\n        tar = tarfile.open(tar_path, 'r:*')\n    except (tarfile.TarError, OSError, ValueError):\n        return False\n    \n    # Validation and extraction loop\n    for member in tar.getmembers():\n        # Security checks for the member name\n        if member.name.startswith('/') or '..' in member.name:\n            return False\n        \n        # Resolve the member's target relative to dest_path\n        member_dir = os.path.dirname(member.name)\n        if member_dir:\n            member_dir = os.path.normpath(os.path.join(dest_path, member_dir))\n        else:\n            member_dir = dest_path\n        \n        # Check if the resolved path escapes dest_path\n        if not member_dir.startswith(dest_path):\n            return False\n        \n        # Additional check for absolute paths in member name (though normalized above)\n        # The member.name itself shouldn't be absolute, but we check the resolved path\n        \n        # Check for symlinks and hardlinks that point outside dest_path\n        if member.issym() or member.islnk():\n            # For symlinks and hardlinks, check the target\n            # The target is stored in member.linkname for symlinks\n            # We need to resolve the link target relative to dest_path\n            try:\n                # If it's a symlink, the linkname is the target\n                # If it's a hardlink, the linkname is the target file\n                link_target = member.linkname\n                \n                # Resolve the link target relative to dest_path\n                # If the link target is absolute, it's dangerous\n                if link_target.startswith('/'):\n                    return False\n                \n                # Resolve relative to dest_path\n                resolved_link_target = os.path.normpath(os.path.join(dest_path, link_target))\n                \n                # Check if resolved link target escapes dest_path\n                if not resolved_link_target.startswith(dest_path):\n                    return False\n            except (OSError, ValueError):\n                return False\n        \n        # Perform extraction\n        try:\n            tar.extract(member, dest_path, set_attrs=False)\n        except (tarfile.TarError, OSError, ValueError):\n            return False\n    \n    # If we get here, all members were extracted successfully\n    return True",
+    "prompt_tokens": 267,
+    "output_tokens": 660,
+    "finish_reason": "stop",
+    "latency_seconds": 27.442,
+    "seed": 1976455916
+  },
+  "prompt_sha256": "6cc994a44adcc2c1d4bb75fc787251970117a990932d3bb701ea1d45bc3f6b2b",
+  "candidate_path": "jobs/path_symlink_archive__A__freeform__full__p01__r01/candidate.py",
+  "candidate_sha256": "0bb94de5cf6b000a18962af3563cf2da5f168f1e886a912e04001a2a192cb6e7",
+  "extraction": "raw_text",
+  "error": null
+}

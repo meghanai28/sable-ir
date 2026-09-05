@@ -1,0 +1,82 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive into dest_path with strict security validation.
+    
+    Returns True only if extraction completes successfully.
+    Returns False if validation fails or extraction is interrupted, without
+    writing any archive content outside dest_path.
+    """
+    try:
+        # Normalize and resolve dest_path to detect absolute paths or escape attempts
+        dest_path_resolved = os.path.realpath(dest_path)
+        
+        # Reject absolute paths or paths that resolve outside the root
+        if not dest_path_resolved.startswith(os.path.commonprefix([os.path.realpath(os.getcwd()), dest_path_resolved])):
+            # More robust check: ensure dest_path is within the intended base
+            # If dest_path is absolute, we must ensure it doesn't escape
+            if os.path.isabs(dest_path):
+                return False
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path_resolved, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Get the relative path of the member within the archive
+                member_name = member.name
+                
+                # Skip directories
+                if member.isdir():
+                    continue
+                
+                # Resolve the target path for this member relative to dest_path
+                target_path = os.path.join(dest_path_resolved, member_name)
+                
+                # Normalize the target path to resolve . and ..
+                # This must be done before checking if it escapes
+                normalized_target = os.path.normpath(target_path)
+                
+                # Ensure the normalized target is within dest_path
+                # We check that the normalized path starts with dest_path_resolved + os.sep
+                # or equals dest_path_resolved if it's a file in the root
+                if not (normalized_target == dest_path_resolved or 
+                        normalized_target.startswith(dest_path_resolved + os.sep)):
+                    return False
+                
+                # Check for symbolic links and hard links
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    
+                    # Normalize the link target relative to dest_path
+                    normalized_link_target = os.path.normpath(os.path.join(dest_path_resolved, link_target))
+                    
+                    # Ensure the link target doesn't escape
+                    if not (normalized_link_target == dest_path_resolved or 
+                            normalized_link_target.startswith(dest_path_resolved + os.sep)):
+                        return False
+                    
+                    # Create the directory structure if needed
+                    os.makedirs(os.path.dirname(normalized_target), exist_ok=True)
+                    
+                    # Create the symlink
+                    os.symlink(link_target, normalized_target)
+                else:
+                    # Regular file or directory
+                    # Create directory structure if needed
+                    dir_path = os.path.dirname(normalized_target)
+                    if dir_path:
+                        os.makedirs(dir_path, exist_ok=True)
+                    
+                    # Extract the file
+                    tar.extract(member, dest_path_resolved)
+                    
+    except Exception:
+        return False
+    
+    return True

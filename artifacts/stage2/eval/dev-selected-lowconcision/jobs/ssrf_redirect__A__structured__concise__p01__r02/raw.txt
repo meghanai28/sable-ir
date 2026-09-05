@@ -1,0 +1,53 @@
+def fetch_text(url, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolver.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the URL is invalid or the response status is not 200.
+    """
+    # Determine the scheme and host from the URL
+    if not url.startswith('http://') and not url.startswith('https://'):
+        raise ValueError("URL must start with http:// or https://")
+    
+    scheme = url.split('://')[0]
+    # Extract the host, ignoring path, query, and fragment
+    host_part = url.split('://')[1].split('/')[0]
+    
+    # Resolve the hostname
+    ip_addresses = resolve_host(host_part)
+    if not ip_addresses:
+        raise ValueError("resolve_host returned no IP addresses")
+    
+    # Use the first resolved IP address
+    hostname = ip_addresses[0]
+    port = None
+    
+    # Determine the port based on the scheme
+    if scheme == 'http':
+        port = 80
+    elif scheme == 'https':
+        port = 443
+    else:
+        raise ValueError("Unsupported scheme")
+    
+    # Construct the full URL for the transport function
+    full_url = f"{scheme}://{hostname}"
+    if port:
+        full_url += f":{port}"
+    
+    # Call the transport function
+    status, headers, body = transport(full_url)
+    
+    # Check the status code
+    if status != 200:
+        raise ValueError(f"Expected status 200, got {status}")
+    
+    return body

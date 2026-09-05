@@ -1,0 +1,55 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (path escapes root or symlink escapes root).
+    """
+    # Normalize the root to an absolute path to ensure consistent comparison
+    # If reports_root is not absolute, resolve it relative to current working directory
+    if not os.path.isabs(reports_root):
+        reports_root = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename relative to reports_root if it's not absolute
+    # The prompt implies joining beneath reports_root, so we treat filename as a relative path
+    # unless it's already absolute (though the plan says "may be absolute", we should handle both safely)
+    if os.path.isabs(filename):
+        requested_path = filename
+    else:
+        requested_path = os.path.join(reports_root, filename)
+    
+    # Normalize the path to remove .. and . segments, but without resolving symlinks yet
+    # We need to check if the path escapes the root.
+    # We resolve the path to get the canonical form? No, canonical includes symlinks.
+    # We need to resolve the path components to check containment, then resolve symlinks.
+    
+    # Step 1: Check if the path (before symlink resolution) escapes the root
+    # We use os.path.normpath to remove . and ..
+    normalized_path = os.path.normpath(requested_path)
+    
+    # Ensure the normalized path is absolute and under reports_root
+    # If the normalized path starts with reports_root (plus separator or is reports_root itself)
+    if not (normalized_path == reports_root or normalized_path.startswith(reports_root + os.sep)):
+        raise ValueError("Path escapes reports_root")
+    
+    # Step 2: Resolve symbolic links and check if the final destination is still within reports_root
+    # We need to follow symlinks.
+    try:
+        resolved_path = os.path.realpath(normalized_path)
+    except (OSError, ValueError):
+        raise ValueError("Path is not a valid file path or cannot be resolved")
+    
+    # Check if the resolved path is within reports_root
+    # Similar logic: resolved_path must start with reports_root + os.sep or be reports_root
+    if not (resolved_path == reports_root or resolved_path.startswith(reports_root + os.sep)):
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Step 3: Check if it's an ordinary file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"The file {filename} does not exist or is not a regular file")
+    
+    # Step 4: Read the file as UTF-8
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,177 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+import sys
+
+def resolve_host(hostname):
+    """
+    Resolve a hostname to IP addresses.
+    In a real implementation, this would call socket.getaddrinfo.
+    For this module specification, we assume a safe implementation exists.
+    """
+    try:
+        info = socket.getaddrinfo(hostname, None)
+        return [ip[4][0] for ip in info]
+    except (socket.gaierror, socket.herror):
+        return []
+
+def is_public_ip(ip):
+    """
+    Check if an IP address is public (not localhost or private).
+    This is a simplified check based on RFC 1918 and common public ranges.
+    """
+    parts = ip.split('.')
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(p) for p in parts]
+    except ValueError:
+        return False
+    
+    # Check for localhost
+    if octets[0] == 127 or octets[0] == 0:
+        return False
+    
+    # Check for private ranges (RFC 1918)
+    if octets[0] in [10, 172, 192]:
+        if octets[0] == 172 and 16 <= octets[1] <= 31:
+            return False
+        if octets[0] == 192 and octets[1] == 168:
+            return False
+        if octets[0] == 10:
+            return False
+    
+    # Check for link-local
+    if octets[0] == 169 and octets[1] == 254:
+        return False
+    
+    # Check for multicast
+    if octets[0] == 224 or octets[0] == 239:
+        return False
+    
+    # Check for reserved
+    if octets[0] == 0 or octets[0] == 255:
+        return False
+    
+    # Check for loopback
+    if octets[0] == 127:
+        return False
+    
+    return True
+
+def parse_url(url):
+    """
+    Parse a URL into its components.
+    Handles both absolute and relative URLs.
+    """
+    if not url.startswith(('http://', 'https://')):
+        return None
+    
+    parsed = urllib.parse.urlparse(url)
+    return parsed
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL, handling redirects and validating inputs.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, no IP is resolved,
+                   redirect destination is invalid, or status is not 200.
+    """
+    current_url = url
+    current_parsed = parse_url(current_url)
+    
+    if current_parsed is None:
+        raise ValueError("Invalid URL scheme")
+    
+    if current_parsed.scheme not in ['http', 'https']:
+        raise ValueError("Scheme must be http or https")
+    
+    # Resolve the initial hostname
+    hostname = current_parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid hostname in URL")
+    
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError("DNS lookup failed for hostname")
+    
+    if not is_public_ip(ips[0]):
+        raise ValueError("IP address is not public")
+    
+    # Function to resolve a URL against the current URL
+    def resolve_location(location):
+        # If it's absolute, use it directly
+        if location.startswith(('http://', 'https://')):
+            new_parsed = parse_url(location)
+            if new_parsed is None:
+                return None
+            return new_parsed
+        else:
+            # It's relative, resolve against current URL
+            new_parsed = urllib.parse.urljoin(current_url, location)
+            return parse_url(new_parsed)
+    
+    # Follow redirects (at most 5)
+    redirect_count = 0
+    while True:
+        # Check if we have a Location header
+        if 'location' in current_parsed.headers:
+            location = current_parsed.headers['location']
+            new_parsed = resolve_location(location)
+            
+            if new_parsed is None:
+                raise ValueError("Invalid Location header")
+            
+            # Validate redirect
+            if new_parsed.scheme != current_parsed.scheme:
+                raise ValueError("Redirect scheme mismatch")
+            
+            # Validate port
+            if current_parsed.port != new_parsed.port:
+                raise ValueError("Redirect port mismatch")
+            
+            # Resolve new hostname
+            new_hostname = new_parsed.hostname
+            if not new_hostname:
+                raise ValueError("Invalid hostname in redirect")
+            
+            new_ips = resolve_host(new_hostname)
+            if not new_ips:
+                raise ValueError("DNS lookup failed for redirect hostname")
+            
+            if not is_public_ip(new_ips[0]):
+                raise ValueError("Redirect IP is not public")
+            
+            # Update current URL
+            current_url = new_parsed.geturl()
+            current_parsed = new_parsed
+            redirect_count += 1
+            
+            if redirect_count > 5:
+                raise ValueError("Too many redirects")
+            continue
+        else:
+            break
+    
+    # Make the request
+    try:
+        status, headers, body = transport(current_url)
+    except Exception as e:
+        raise ValueError(f"Request failed: {e}")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

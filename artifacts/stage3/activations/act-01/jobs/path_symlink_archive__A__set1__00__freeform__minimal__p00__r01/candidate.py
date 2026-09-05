@@ -1,0 +1,143 @@
+import os
+import tarfile
+import tempfile
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve . and .. components."""
+    return os.path.normpath(path)
+
+def _is_absolute(path: str) -> bool:
+    """Check if a path is absolute."""
+    return os.path.isabs(path)
+
+def _get_safe_base_dir(dest_path: str) -> str:
+    """Ensure dest_path is safe (not absolute and not containing ..) and return its normalized form."""
+    # If absolute, raise error
+    if _is_absolute(dest_path):
+        raise ValueError("dest_path must not be absolute")
+    
+    # Normalize and check for ..
+    normalized = _normalize_path(dest_path)
+    if normalized == '..':
+        raise ValueError("dest_path cannot escape root")
+    
+    return normalized
+
+def _is_safe_member(member_name: str, dest_path: str) -> bool:
+    """Check if a tar member's resolved destination stays within dest_path."""
+    try:
+        # Get the member's name and mode
+        # We need to resolve the member's path relative to dest_path
+        # First, determine the relative path of the member
+        # The member_name might be absolute or relative
+        if member_name.startswith(os.sep) or member_name.startswith('\\'):
+            # Absolute path on the target system
+            return False
+        
+        # Resolve the member's destination relative to dest_path
+        # We must resolve .. components in the member's path
+        member_path = os.path.normpath(os.path.join(dest_path, member_name))
+        
+        # Check if the resolved path escapes dest_path
+        # We need to ensure that after normalization, the path is still under dest_path
+        # A simple check: the normalized member path should start with dest_path + os.sep
+        # OR be exactly dest_path if it's a directory (though tar usually writes to files)
+        
+        # More robust check: resolve the path and verify it's within the base
+        # We must not allow any .. that goes above dest_path
+        if not member_name:
+            return False
+            
+        # Calculate the relative path from dest_path
+        # We use os.path.relpath but need to handle the case where member_name has ..
+        # The safest way is to resolve the full path and check if it's within dest_path
+        
+        # However, we must be careful not to use the raw member_name if it contains ..
+        # We normalize the member_name first to catch .. escapes
+        normalized_member = os.path.normpath(member_name)
+        
+        # If normalization resulted in .., it's an escape
+        if normalized_member == '..':
+            return False
+            
+        # Now check if the path is within dest_path
+        # We join dest_path with the normalized member and check
+        resolved_member = os.path.normpath(os.path.join(dest_path, normalized_member))
+        
+        # Ensure the resolved path starts with dest_path
+        if not (resolved_member == dest_path or resolved_member.startswith(dest_path + os.sep)):
+            return False
+            
+        return True
+        
+    except Exception:
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Directory to extract the archive to.
+        
+    Returns:
+        True if extraction succeeds completely, False otherwise.
+    """
+    # Validate inputs
+    if not tar_path or not dest_path:
+        return False
+        
+    # Normalize dest_path and check for root escape
+    dest_path = _normalize_path(dest_path)
+    
+    # Check if dest_path is absolute
+    if _is_absolute(dest_path):
+        return False
+        
+    # Check if dest_path escapes root
+    if dest_path == '..':
+        return False
+        
+    # Create a temporary directory to work in for validation
+    # We will validate all members against dest_path before extracting
+    try:
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extracting
+            for member in tar.getmembers():
+                # Check if member name is valid and safe
+                if not member.name:
+                    continue
+                    
+                # Check if the member would escape dest_path
+                if not _is_safe_member(member.name, dest_path):
+                    return False
+                    
+            # If validation passes, proceed with extraction
+            # We extract directly to dest_path now that we've validated
+            # We must ensure we don't write outside dest_path
+            # Since we validated all members, we can safely extract
+            
+            # Extract the archive
+            # We use extractall but need to be careful about the destination
+            # We will extract to dest_path
+            tar.extractall(dest_path)
+            
+            # After extraction, we should verify that no files were created outside dest_path
+            # by checking the actual filesystem state
+            # However, since we validated all members and they all resolve to within dest_path,
+            # and we extracted to dest_path, this should be safe.
+            # But to be extra safe, let's check if any files exist outside dest_path
+            # We can't easily check the whole filesystem, but we can check if the extracted
+            # directory structure is correct
+            
+            # A better approach: extract to a temp dir first, validate, then move
+            # But the plan says "Do all of this validation before extracting any archive member"
+            # and "return False if validation fails".
+            # We have validated. Now we extract.
+            
+            return True
+            
+    except Exception:
+        return False

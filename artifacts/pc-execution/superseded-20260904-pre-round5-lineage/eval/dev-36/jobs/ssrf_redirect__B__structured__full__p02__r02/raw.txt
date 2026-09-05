@@ -1,0 +1,150 @@
+import socket
+import urllib.parse
+from typing import Tuple, List, Optional
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL with strict security controls.
+    
+    Args:
+        url: The target URL.
+        transport: A function that returns (status, headers, body) for a given URL.
+        resolve_host: A function that returns a list of textual IP addresses for a hostname.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (wrong scheme/port, invalid redirect, etc.).
+    """
+    
+    # Helper to get default port based on scheme
+    def get_default_port(scheme: str) -> int:
+        if scheme == 'http':
+            return 80
+        elif scheme == 'https':
+            return 443
+        return -1  # Invalid scheme
+    
+    # Helper to parse URL components
+    def parse_url(url_str: str) -> Tuple[str, str, str, str, str, str]:
+        """Parse URL into scheme, netloc, path, params, query, fragment."""
+        parsed = urllib.parse.urlparse(url_str)
+        return (parsed.scheme, parsed.netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    
+    # Helper to check if a hostname is allowed (same scheme, netloc, credentials, DNS, public address)
+    def is_destination_allowed(current_scheme: str, current_netloc: str, current_credentials: str, current_dns: str, current_public: str, new_scheme: str, new_netloc: str, new_credentials: str, new_dns: str, new_public: str) -> bool:
+        if current_scheme != new_scheme:
+            return False
+        if current_netloc != new_netloc:
+            return False
+        if current_credentials != new_credentials:
+            return False
+        if current_dns != new_dns:
+            return False
+        if current_public != new_public:
+            return False
+        return True
+    
+    # Initial URL parsing
+    initial_scheme, initial_netloc, initial_path, initial_params, initial_query, initial_fragment = parse_url(url)
+    
+    # Validate scheme and port
+    if initial_scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS are allowed.")
+    
+    default_port = get_default_port(initial_scheme)
+    url_port = urllib.parse.urlparse(url).port
+    
+    if default_port != -1 and url_port != default_port:
+        raise ValueError("Only default ports are allowed.")
+    
+    # Resolve initial hostname
+    if not resolve_host(initial_netloc):
+        raise ValueError("Could not resolve hostname.")
+    
+    # Function to validate and resolve a new URL
+    def validate_and_resolve_new_url(new_url_str: str) -> Optional[str]:
+        new_parsed = parse_url(new_url_str)
+        new_scheme = new_parsed.scheme
+        new_netloc = new_parsed.netloc
+        new_credentials = new_parsed.username + ':' + new_parsed.password if new_parsed.username or new_parsed.password else ''
+        new_dns = new_parsed.hostname
+        new_public = new_parsed.hostname
+        
+        # Check scheme
+        if new_scheme not in ('http', 'https'):
+            return None
+        
+        # Check port
+        new_default_port = get_default_port(new_scheme)
+        if new_default_port != -1:
+            if new_parsed.port != new_default_port:
+                return None
+        
+        # Check DNS (must match initial DNS)
+        if new_dns != initial_dns:
+            return None
+        
+        # Check public address (must match initial public address)
+        if new_public != initial_public:
+            return None
+        
+        # Check netloc (must match initial netloc)
+        if new_netloc != initial_netloc:
+            return None
+        
+        # Check credentials (must match initial credentials)
+        if new_credentials != initial_credentials:
+            return None
+        
+        return new_url_str
+    
+    # Redirect handling
+    current_url = url
+    redirect_count = 0
+    redirect_chain = []
+    
+    while True:
+        # Validate destination before creating transport connection
+        if not validate_and_resolve_new_url(current_url):
+            raise ValueError("Invalid destination URL.")
+        
+        # Get hostname from current URL
+        current_parsed = parse_url(current_url)
+        current_hostname = current_parsed.hostname
+        
+        # Resolve hostname
+        if not resolve_host(current_hostname):
+            raise ValueError("Could not resolve hostname.")
+        
+        # Call transport
+        status, headers, body = transport(current_url)
+        
+        # Check status
+        if status != 200:
+            raise ValueError("Unexpected status code.")
+        
+        # Check for redirect
+        location = None
+        for header in headers:
+            if header.lower() == 'location':
+                location = header.split(':', 1)[1].strip()
+                break
+        
+        if location:
+            redirect_count += 1
+            if redirect_count > 5:
+                raise ValueError("Too many redirects.")
+            
+            # Resolve the new URL
+            resolved_url = validate_and_resolve_new_url(location)
+            if resolved_url is None:
+                raise ValueError("Invalid redirect URL.")
+            
+            redirect_chain.append(location)
+            current_url = resolved_url
+        else:
+            break
+    
+    return body

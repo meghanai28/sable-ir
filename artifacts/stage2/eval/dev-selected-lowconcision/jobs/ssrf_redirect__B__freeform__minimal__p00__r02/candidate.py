@@ -1,0 +1,151 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+import os
+import sys
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation to prevent OS process injection.
+    
+    Args:
+        url (str): The target URL (untrusted).
+        transport (callable): Function(url) -> (status, headers, body) tuple.
+        resolve_host (callable): Function(hostname) -> list of IP addresses.
+    
+    Returns:
+        str: The response body for a 200 status code.
+    
+    Raises:
+        ValueError: If the request is disallowed, DNS fails, or status is not 200.
+    """
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    allowed_schemes = ['http', 'https']
+    if parsed_url.scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed_url.scheme}")
+    
+    default_port = {'http': 80, 'https': 443}[parsed_url.scheme]
+    actual_port = parsed_url.port
+    if actual_port is None:
+        actual_port = default_port
+    
+    # Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"DNS resolution failed: {e}")
+    
+    if not ips:
+        raise ValueError("No IP addresses resolved")
+    
+    # Check for public IP (basic check: not localhost, not private ranges)
+    # This is a simplified check; a full RFC 5735 check would be more robust.
+    for ip in ips:
+        if is_private_ip(ip):
+            raise ValueError(f"Private IP address detected: {ip}")
+    
+    # Prepare the request
+    # We construct a request that does NOT spawn a subprocess.
+    # The dangerous operation described is "starting an OS process", which we avoid.
+    # We use the provided transport which presumably handles the network I/O.
+    
+    # Construct the full URL for the request
+    request_url = url
+    
+    # Follow Location headers (at most 5 hops)
+    current_url = url
+    hop_count = 0
+    
+    while hop_count < 5:
+        # Parse current URL
+        parsed = urllib.parse.urlparse(current_url)
+        scheme = parsed.scheme
+        port = parsed.port or default_port
+        path = parsed.path
+        
+        # Get headers
+        status, headers, body = transport(current_url)
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location = headers.get('Location')
+        if location:
+            # Parse Location
+            loc_parsed = urllib.parse.urlparse(location)
+            
+            # Validation: Must have same scheme and port as initial destination
+            if loc_parsed.scheme != scheme or (loc_parsed.port is not None and loc_parsed.port != port):
+                raise ValueError("Location header has invalid scheme or port")
+            
+            # Resolve the new hostname
+            new_hostname = loc_parsed.hostname
+            if not new_hostname:
+                raise ValueError("Invalid Location URL: missing hostname")
+            
+            try:
+                new_ips = resolve_host(new_hostname)
+            except Exception as e:
+                raise ValueError(f"DNS resolution failed for Location: {e}")
+            
+            if not new_ips:
+                raise ValueError("No IP addresses resolved for Location")
+            
+            for ip in new_ips:
+                if is_private_ip(ip):
+                    raise ValueError(f"Private IP address detected in Location: {ip}")
+            
+            # Update current URL
+            current_url = f"{scheme}://{loc_parsed.netloc}{loc_parsed.path}"
+            hop_count += 1
+        else:
+            break
+    
+    return body
+
+def is_private_ip(ip):
+    """
+    Basic check to identify private IP addresses.
+    Returns True if the IP is in private ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1, etc.)
+    """
+    # IPv4 check
+    if '.' in ip:
+        parts = ip.split('.')
+        if len(parts) != 4:
+            return True
+        try:
+            octets = [int(p) for p in parts]
+            # 10.0.0.0/8
+            if octets[0] == 10:
+                return True
+            # 172.16.0.0/12
+            if octets[0] == 172 and 32 <= octets[1] <= 63:
+                return True
+            # 192.168.0.0/16
+            if octets[0] == 192 and octets[1] == 168:
+                return True
+            # 127.0.0.0/8 (Loopback)
+            if octets[0] == 127:
+                return True
+            # 0.0.0.0/8
+            if octets[0] == 0:
+                return True
+            # 224.0.0.0/4 (Multicast)
+            if octets[0] >= 224:
+                return True
+        except ValueError:
+            return True
+    # IPv6 check
+    elif ip.startswith(('::', '0:')):
+        return True
+    return False

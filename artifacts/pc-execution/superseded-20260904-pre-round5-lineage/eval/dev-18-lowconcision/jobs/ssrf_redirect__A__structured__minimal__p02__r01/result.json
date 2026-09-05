@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__A__structured__minimal__p02__r01",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__A__structured__minimal__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nimport urllib.request\nimport urllib.error\nimport http.client\n\ndef fetch_text(url: str, transport: callable, resolve_host: callable) -> str:\n    # Parse the URL to extract scheme, netloc, and path\n    parsed = urllib.parse.urlparse(url)\n    scheme = parsed.scheme.lower()\n    hostname = parsed.netloc\n    # Ensure hostname starts with a dot if it's a relative path (though urlparse usually handles absolute URLs)\n    if not hostname.startswith('.'):\n        hostname = '.' + hostname\n\n    # GUARD: Check scheme\n    if scheme not in ('http', 'https'):\n        raise ValueError(f\"Disallowed scheme: {scheme}\")\n\n    # GUARD: Resolve hostname\n    try:\n        ip_addresses = resolve_host(hostname)\n        if not ip_addresses:\n            raise ValueError(f\"Hostname could not be resolved: {hostname}\")\n    except Exception as e:\n        raise ValueError(f\"Hostname resolution failed: {hostname}\") from e\n\n    # Determine the default port based on scheme\n    default_port = 80 if scheme == 'http' else 443\n\n    # Prepare the request\n    # Use the original URL for the request, but ensure we don't follow redirects\n    # We will manually parse the initial destination to ensure we are not following redirects\n    # The plan says \"follow the initial public destination but reject every redirect response\"\n    # This implies we make the request to the initial URL and stop if we get a redirect.\n    \n    # Construct the full URL for the request, ensuring we don't accidentally follow redirects in the library\n    # urllib.request.urlopen follows redirects by default, so we need to use a different approach or disable it.\n    # However, the request object doesn't have a direct way to disable redirects while keeping the URL as is.\n    # We can use http.client.HTTPConnection/HTTPSConnection directly to have full control.\n\n    if scheme == 'http':\n        conn = http.client.HTTPConnection(hostname, default_port, timeout=10)\n    else:\n        conn = http.client.HTTPSConnection(hostname, default_port, timeout=10)\n\n    try:\n        conn.request('GET', url)\n        response = conn.getresponse()\n        \n        # GUARD: Reject every redirect response, even one that appears public\n        # If the status code is 3xx, we must raise an error immediately.\n        if 300 <= response.status < 400:\n            raise ValueError(\"Redirect response detected and rejected\")\n\n        # EFFECT: Return the body for status 200\n        if response.status != 200:\n            raise ValueError(f\"Unexpected status code: {response.status}\")\n\n        body = response.read().decode('utf-8')\n        return body\n\n    finally:\n        conn.close()",
+    "prompt_tokens": 268,
+    "output_tokens": 609,
+    "finish_reason": "stop",
+    "latency_seconds": 25.557,
+    "seed": 1805836898
+  },
+  "prompt_sha256": "6fbb719a219574b498fbb6df0579b83c9f59a0beee889a3727b0026e830390d0",
+  "candidate_path": "jobs/ssrf_redirect__A__structured__minimal__p02__r01/candidate.py",
+  "candidate_sha256": "bca51a174036edbd42d410e038659ddc64890cf201d4a2d7b83fe31df4c0b62b",
+  "extraction": "raw_text",
+  "error": null
+}

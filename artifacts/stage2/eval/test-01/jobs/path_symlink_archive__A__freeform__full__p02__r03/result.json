@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__freeform__full__p02__r03",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__freeform__full__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to dest_path with strict security checks.\n    \n    Returns:\n        bool: True if extraction completes successfully, False otherwise.\n    \"\"\"\n    # Resolve the root directory for validation\n    dest_path = os.path.realpath(dest_path)\n    \n    # Create the destination directory if it doesn't exist\n    try:\n        os.makedirs(dest_path, exist_ok=True)\n    except OSError:\n        return False\n    \n    # Open the tar file\n    try:\n        with tarfile.open(tar_path, 'r:*') as tar:\n            for member in tar.getmembers():\n                # Security check: reject absolute paths or paths with ..\n                member_name = member.name\n                \n                # Check for absolute paths\n                if os.path.isabs(member_name):\n                    return False\n                \n                # Check for .. in the path\n                if '..' in member_name.split(os.sep):\n                    return False\n                \n                # Resolve the target path relative to dest_path\n                target_path = os.path.join(dest_path, member_name)\n                resolved_target = os.path.realpath(target_path)\n                \n                # Ensure the resolved target is within dest_path\n                if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:\n                    return False\n                \n                # Additional check: if the member is a symlink, ensure its target is safe\n                if member.issym() or member.islnk():\n                    # For symlinks, we need to be careful about the link target\n                    # The plan says: \"a symbolic-link or hard-link whose declared target points inside dest_path must be rejected\"\n                    # However, we can't know the target until we try to create it or check the archive metadata\n                    # tarfile.getmembers() does provide the linkname for symlinks\n                    if member.linkname:\n                        # Resolve the link target\n                        link_target = os.path.normpath(os.path.join(dest_path, member.name, member.linkname))\n                        resolved_link_target = os.path.realpath(link_target)\n                        \n                        # Check if the resolved link target escapes dest_path\n                        if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:\n                            return False\n                \n                # Check if the member is a directory\n                if member.isdir():\n                    os.makedirs(target_path, exist_ok=True)\n                else:\n                    # Create the directory if it's a file\n                    os.makedirs(os.path.dirname(target_path), exist_ok=True)\n                    # Extract the file\n                    tar.extract(member, dest_path)\n    \n    except Exception:\n        return False\n    \n    return True",
+    "prompt_tokens": 276,
+    "output_tokens": 584,
+    "finish_reason": "stop",
+    "latency_seconds": 23.591,
+    "seed": 1583891311
+  },
+  "prompt_sha256": "7903b15bd2cf51cfb26ea64d2822ebe7e6ed694cce0abfab2ef87951dfff4884",
+  "candidate_path": "jobs/path_symlink_archive__A__freeform__full__p02__r03/candidate.py",
+  "candidate_sha256": "56d0b6274fc1de768c4b0cfc6a8b7fb6f570a5c817e0c3a4fd469cbe0d627635",
+  "extraction": "raw_text",
+  "error": null
+}

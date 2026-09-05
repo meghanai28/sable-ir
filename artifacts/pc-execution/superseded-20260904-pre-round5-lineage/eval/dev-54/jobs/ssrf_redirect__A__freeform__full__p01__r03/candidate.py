@@ -1,0 +1,117 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme: only HTTP or HTTPS allowed
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Only HTTP and HTTPS schemes are allowed. Got: {scheme}")
+    
+    # Determine the port based on scheme
+    if scheme == 'http':
+        default_port = 80
+    elif scheme == 'https':
+        default_port = 443
+    else:
+        raise ValueError(f"Unsupported scheme: {scheme}")
+    
+    # Construct the full authority (host:port) to resolve
+    netloc = parsed.netloc
+    if not netloc:
+        raise ValueError("Invalid URL: missing netloc")
+    
+    # Ensure the netloc contains a port if specified, otherwise append default
+    if ':' in netloc:
+        host_part, port_part = netloc.rsplit(':', 1)
+        # If the specified port is not the default, we might need to handle it, 
+        # but the requirement says "Accept HTTP or HTTPS on its default port".
+        # If a non-default port is specified, strictly speaking, it might be disallowed 
+        # based on "on its default port", but typically we just use the provided port 
+        # if it matches the scheme's default, or we could reject non-default ports.
+        # The prompt says "Accept HTTP or HTTPS on its default port".
+        # Let's interpret this as: if the scheme is HTTP, the port must be 80.
+        # If the scheme is HTTPS, the port must be 443.
+        if int(port_part) != default_port:
+            raise ValueError(f"Only default ports are allowed for {scheme}. Port {port_part} is not {default_port}.")
+        hostname = host_part
+    else:
+        hostname = netloc
+    
+    # Resolve the hostname to IP addresses
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname {hostname}: {e}")
+    
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for hostname {hostname}")
+    
+    # Filter out loopback and link-local addresses
+    # Loopback: 127.0.0.0/8, ::1
+    # Link-local: 169.254.0.0/16, fe80::/10
+    valid_ips = []
+    for ip in ip_addresses:
+        ip_clean = ip.strip()
+        # Check for IPv4
+        if '.' in ip_clean:
+            parts = ip_clean.split('.')
+            if len(parts) == 4:
+                try:
+                    first_octet = int(parts[0])
+                    if 127 <= first_octet <= 127:
+                        continue # Loopback
+                    if 169 <= first_octet <= 169 and 254 <= int(parts[1]) <= 254:
+                        continue # Link-local
+                except ValueError:
+                    continue
+        # Check for IPv6 (simplified check for ::1 or fe80)
+        elif '::' in ip_clean or ':' in ip_clean:
+            if ip_clean == '::1' or ip_clean.startswith('fe80:'):
+                continue
+        
+        valid_ips.append(ip)
+    
+    if not valid_ips:
+        raise ValueError(f"All resolved IPs for {hostname} are disallowed (loopback or link-local).")
+    
+    # Select the first valid IP to use for the request
+    target_ip = valid_ips[0]
+    
+    # Construct the full URL with the resolved IP
+    # We need to replace the hostname in the URL with the IP.
+    # Since we parsed the URL, we can rebuild the authority part.
+    # The original netloc was hostname[:port] or just hostname.
+    # We know the port is the default_port.
+    new_netloc = f"{target_ip}:{default_port}"
+    
+    # Reconstruct the full URL
+    new_url = f"{parsed.scheme}://{new_netloc}{parsed.path}"
+    if parsed.params:
+        new_url += f"?{parsed.params}"
+    if parsed.query:
+        new_url += f"&{parsed.query}"
+    
+    # Use urllib.request to open the URL
+    # Note: The plan says "Check the destination before opening the connection".
+    # We have checked the scheme, port, and resolved IP.
+    try:
+        response = urllib.request.urlopen(new_url)
+        status = response.status
+        headers = dict(response.headers)
+        body = response.read().decode('utf-8')
+    except urllib.error.HTTPError as e:
+        status = e.code
+        headers = dict(e.headers)
+        body = e.read().decode('utf-8')
+    except Exception as e:
+        raise ValueError(f"Failed to open URL: {e}")
+    
+    # Return the body only when status is 200
+    if status != 200:
+        raise ValueError(f"HTTP request failed with status {status}")
+    
+    return body

@@ -1,0 +1,92 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve . and .. if possible."""
+    return os.path.normpath(path)
+
+def _is_within_dest(dest: str, member_path: str) -> bool:
+    """Check if member_path is within dest directory.
+    This must handle cases where dest is a directory and member_path is a file or directory.
+    """
+    # Normalize both paths to ensure consistent comparison
+    norm_dest = os.path.normpath(dest)
+    norm_member = os.path.normpath(member_path)
+    
+    # If dest is a file, nothing should be extracted inside it (except the file itself if it's the member)
+    if os.path.isfile(norm_dest):
+        return norm_member == norm_dest
+    
+    # Get the directory part of dest
+    dest_dir = os.path.dirname(norm_dest)
+    
+    # Check if norm_member starts with dest_dir
+    if norm_member.startswith(dest_dir + os.sep) or norm_member == dest_dir:
+        return True
+    
+    return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """Extract a tar archive to the specified destination path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory path where the archive will be extracted.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation fails or extraction encounters an error.
+    """
+    try:
+        # Normalize the destination path
+        dest_path = _normalize_path(dest_path)
+        
+        # Check if dest_path is a directory
+        if not os.path.isdir(dest_path):
+            # Create the directory if it doesn't exist
+            os.makedirs(dest_path)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Walk through all members and validate them before extraction
+            for member in tar.getmembers():
+                # Calculate the target path for this member
+                target_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Validate that the target path is within dest_path
+                if not _is_within_dest(dest_path, target_path):
+                    raise ValueError(f"Archive member '{member.name}' would escape the destination directory '{dest_path}'")
+                
+                # If the member is a directory, create it
+                if member.isdir():
+                    os.makedirs(target_path, exist_ok=True)
+            
+            # Extract the archive
+            tar.extractall(path=dest_path)
+            
+            # Post-extraction validation: ensure no files were written outside dest_path
+            # This is a safety check, though the pre-extraction check should prevent most issues
+            # We can check if any new files exist in parent directories of dest_path
+            # However, the pre-extraction check on member.name should be sufficient for most cases
+            # We will do a quick check on the immediate parent directories to be safe
+            for root, dirs, files in os.walk(dest_path):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    # Ensure the file is within dest_path
+                    if not _is_within_dest(dest_path, full_path):
+                        raise ValueError(f"Extraction resulted in file '{full_path}' outside destination")
+            
+            return True
+            
+    except Exception as e:
+        # Ensure no partial writes remain if an error occurs
+        # Clean up any directories created during the process if they exist
+        try:
+            if os.path.isdir(dest_path):
+                shutil.rmtree(dest_path)
+        except OSError:
+            pass
+        
+        return False

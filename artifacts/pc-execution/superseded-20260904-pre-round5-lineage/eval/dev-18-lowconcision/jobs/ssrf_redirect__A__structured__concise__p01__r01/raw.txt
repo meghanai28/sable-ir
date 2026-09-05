@@ -1,0 +1,52 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable transport(url) -> (status, headers, body)
+        resolve_host: A callable resolve_host(hostname) -> list of IP strings
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the URL is not HTTP/HTTPS on default port, or if DNS resolution fails.
+    """
+    # Parse the URL to check scheme and port
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Validate port (must be default)
+    default_port = {'http': 80, 'https': 443}
+    if parsed.port is not None and parsed.port != default_port[parsed.scheme]:
+        raise ValueError("Only default ports are allowed.")
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("DNS resolution failed.")
+    
+    # Check that resolved IPs are finite (not IPv6::1 or similar)
+    for ip in ip_addresses:
+        if ip == '::1' or ip == '::' or ip == '0.0.0.0':
+            raise ValueError("Invalid IP address found.")
+    
+    # Call transport
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Request failed: status code is not 200.")
+    
+    return body

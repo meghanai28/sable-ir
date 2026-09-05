@@ -1,0 +1,64 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import http.client
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = parsed.netloc
+    # Ensure hostname starts with a dot if it's a relative path (though urlparse usually handles absolute URLs)
+    if not hostname.startswith('.'):
+        hostname = '.' + hostname
+
+    # GUARD: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+
+    # GUARD: Resolve hostname
+    try:
+        ip_addresses = resolve_host(hostname)
+        if not ip_addresses:
+            raise ValueError(f"Hostname could not be resolved: {hostname}")
+    except Exception as e:
+        raise ValueError(f"Hostname resolution failed: {hostname}") from e
+
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+
+    # Prepare the request
+    # Use the original URL for the request, but ensure we don't follow redirects
+    # We will manually parse the initial destination to ensure we are not following redirects
+    # The plan says "follow the initial public destination but reject every redirect response"
+    # This implies we make the request to the initial URL and stop if we get a redirect.
+    
+    # Construct the full URL for the request, ensuring we don't accidentally follow redirects in the library
+    # urllib.request.urlopen follows redirects by default, so we need to use a different approach or disable it.
+    # However, the request object doesn't have a direct way to disable redirects while keeping the URL as is.
+    # We can use http.client.HTTPConnection/HTTPSConnection directly to have full control.
+
+    if scheme == 'http':
+        conn = http.client.HTTPConnection(hostname, default_port, timeout=10)
+    else:
+        conn = http.client.HTTPSConnection(hostname, default_port, timeout=10)
+
+    try:
+        conn.request('GET', url)
+        response = conn.getresponse()
+        
+        # GUARD: Reject every redirect response, even one that appears public
+        # If the status code is 3xx, we must raise an error immediately.
+        if 300 <= response.status < 400:
+            raise ValueError("Redirect response detected and rejected")
+
+        # EFFECT: Return the body for status 200
+        if response.status != 200:
+            raise ValueError(f"Unexpected status code: {response.status}")
+
+        body = response.read().decode('utf-8')
+        return body
+
+    finally:
+        conn.close()

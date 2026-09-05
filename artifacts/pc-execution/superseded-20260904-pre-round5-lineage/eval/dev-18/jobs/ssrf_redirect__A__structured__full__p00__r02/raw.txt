@@ -1,0 +1,58 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL after validating scheme, resolving hostname, and rejecting redirects.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body text for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP/HTTPS, if the hostname cannot be resolved,
+                   or if the response status is not 200.
+    """
+    # Parse the URL to extract scheme and netloc
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    
+    scheme = parsed.scheme.lower()
+    hostname = parsed.netloc
+    
+    # Guard: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Only HTTP and HTTPS schemes are allowed, got {scheme}")
+    
+    # Guard: Resolve hostname
+    if not resolve_host(hostname):
+        raise ValueError(f"Hostname {hostname} could not be resolved")
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Construct the full URL for transport
+    # Ensure the hostname is fully qualified (e.g., has a dot) if it's not,
+    # though urlparse usually handles this. We'll use the parsed components to build a clean URL.
+    full_url = f"{scheme}://{hostname}"
+    if parsed.path:
+        full_url += f"/{parsed.path}"
+    if parsed.params:
+        full_url += f"?{parsed.params}"
+    if parsed.query:
+        full_url += f"&{parsed.query}"
+    
+    # Call transport
+    status, headers, body = transport(full_url)
+    
+    # Guard: Check status code
+    if status != 200:
+        raise ValueError(f"Expected status 200, got {status}")
+    
+    # Guard: Reject redirects (even if Location header exists)
+    # The requirement states: "follow the initial destination only and reject every redirect response"
+    # We do not follow any Location header.
+    
+    # Return the body text
+    return body

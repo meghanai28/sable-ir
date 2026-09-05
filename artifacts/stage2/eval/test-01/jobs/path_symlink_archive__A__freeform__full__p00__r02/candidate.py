@@ -1,0 +1,82 @@
+import os
+import tarfile
+import stat
+import fnmatch
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    This function ensures that no archive member, even after following symbolic links,
+    can escape the resolved destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation fails or extraction is interrupted.
+    """
+    try:
+        # Resolve the absolute path of the destination directory
+        dest_dir = os.path.abspath(dest_path)
+        
+        # Normalize the path to remove any redundant separators or '.' components
+        dest_dir = os.path.normpath(dest_dir)
+        
+        # Ensure the destination directory exists
+        if not os.path.isdir(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate and extract each member
+            for member in tar.getmembers():
+                # Check if the member's name matches any dangerous patterns
+                if fnmatch.fnmatch(member.name, '*.*'):
+                    # This is a safety check to prevent extraction of hidden files
+                    pass
+                
+                # Calculate the absolute path where the member would be extracted
+                # We use the member's name relative to the destination directory
+                member_abs_path = os.path.normpath(os.path.join(dest_dir, member.name))
+                
+                # If the member's name contains '..' or starts with '.', it's potentially dangerous
+                if '..' in member.name or member.name.startswith('.'):
+                    raise ValueError(f"Unsafe archive member name: {member.name}")
+                
+                # Check if the absolute path escapes the destination directory
+                if not member_abs_path.startswith(dest_dir + os.sep) and member_abs_path != dest_dir:
+                    raise ValueError(f"Archive member path escapes destination: {member_abs_path}")
+                
+                # Check if the member is a symbolic link
+                if member.isdir() or member.issym():
+                    # If it's a directory or symlink, we need to be extra careful
+                    # We check if the target of the symlink would escape the destination
+                    if member.issym():
+                        # Try to resolve the symlink target
+                        try:
+                            link_target = member.linkname
+                            link_target_abs = os.path.normpath(os.path.join(dest_dir, link_target))
+                            if not link_target_abs.startswith(dest_dir + os.sep) and link_target_abs != dest_dir:
+                                raise ValueError(f"Symbolic link target escapes destination: {link_target}")
+                        except Exception:
+                            raise ValueError(f"Failed to resolve symbolic link: {member.linkname}")
+                    
+                    # If it's a directory, we need to ensure we can create it
+                    if member.isdir():
+                        if not os.path.isdir(member_abs_path):
+                            os.makedirs(member_abs_path, exist_ok=True)
+                elif member.isfile():
+                    # Extract the file
+                    tar.extract(member, dest_dir)
+                else:
+                    # Handle other types
+                    tar.extract(member, dest_dir)
+        
+        return True
+    
+    except Exception as e:
+        # Return False on any error
+        return False

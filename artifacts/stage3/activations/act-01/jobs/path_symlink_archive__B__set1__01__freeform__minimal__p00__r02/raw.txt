@@ -1,0 +1,119 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize paths to handle relative paths and .. segments
+        # Resolve to absolute paths for consistent comparison
+        resolved_tar_path = os.path.abspath(tar_path)
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Validate destination does not escape root
+        if not resolved_dest.startswith(os.path.sep) and not resolved_dest == '/':
+            # On Windows, root is drive letter, on Unix it's /
+            # Check if dest is not at root level
+            parent = os.path.dirname(resolved_dest)
+            if parent != '' and parent != resolved_dest:
+                # This check handles cases where dest might be a subdirectory
+                # but we want to ensure it's not a parent of root or escapes
+                pass
+        
+        # Ensure destination directory exists
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Create a temporary directory for safe extraction
+        temp_dir = None
+        try:
+            temp_dir = tempfile.mkdtemp(dir=resolved_dest, prefix='extract_temp_')
+        except Exception:
+            return False
+        
+        try:
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Get list of all members
+                members = tar.getmembers()
+                
+                for member in members:
+                    # Get the stored arcname
+                    arcname = member.name
+                    
+                    # Normalize the arcname to absolute path
+                    # If arcname is relative, resolve it relative to dest
+                    if not os.path.isabs(arcname):
+                        # Resolve relative to dest to prevent path traversal
+                        normalized_arcname = os.path.normpath(os.path.join(resolved_dest, arcname))
+                    else:
+                        normalized_arcname = os.path.normpath(arcname)
+                    
+                    # Check if normalized path escapes dest
+                    # The normalized path should be within dest
+                    if not normalized_arcname.startswith(os.path.abspath(resolved_dest) + os.sep) and normalized_arcname != os.path.abspath(resolved_dest):
+                        # More robust check: ensure the directory part of the path is within dest
+                        dir_part = os.path.dirname(normalized_arcname)
+                        if dir_part and not dir_part.startswith(os.path.abspath(resolved_dest)):
+                            return False
+                    
+                    # Additional check for Windows drive letters or other edge cases
+                    if os.name == 'nt':
+                        # On Windows, ensure we're not dealing with paths like C:\..\
+                        if not normalized_arcname.startswith(os.path.abspath(resolved_dest)):
+                            return False
+                    
+                    # Extract the member
+                    try:
+                        tar.extract(member, temp_dir)
+                    except Exception:
+                        return False
+                    
+                    # Get the member's file type
+                    if member.type == tarfile.SYMLINK_TYPE:
+                        # Handle symbolic links
+                        linkname = member.linkname
+                        
+                        # Normalize linkname
+                        if not os.path.isabs(linkname):
+                            normalized_linkname = os.path.normpath(os.path.join(resolved_dest, linkname))
+                        else:
+                            normalized_linkname = os.path.normpath(linkname)
+                        
+                        # Check if linkname escapes dest
+                        if not normalized_linkname.startswith(os.path.abspath(resolved_dest) + os.sep) and normalized_linkname != os.path.abspath(resolved_dest):
+                            return False
+                        
+                        # Create the link in temp_dir
+                        link_target = os.path.join(temp_dir, normalized_linkname)
+                        os.symlink(linkname, link_target)
+                        
+                    elif member.type == tarfile.DIR_TYPE:
+                        # Create directory
+                        os.makedirs(os.path.join(temp_dir, normalized_arcname), exist_ok=True)
+                    else:
+                        # Extract regular file
+                        dest_file = os.path.join(temp_dir, normalized_arcname)
+                        if os.path.exists(dest_file):
+                            os.remove(dest_file)
+                        os.rename(tarfile.extractfile(member).name, dest_file)
+        
+        finally:
+            # Clean up temporary directory
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        # Move extracted files to destination
+        shutil.move(temp_dir, resolved_dest)
+        
+        return True
+        
+    except Exception:
+        return False

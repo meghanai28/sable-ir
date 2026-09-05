@@ -1,0 +1,190 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response as a string if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP/HTTPS, port is not default,
+                    hostname cannot be resolved, or redirects violate security rules.
+    """
+    import urllib.parse
+    from urllib.request import Request, urlopen
+    
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme
+    hostname = parsed_url.hostname
+    port = parsed_url.port
+    path = parsed_url.path
+    query = parsed_url.query
+    
+    # GUARD: Check scheme and port
+    allowed_schemes = {'http', 'https'}
+    default_ports = {'http': 80, 'https': 443}
+    
+    if scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    if port is None:
+        port = default_ports[scheme]
+    
+    # Check if port is default
+    if port != default_ports[scheme]:
+        raise ValueError(f"Non-default port {port} for scheme {scheme}")
+    
+    # GUARD: Resolve hostname
+    if not hostname:
+        raise ValueError("No hostname in URL")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not resolved_ips:
+        raise ValueError(f"No IP addresses resolved for {hostname}")
+    
+    # Determine the public address (first resolved IP)
+    public_address = resolved_ips[0]
+    
+    # Build the base request URL
+    base_url = parsed_url._replace(port=port, path=path, query=query).geturl()
+    
+    # Helper to validate redirect target
+    def validate_redirect_location(location_url, current_scheme, current_port, current_hostname, current_public_ip):
+        """
+        Validate that the redirect location matches security constraints.
+        """
+        try:
+            loc_parsed = urllib.parse.urlparse(location_url)
+        except Exception:
+            raise ValueError(f"Invalid redirect URL: {location_url}")
+        
+        # Must have same scheme
+        if loc_parsed.scheme != current_scheme:
+            raise ValueError(f"Redirect scheme mismatch: {loc_parsed.scheme} vs {current_scheme}")
+        
+        # Must have same port
+        loc_port = loc_parsed.port
+        if loc_port is None:
+            loc_port = default_ports[current_scheme]
+        
+        if loc_port != current_port:
+            raise ValueError(f"Redirect port mismatch: {loc_port} vs {current_port}")
+        
+        # Must have same credentials (scheme://user:pass@) - check if both have or don't have
+        has_creds = parsed_url.username is not None or parsed_url.password is not None
+        has_loc_creds = loc_parsed.username is not None or loc_parsed.password is not None
+        
+        if has_creds != has_loc_creds:
+            raise ValueError("Credential presence mismatch in redirect")
+        
+        # Must have same DNS (hostname)
+        if loc_parsed.hostname != current_hostname:
+            raise ValueError(f"Redirect hostname mismatch: {loc_parsed.hostname} vs {current_hostname}")
+        
+        # Must have same public address (IP)
+        try:
+            resolved_loc_ips = resolve_host(loc_parsed.hostname)
+        except Exception:
+            raise ValueError(f"Failed to resolve redirect hostname: {loc_parsed.hostname}")
+        
+        if not resolved_loc_ips:
+            raise ValueError(f"No IP addresses resolved for redirect hostname: {loc_parsed.hostname}")
+        
+        if resolved_loc_ips[0] != current_public_ip:
+            raise ValueError(f"Redirect public IP mismatch: {resolved_loc_ips[0]} vs {current_public_ip}")
+        
+        return True
+    
+    # Initialize request
+    req = Request(base_url)
+    req.get_method = lambda: 'GET'
+    
+    # State for redirects
+    current_scheme = scheme
+    current_port = port
+    current_hostname = hostname
+    current_public_ip = public_address
+    
+    # Follow redirects (max 5)
+    redirect_count = 0
+    while True:
+        # Create a new Request object for the current URL to pass to transport
+        # We need to construct the full URL including path, query, and port
+        final_url = f"{current_scheme}://{current_hostname}"
+        if current_port != default_ports[current_scheme]:
+            final_url += f":{current_port}"
+        if path:
+            final_url += path
+        if query:
+            final_url += f"?{query}"
+        
+        # Make the request
+        response = transport(final_url)
+        status, headers, body = response
+        
+        # Check status
+        if status != 200:
+            # Depending on implementation, might need to handle non-200, 
+            # but spec says "return the body for status 200", implying others are errors or handled by caller.
+            # Given the strict guard, we assume 200 is expected.
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Decode body to string
+        return body.decode('utf-8')
+        
+        # Check for redirects
+        if 'location' in headers:
+            redirect_location = headers['location']
+            
+            # Validate redirect
+            if not validate_redirect_location(redirect_location, current_scheme, current_port, current_hostname, current_public_ip):
+                raise ValueError("Security violation in redirect")
+            
+            # Parse the redirect URL to get the new base
+            redirect_parsed = urllib.parse.urlparse(redirect_location)
+            
+            # Update state for next iteration
+            # Note: We must re-resolve the hostname of the redirect location to ensure it matches our public IP
+            # The validate_redirect_location already checked the IP, so we can proceed.
+            current_hostname = redirect_parsed.hostname
+            current_port = redirect_parsed.port
+            current_scheme = redirect_parsed.scheme
+            
+            # Re-resolve to get the new public IP (should be same as before)
+            try:
+                current_public_ip = resolve_host(current_hostname)[0]
+            except Exception as e:
+                raise ValueError(f"Failed to resolve new redirect hostname: {e}")
+            
+            # Update path and query
+            path = redirect_parsed.path
+            query = redirect_parsed.query
+            
+            redirect_count += 1
+            if redirect_count > 5:
+                raise ValueError("Too many redirects")
+            
+            # Construct new base URL
+            new_base_url = f"{current_scheme}://{current_hostname}"
+            if current_port != default_ports[current_scheme]:
+                new_base_url += f":{current_port}"
+            if path:
+                new_base_url += path
+            if query:
+                new_base_url += f"?{query}"
+            
+            req = Request(new_base_url)
+            req.get_method = lambda: 'GET'
+        else:
+            break
+    
+    return body.decode('utf-8')

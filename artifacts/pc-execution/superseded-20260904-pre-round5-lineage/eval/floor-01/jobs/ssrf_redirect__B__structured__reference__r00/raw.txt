@@ -1,0 +1,123 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    current_url = url
+    redirect_count = 0
+    
+    while True:
+        # Validate current_url
+        parsed = urllib.parse.urlparse(current_url)
+        
+        # Check for disallowed schemes
+        if parsed.scheme.lower() not in ['http', 'https']:
+            raise ValueError("Disallowed scheme")
+        
+        # Check for credentials
+        if parsed.username or parsed.password:
+            raise ValueError("Credentials not allowed")
+        
+        # Check port
+        port = parsed.port
+        if port:
+            if parsed.scheme == 'http' and port != 80:
+                raise ValueError("Invalid port for HTTP")
+            if parsed.scheme == 'https' and port != 443:
+                raise ValueError("Invalid port for HTTPS")
+        
+        # Resolve hostname
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("No hostname")
+            
+        addresses = resolve_host(hostname)
+        if not addresses:
+            raise ValueError("No public addresses found")
+            
+        # Check if any address is a global public address
+        is_public = False
+        for addr in addresses:
+            try:
+                # Simple check: if it's not a private range, consider it public
+                # IPv4 private: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8
+                # IPv6 loopback: ::1, fc00::/7
+                if addr.startswith(('10.', '172.16.', '172.17.', '172.18.', '172.19.', 
+                                   '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', 
+                                   '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', 
+                                   '172.30.', '172.31.', '192.168.', '127.', '0.')):
+                    continue
+                # Check IPv6 private
+                if addr.startswith(('fe80:', 'fc00:', 'fc', 'fd')):
+                    continue
+                is_public = True
+                break
+            except ValueError:
+                continue
+        
+        if not is_public:
+            raise ValueError("Non-public address")
+        
+        # Make request
+        status, headers, body = transport(current_url)
+        
+        if status == 200:
+            return body
+        
+        # Handle redirects
+        if status in [301, 302, 303, 307, 308]:
+            redirect_count += 1
+            if redirect_count > 5:
+                raise ValueError("Too many redirects")
+            
+            location = headers.get('Location', None)
+            if not location:
+                raise ValueError("Missing Location header")
+            
+            # Resolve redirect URL
+            redirect_parsed = urllib.parse.urlparse(location)
+            
+            # If absolute URL, use it; otherwise join with base
+            if redirect_parsed.scheme or redirect_parsed.netloc:
+                new_url = location
+            else:
+                new_url = urllib.parse.urljoin(current_url, location)
+            
+            current_url = new_url
+        else:
+            raise ValueError("Unexpected status code")
+
+def _is_global_public_address(addr: str) -> bool:
+    """Helper to determine if an IP is a global public address."""
+    try:
+        if ':' in addr:
+            # IPv6
+            if addr.startswith(('fe80:', 'fc00:', 'fc', 'fd', '::1', '0:0:0:0:0:0:0:1')):
+                return False
+            # Check for private IPv6 ranges
+            if addr.startswith(('2001:0db8:', '2001:0db8:0000:0000:0000:0000:0000:0001',
+                               '2001:0db8:85a3:0000:0000:0000:0000:0001',
+                               '2001:0db8:0000:0000:0000:0000:0000:0001',
+                               '2001:0db8:0000:0000:0000:0000:0000:0002',
+                               '2001:0db8:0000:0000:0000:0000:0000:0003',
+                               '2001:0db8:0000:0000:0000:0000:0000:0004',
+                               '2001:0db8:0000:0000:0000:0000:0000:0005',
+                               '2001:0db8:0000:0000:0000:0000:0000:0006',
+                               '2001:0db8:0000:0000:0000:0000:0000:0007',
+                               '2001:0db8:0000:0000:0000:0000:0000:0008',
+                               '2001:0db8:0000:0000:0000:0000:0000:0009',
+                               '2001:0db8:0000:0000:0000:0000:0000:0010',
+                               '2001:0db8:0000:0000:0000:0000:0000:0011',
+                               '2001:0db8:0000:0000:0000:0000:0000:0012',
+                               '2001:0db8:0000:0000:0000:0000:0000:0013',
+                               '2001:0db8:0000:0000:0000:0000:0000:0014',
+                               '2001:0db8:0000:0000:0000:0000:0000:0015',
+                               '2001:0db8:0000:0000:0000:0000:0000:0016',
+                               '2001:0db8:0000:0000:0000:0000:0000:0017',
+                               '2001:0db8:0000:0000:0000:0000:0000:0018',
+                               '2001:0db8:0000:0000:0000:0000:0000:0019',
+                               '2001:0db8:0000:0000:0000:0000:0000:0020',
+                               '2001:0db8:0000:0000:0000:0000:0000:0021',
+                               '2001:0db8:0000:0000:0000:0000:0000:0022',
+                               '2001:0db8:0000:0000:0000:0000:0000:0023',
+                               '2001:0db8:0000:0000:0000:0000:0000:0024',
+                               '2001:0db8:0000:0000:0000:0000:0000:0025',

@@ -1,0 +1,100 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Returns True only if extraction completes successfully without any members
+    being written outside dest_path. Returns False on any validation or extraction failure.
+    """
+    try:
+        # Resolve and normalize the destination path
+        dest_path = os.path.realpath(dest_path)
+        
+        # Check if dest_path is absolute
+        if not os.path.isabs(dest_path):
+            raise ValueError("dest_path must be an absolute path")
+        
+        # Create a temporary directory for safe extraction
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract the archive to the temporary directory
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # First, validate all members without extracting them
+                for member in tar.getmembers():
+                    # Calculate the resolved path for this member relative to dest_path
+                    member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                    
+                    # Resolve the path to check for escape attempts
+                    resolved_path = os.path.realpath(member_path)
+                    
+                    # Ensure the resolved path is within dest_path
+                    if not resolved_path.startswith(dest_path + os.sep) and resolved_path != dest_path:
+                        # Allow exact match only if it's the dest_path itself
+                        if resolved_path != dest_path:
+                            raise ValueError(f"Member {member.name} would escape destination path: {resolved_path}")
+                    
+                    # Check for symbolic links
+                    if member.issym or member.islnk:
+                        # For symlinks, we need to resolve the target
+                        if member.issym:
+                            # Read the symlink target from the archive
+                            # We can't read the target from the archive directly without extracting,
+                            # but we can check the stored path and its potential escape
+                            # The symlink target itself is stored in the member.name field
+                            target_path = member.linkname
+                            resolved_target = os.path.realpath(os.path.join(dest_path, target_path))
+                            if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:
+                                raise ValueError(f"Symbolic link {member.name} -> {target_path} would escape destination path: {resolved_target}")
+                        elif member.islnk:
+                            # Hard links are handled by the file extraction logic,
+                            # but we should check if the link target is outside dest_path
+                            target_path = member.linkname
+                            resolved_target = os.path.realpath(os.path.join(dest_path, target_path))
+                            if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:
+                                raise ValueError(f"Hard link {member.name} -> {target_path} would escape destination path: {resolved_target}")
+                
+                # If validation passes, extract the archive
+                tar.extractall(path=temp_dir)
+                
+                # Now we need to move the extracted files to the destination
+                # But first, we need to validate that the extracted files are within dest_path
+                # Since we extracted to temp_dir, we need to check if any file ends up outside dest_path
+                # Actually, the safest approach is to extract directly to dest_path but validate first
+                
+                # Let's re-extract to dest_path and validate during extraction
+                # We'll use a custom approach that validates during extraction
+                
+                # Re-open and extract with validation
+                for member in tar.getmembers():
+                    # Calculate the resolved path for this member relative to dest_path
+                    member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                    
+                    # Resolve the path to check for escape attempts
+                    resolved_path = os.path.realpath(member_path)
+                    
+                    # Ensure the resolved path is within dest_path
+                    if not resolved_path.startswith(dest_path + os.sep) and resolved_path != dest_path:
+                        raise ValueError(f"Member {member.name} would escape destination path: {resolved_path}")
+                    
+                    # Check for symbolic links
+                    if member.issym or member.islnk:
+                        if member.issym:
+                            target_path = member.linkname
+                            resolved_target = os.path.realpath(os.path.join(dest_path, target_path))
+                            if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:
+                                raise ValueError(f"Symbolic link {member.name} -> {target_path} would escape destination path: {resolved_target}")
+                        elif member.islnk:
+                            target_path = member.linkname
+                            resolved_target = os.path.realpath(os.path.join(dest_path, target_path))
+                            if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:
+                                raise ValueError(f"Hard link {member.name} -> {target_path} would escape destination path: {resolved_target}")
+                
+                # Now extract safely
+                tar.extractall(path=dest_path)
+                
+                return True
+                
+    except Exception as e:
+        return False

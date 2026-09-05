@@ -1,0 +1,95 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with validation and redirect handling.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): Function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): Function that takes a hostname and returns list of IP addresses.
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If scheme is invalid, no IP found, or redirect violates constraints.
+    """
+    from urllib.parse import urlparse, urljoin, parse_qs
+    
+    # Parse the initial URL
+    initial_url = urlparse(url)
+    scheme = initial_url.scheme.lower()
+    
+    # GUARD: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve the initial hostname
+    initial_host = initial_url.hostname
+    if not initial_host:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try_ips = resolve_host(initial_host)
+    if not try_ips:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # Extract public address (first IP) for comparison
+    public_address = try_ips[0]
+    
+    current_url = url
+    redirect_count = 0
+    max_redirects = 5
+    
+    while True:
+        # Parse current URL
+        current_parsed = urlparse(current_url)
+        current_scheme = current_parsed.scheme.lower()
+        current_host = current_parsed.hostname
+        current_port = current_parsed.port
+        current_netloc = current_parsed.netloc
+        
+        # Check if we've exceeded redirect limit
+        if redirect_count > max_redirects:
+            raise ValueError("Too many redirects")
+        
+        # GUARD: Check scheme consistency (for redirects)
+        if current_scheme != scheme:
+            raise ValueError("Redirect to different scheme not allowed")
+        
+        # Resolve current hostname
+        if current_host:
+            try_ips = resolve_host(current_host)
+            if not try_ips:
+                raise ValueError("No IP addresses found for hostname")
+            current_public_address = try_ips[0]
+        else:
+            current_public_address = None
+        
+        # GUARD: Check DNS consistency (for redirects)
+        if current_public_address and not public_address:
+            raise ValueError("Redirect to different DNS not allowed")
+        if current_public_address != public_address:
+            raise ValueError("Redirect to different public address not allowed")
+        
+        # GUARD: Check credentials consistency (for redirects)
+        if current_netloc != initial_url.netloc:
+            raise ValueError("Redirect to different credentials not allowed")
+        
+        # Make the request
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        # Handle redirects
+        location = headers.get('location')
+        if location:
+            redirect_count += 1
+            # Resolve the redirect URL
+            redirect_url = urljoin(current_url, location)
+            current_url = redirect_url
+        else:
+            break
+    
+    # Return the body as text
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

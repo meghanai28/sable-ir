@@ -1,0 +1,134 @@
+import os
+import tarfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve . and .. components."""
+    return os.path.normpath(path)
+
+def _is_absolute(path: str) -> bool:
+    """Check if a path is absolute."""
+    return os.path.isabs(path)
+
+def _is_within_safe_path(safe_base: str, target_path: str) -> bool:
+    """Check if target_path is within safe_base.
+    
+    This function ensures that target_path does not escape the safe_base directory,
+    even if target_path contains .. components.
+    """
+    safe_base_normalized = _normalize_path(safe_base)
+    target_normalized = _normalize_path(target_path)
+    
+    # Ensure safe_base ends with a separator for consistent prefix checking
+    if not safe_base_normalized.endswith(os.sep):
+        safe_base_normalized += os.sep
+    
+    # Check if target_normalized starts with safe_base_normalized
+    # This handles cases like /a/b/c vs /a/b/c/d
+    return target_normalized.startswith(safe_base_normalized)
+
+def _check_member_safety(dest_path: str, member_info: tarfile.TarInfo) -> bool:
+    """Check if an archive member's target path is safe relative to dest_path.
+    
+    This checks:
+    1. Regular files and directories: The normalized path must be within dest_path.
+    2. Symbolic links: The resolved target must be within dest_path.
+    """
+    member_name = member_info.name
+    
+    # Skip empty names or names that are just slashes
+    if not member_name or member_name == '/':
+        return True
+    
+    # Normalize the member name to handle .. and .
+    # We need to resolve the path relative to dest_path
+    member_path = os.path.join(dest_path, member_name)
+    member_normalized = _normalize_path(member_path)
+    
+    # Check if the member path escapes dest_path
+    if not _is_within_safe_path(dest_path, member_normalized):
+        return False
+    
+    # If it's a symlink, check the resolved target
+    if member_info.issym() or member_info.islnk():
+        # Get the link target
+        link_target = member_info.linkname
+        
+        # Resolve the link target relative to the member's location
+        # The link target is relative to the member's directory
+        if os.path.isabs(link_target):
+            link_resolved = link_target
+        else:
+            link_resolved = os.path.join(member_normalized, link_target)
+        
+        # Normalize the resolved link target
+        link_resolved_normalized = _normalize_path(link_resolved)
+        
+        # Check if the resolved link target escapes dest_path
+        if not _is_within_safe_path(dest_path, link_resolved_normalized):
+            return False
+    
+    return True
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """Extract a tar archive to a destination path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize the destination path
+    dest_path = _normalize_path(dest_path)
+    
+    # Check if dest_path is absolute
+    if not _is_absolute(dest_path):
+        return False
+    
+    # Normalize tar_path to ensure it's a valid path
+    tar_path = _normalize_path(tar_path)
+    
+    # Check if tar_path exists
+    if not os.path.exists(tar_path):
+        return False
+    
+    # Check if tar_path is a directory (not an archive)
+    if os.path.isdir(tar_path):
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # List all members in the archive
+            members = tar.getmembers()
+            
+            # Check each member before extraction
+            for member in members:
+                # Check if member name is valid
+                if not member.name or member.name == '/':
+                    continue
+                
+                # Check if the member path escapes the destination
+                if not _is_within_safe_path(dest_path, _normalize_path(os.path.join(dest_path, member.name))):
+                    return False
+                
+                # Check if the member is a symlink and its target escapes
+                if member.issym() or member.islnk():
+                    link_target = member.linkname
+                    if os.path.isabs(link_target):
+                        link_resolved = link_target
+                    else:
+                        link_resolved = os.path.join(dest_path, member.name, link_target)
+                    
+                    if not _is_within_safe_path(dest_path, _normalize_path(link_resolved)):
+                        return False
+            
+            # Extract the archive
+            tar.extractall(dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

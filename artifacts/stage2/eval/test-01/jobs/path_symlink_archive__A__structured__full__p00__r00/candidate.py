@@ -1,0 +1,82 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path, ensuring no security violations.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve and normalize the destination path to prevent directory traversal
+        resolved_dest = os.path.realpath(dest_path)
+        resolved_tar = os.path.realpath(tar_path)
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(resolved_dest):
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members
+            members = tar.getnames()
+            
+            # Validate all members before extraction
+            for member in members:
+                # Skip directories if we only want to extract files, 
+                # but the plan says "extract only regular files and directories"
+                # so we proceed with both but reject symlinks and hardlinks.
+                
+                # Resolve the member's path relative to dest_path
+                member_path = os.path.join(resolved_dest, member)
+                resolved_member = os.path.realpath(member_path)
+                
+                # Check for directory traversal
+                if not resolved_member.startswith(resolved_dest + os.sep) and resolved_member != resolved_dest:
+                    return False
+                
+                # Check for symbolic links and hard links
+                if member.isdir() or (not member.isdir() and member.isfile()):
+                    # For directories, we just check the path
+                    # For files, we need to check the type and link references
+                    pass
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Check for hard links
+                if member.islnk():
+                    return False
+            
+            # Extract the archive
+            for member in members:
+                # Skip directories if we want to be strict, but the plan says extract files and directories
+                # However, tarfile.extractfile is for files, we need to handle directories too
+                if member.isdir():
+                    member_dir = os.path.join(resolved_dest, member)
+                    os.makedirs(member_dir, exist_ok=True)
+                else:
+                    member_path = os.path.join(resolved_dest, member)
+                    # Extract the file
+                    tar.extract(member, path=resolved_dest)
+                    
+                    # Check if the extracted file is a symlink or hard link
+                    if os.path.islink(member_path):
+                        return False
+                    if os.path.exists(member_path) and not os.path.isfile(member_path):
+                        return False
+
+        return True
+    
+    except Exception:
+        return False

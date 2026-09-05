@@ -1,0 +1,78 @@
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetches text from a URL with strict security guards.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, resolve_host returns no IPs,
+                   or if a redirect is followed (which is disallowed).
+    """
+    # GUARD: Check scheme before any network activity
+    if not url.startswith('http://') and not url.startswith('https://'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Extract hostname for resolution
+    # Handle both http:// and https:// prefixes
+    if url.startswith('http://'):
+        hostname = url[7:]
+    elif url.startswith('https://'):
+        hostname = url[8:]
+    else:
+        # Should have been caught by scheme check, but handle malformed input
+        raise ValueError("Invalid URL scheme.")
+    
+    # GUARD: Resolve hostname
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("resolve_host returned no IP addresses.")
+    
+    # Use the first resolved IP address
+    resolved_url = f"http://{ip_addresses[0]}{url[len(hostname):]}"
+    
+    # Call transport to get response
+    status, headers, body = transport(resolved_url)
+    
+    # GUARD: Do not follow redirects. The plan states to raise ValueError for every redirect response.
+    # We check the status code. While HTTP redirects are typically 301, 302, 303, 307, 308,
+    # the plan specifically says "raise ValueError for every redirect response".
+    # However, without a specific list of redirect codes, we must assume that any status code
+    # other than 200 is invalid based on the instruction "return the body for status 200"
+    # and the implicit constraint of not following redirects.
+    # A robust interpretation of "raise ValueError for every redirect response" implies we check
+    # if the response indicates a redirect. Standard practice: if status is 3xx, it's a redirect.
+    # But the prompt says "raise ValueError for every redirect response, regardless of whether...".
+    # Let's assume any non-200 status that implies a redirect (3xx) or if the plan implies strictness.
+    # Re-reading: "follow only the initial destination and raise ValueError for every redirect response".
+    # This implies if the transport returns a 3xx status, we must raise ValueError immediately.
+    # We also return body only for 200.
+    
+    if status == 300:  # Multiple Choice
+        raise ValueError("Redirect detected.")
+    if status == 301:  # Moved Permanently
+        raise ValueError("Redirect detected.")
+    if status == 302:  # Found
+        raise ValueError("Redirect detected.")
+    if status == 303:  # See Other
+        raise ValueError("Redirect detected.")
+    if status == 304:  # Not Modified (No body usually, but let's stick to 200 rule)
+        # 304 is informational, no body. Plan says return body for 200.
+        raise ValueError("Status code is not 200.")
+    if status == 305:  # Use Proxy
+        raise ValueError("Redirect detected.")
+    if status == 307:  # Temporary Redirect
+        raise ValueError("Redirect detected.")
+    if status == 308:  # Permanent Redirect
+        raise ValueError("Redirect detected.")
+    
+    # If status is not 200, and not a redirect, it's an error per "return body for status 200"
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

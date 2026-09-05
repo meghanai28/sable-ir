@@ -54,11 +54,13 @@ from sable_ir.stage2 import (
     SplitName,
     Stage1GateStatus,
     Stage2Config,
+    Stage2Error,
     Stage2ModelSpec,
     Stage2ReferencePlans,
     Stage2SplitManifest,
     build_stage2_planner_prompt,
     document_order_variants,
+    load_human_attestation,
     load_stage2_config,
     render_safety_document,
     stage1_gate_status,
@@ -373,6 +375,10 @@ class ParaphraseAuditSummary(StrictModel):
     passed_rows: int
     complete: bool
     bound_to_current_paraphrases: bool
+    # Append-only human sign-off binding the exact audited bytes. Claude's preliminary review
+    # provenance stays recorded in the audit file itself and is never overwritten.
+    human_attested: bool = False
+    human_reviewer: str | None = None
     ready_for_activations: bool
 
 
@@ -436,12 +442,26 @@ def validate_stage3_paraphrase_audit(
         raise Stage3Error("paraphrase audit rows do not exactly cover the authored phrasings")
     bound = audit.paraphrases_sha256 == _sha(paraphrases_path.read_bytes())
     passed = sum(row.passed for row in audit.rows)
+    attestation_path = root / config.paraphrase_audit_path.replace(
+        ".json", ".human-attestation.json"
+    )
+    reviewer: str | None = None
+    try:
+        attestation = load_human_attestation(attestation_path, root)
+        reviewer = attestation.reviewer
+        attested = attestation.approved
+    except (Stage2Error, Stage3Error, OSError):
+        attested = False
     return ParaphraseAuditSummary(
         rows=len(audit.rows),
         passed_rows=passed,
         complete=audit.complete,
         bound_to_current_paraphrases=bound,
-        ready_for_activations=audit.complete and bound and passed == len(audit.rows),
+        human_attested=attested,
+        human_reviewer=reviewer,
+        ready_for_activations=(
+            audit.complete and bound and passed == len(audit.rows) and attested
+        ),
     )
 
 
@@ -1238,8 +1258,17 @@ class Stage3PlanAudit(StrictModel):
     rubric_sha256: Sha256
     behavior_blinded: Literal[True] = True
     instructions: str
+    # Presentation order is shuffled for the double packet so a reviewer cannot align row N with
+    # row N of the primary packet. The seed is recorded so the shuffle is reproducible/auditable.
+    presentation_seed: int | None = None
+    presentation_ids: dict[str, str] = {}
     rows: tuple[PlanAuditRow, ...]
     reviewer: str | None = None
+    # Honest provenance for the independence claim: who/what labelled, and the exact packet bytes
+    # they saw. A double audit whose prompt hash does not match the packet is not independent.
+    reviewer_type: Literal["human", "ai_assisted", "ai"] | None = None
+    reviewer_model: str | None = None
+    presented_packet_sha256: Sha256 | None = None
     completed_at: str | None = None
 
     @model_validator(mode="after")
@@ -1343,13 +1372,24 @@ def prepare_stage3_plan_audit(
         count = round(len(others) * config.labels.double_audit_train_fraction)
         sampled = random.Random(config.labels.double_audit_seed).sample(others, count)
         chosen = sorted([*held_out, *sampled], key=lambda r: r.job_id)
+        # Randomise presentation so the double reviewer cannot infer the primary packet's order.
+        seed = config.labels.double_audit_seed
+        shuffler = random.Random(seed + 1)
+        shuffler.shuffle(chosen)
+        presentation = {
+            row.job_id: f"row-{index:04d}" for index, row in enumerate(chosen)
+        }
     else:
         chosen = [row for _job, row in rows]
+        seed = None
+        presentation = {}
     audit = Stage3PlanAudit(
         kind=kind,
         activation_manifest_sha256=_sha(manifest_path.read_bytes()),
         rubric_sha256=_sha(rubric_path.read_bytes()),
         instructions=STAGE3_AUDIT_INSTRUCTIONS,
+        presentation_seed=seed,
+        presentation_ids=presentation,
         rows=tuple(chosen),
     )
     _write_model(output, audit)
@@ -1527,6 +1567,18 @@ def assemble_stage3_dataset(
             raise Stage3Error(f"{expected_kind} audit used another rubric")
         if not audit.complete:
             raise Stage3Error(f"{expected_kind} audit is incomplete")
+    # Inter-rater agreement is only meaningful between two genuinely separate reviewers. Refuse
+    # to compute a kappa the provenance cannot support, rather than reporting a flattering one.
+    if double.reviewer_type is None or not (double.reviewer or "").strip():
+        raise Stage3Error(
+            "double audit must declare reviewer and reviewer_type; without them the packet "
+            "cannot support an inter-rater agreement claim"
+        )
+    if (double.reviewer or "").strip() == (primary.reviewer or "").strip():
+        raise Stage3Error(
+            "double audit names the same reviewer as the primary audit; that is a re-read, not "
+            "independent review, and cannot be reported as inter-rater agreement"
+        )
     labels = {row.job_id: row for row in primary.rows}
     double_ids = {row.job_id for row in double.rows}
     family = {task.task_id: task.family for task in manifest.tasks}

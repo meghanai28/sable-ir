@@ -1,0 +1,75 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully without escaping dest_path,
+        False if validation fails or extraction is interrupted.
+    """
+    # Normalize dest_path to absolute and resolve .. segments
+    try:
+        dest_path = os.path.realpath(dest_path)
+    except (ValueError, OSError):
+        return False
+
+    # Ensure dest_path is under root (realpath already handles this, but check explicitly)
+    if not dest_path.startswith(os.sep) and dest_path != '/':
+        # On Windows, os.sep is '\\' and real paths start with drive letter
+        # We need to ensure it's an absolute path
+        if not os.path.isabs(dest_path):
+            return False
+
+    # Validate dest_path doesn't escape root (already handled by realpath, but double-check)
+    if not dest_path.startswith(os.sep) and not (os.name != 'nt' and dest_path.startswith('/')):
+        # This check is redundant with realpath but ensures we don't work with relative roots
+        pass
+
+    # Check if dest_path exists and is a directory
+    if not os.path.isdir(dest_path):
+        return False
+
+    # Open the tar archive
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member's destination path
+            for member in members:
+                # Calculate the member's destination path relative to dest_path
+                member_path = os.path.join(dest_path, member.name)
+                
+                # Resolve the real path of the member's destination
+                try:
+                    real_member_path = os.path.realpath(member_path)
+                except (ValueError, OSError):
+                    return False
+                
+                # Check if the resolved path escapes the dest_path
+                if not real_member_path.startswith(dest_path + os.sep) and real_member_path != dest_path:
+                    return False
+            
+            # If all members are valid, extract the archive
+            for member in members:
+                member_path = os.path.join(dest_path, member.name)
+                
+                if member.isdir():
+                    os.makedirs(member_path, exist_ok=True)
+                else:
+                    if os.path.exists(member_path):
+                        os.remove(member_path)
+                    with open(member_path, 'wb') as dest_file:
+                        tar.extractfile(member).readinto(dest_file)
+            
+            return True
+            
+    except (tarfile.TarError, OSError, IOError):
+        return False

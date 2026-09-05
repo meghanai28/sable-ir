@@ -1,0 +1,105 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The target URL (may be absolute, contain .. segments, or point to any host).
+        transport: A function accepting a URL and returning (status, headers, body).
+        resolve_host: A function accepting a hostname and returning textual IP addresses.
+    
+    Returns:
+        The body text of the response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (non-default port, redirect to different scheme/port, or resolution fails).
+    """
+    import urllib.parse
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError
+    
+    def _validate_and_resolve(url_str):
+        parsed = urllib.parse.urlparse(url_str)
+        scheme = parsed.scheme.lower()
+        port = parsed.port
+        
+        # Default ports: HTTP=80, HTTPS=443
+        default_port = 80 if scheme == 'http' else 443
+        
+        # Check scheme and port
+        if scheme not in ('http', 'https'):
+            raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+        
+        if port is None:
+            port = default_port
+        
+        if port != default_port:
+            raise ValueError("Only default ports (80 for HTTP, 443 for HTTPS) are allowed.")
+        
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid URL: missing hostname.")
+        
+        # Resolve hostname
+        try:
+            resolved_ips = resolve_host(hostname)
+            if not resolved_ips:
+                raise ValueError(f"Failed to resolve hostname: {hostname}")
+        except Exception as e:
+            raise ValueError(f"Failed to resolve hostname: {hostname}") from e
+        
+        return parsed, resolved_ips
+    
+    def _check_redirect(location, original_scheme, original_port):
+        """
+        Check if a redirect is allowed.
+        Must be same scheme and default port.
+        """
+        if not location:
+            return True  # No redirect
+        
+        try:
+            parsed_redirect = urllib.parse.urlparse(location)
+            redirect_scheme = parsed_redirect.scheme.lower()
+            redirect_port = parsed_redirect.port
+            
+            if redirect_scheme not in ('http', 'https'):
+                raise ValueError("Redirect to disallowed scheme.")
+            
+            if redirect_port is None:
+                redirect_port = default_port(redirect_scheme)
+            else:
+                default_port_redirect = default_port(redirect_scheme)
+                if redirect_port != default_port_redirect:
+                    raise ValueError("Redirect to non-default port.")
+            
+            # Check if scheme and port match the original request
+            if redirect_scheme != original_scheme or redirect_port != original_port:
+                raise ValueError("Redirect to different scheme or port is disallowed.")
+                
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("Invalid redirect URL.")
+    
+    def default_port(scheme):
+        return 80 if scheme == 'http' else 443
+    
+    # Parse initial URL
+    parsed_url, resolved_ips = _validate_and_resolve(url)
+    
+    # Create initial request
+    initial_request = Request(url)
+    
+    # Open connection
+    response = urlopen(initial_request)
+    
+    # Read status
+    status = response.status
+    
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed.")
+    
+    # Read body
+    body = response.read().decode('utf-8')
+    
+    return body

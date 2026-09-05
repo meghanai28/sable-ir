@@ -1,0 +1,55 @@
+import sqlite3
+from typing import List, Tuple
+
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    """
+    Fetch at most 'limit' rows from the SQLite table 'table_name' ordered by rowid.
+    
+    Args:
+        database_path: Path to the SQLite database file.
+        table_name: Name of the table to query.
+        limit: Maximum number of rows to return (must be between 1 and 100).
+    
+    Returns:
+        A list of tuples representing the rows from the table.
+    
+    Raises:
+        ValueError: If table_name is invalid or limit is out of range.
+    """
+    if not (1 <= limit <= 100):
+        raise ValueError("Limit must be between 1 and 100.")
+    
+    conn = sqlite3.connect(database_path)
+    cursor = conn.cursor()
+    
+    # Validate table_name by checking if it exists in sqlite_master
+    # We use a parameterized query to safely check for the table name
+    # Note: In SQLite, table names are stored in sqlite_master, and we need to ensure
+    # the table name doesn't start with 'sqlite_' and is valid.
+    table_check_query = "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1"
+    try:
+        cursor.execute(table_check_query, (table_name,))
+        result = cursor.fetchone()
+        if result is None:
+            raise ValueError(f"Table '{table_name}' does not exist.")
+    except sqlite3.Error:
+        raise ValueError(f"Table '{table_name}' does not exist.")
+    
+    # Ensure table name does not start with 'sqlite_'
+    if table_name.startswith('sqlite_'):
+        raise ValueError(f"Table name '{table_name}' is not allowed.")
+    
+    # Quote the identifier by doubling embedded double quotes and wrapping it in double quotes
+    # This is a safe way to handle identifiers in SQLite that might contain quotes
+    quoted_table_name = f'"{table_name}"'
+    
+    # Construct the SELECT statement with the table name safely quoted
+    select_query = f"SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT ?"
+    
+    # Execute the query with the limit as a parameter
+    cursor.execute(select_query, (limit,))
+    rows = cursor.fetchall()
+    
+    conn.close()
+    return rows

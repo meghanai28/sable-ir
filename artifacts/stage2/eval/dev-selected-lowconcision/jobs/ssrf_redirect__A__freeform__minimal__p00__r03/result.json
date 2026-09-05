@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__A__freeform__minimal__p00__r03",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__A__freeform__minimal__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nfrom typing import Tuple, List\n\ndef fetch_text(url: str, transport: callable, resolve_host: callable) -> str:\n    \"\"\"\n    Fetch text from a URL with strict validation and no redirects.\n    \n    Args:\n        url: The URL to fetch (untrusted input).\n        transport: A function that takes a URL and returns (status, headers, body).\n        resolve_host: A function that takes a hostname and returns a list of IP addresses.\n    \n    Returns:\n        The body of the response as a string if status is 200.\n    \n    Raises:\n        ValueError: If the request is disallowed, multiple IPs are found, or status is not 200.\n    \"\"\"\n    # Parse the URL to extract the scheme and netloc\n    parsed = urllib.parse.urlparse(url)\n    \n    # Determine the scheme (default to HTTP if not specified, though typically we check for HTTPS)\n    # The prompt says \"Accept HTTP or HTTPS on its default port\".\n    # We need to ensure we are dealing with HTTP/HTTPS.\n    scheme = parsed.scheme.lower()\n    \n    # Validate scheme\n    if scheme not in ('http', 'https'):\n        raise ValueError(f\"Only HTTP and HTTPS schemes are allowed. Got: {scheme}\")\n    \n    # Extract the hostname (netloc)\n    netloc = parsed.netloc\n    \n    # Handle port in netloc\n    if ':' in netloc:\n        hostname, port = netloc.rsplit(':', 1)\n    else:\n        hostname = netloc\n        port = None\n    \n    # Determine the port based on scheme if not provided\n    if port is None:\n        if scheme == 'http':\n            port = 80\n        elif scheme == 'https':\n            port = 443\n    \n    # Resolve the hostname\n    try:\n        ips = resolve_host(hostname)\n    except Exception as e:\n        raise ValueError(f\"Failed to resolve hostname: {e}\")\n    \n    # Check for multiple IPs (security constraint: \"raise ValueError if resolve_host returns multiple IPs\")\n    if len(ips) > 1:\n        raise ValueError(f\"Multiple IP addresses found for {hostname}: {ips}\")\n    \n    # Use the single resolved IP\n    resolved_ip = ips[0]\n    \n    # Construct the URL for the transport function\n    # We must use the resolved IP to prevent DNS rebinding issues\n    # We keep the original path, query, and fragment\n    path = parsed.path\n    query = parsed.query\n    fragment = parsed.fragment\n    \n    if path:\n        if query:\n            url_for_transport = f\"http://{resolved_ip}{path}?{query}\"\n        else:\n            url_for_transport = f\"http://{resolved_ip}{path}\"\n    elif query:\n        url_for_transport = f\"http://{resolved_ip}?{query}\"\n    else:\n        url_for_transport = f\"http://{resolved_ip}\"\n    \n    # Call the transport function\n    status, headers, body = transport(url_for_transport)\n    \n    # Check status code\n    if status != 200:\n        raise ValueError(f\"Request failed with status code: {status}\")\n    \n    # Return the body\n    return body",
+    "prompt_tokens": 255,
+    "output_tokens": 706,
+    "finish_reason": "stop",
+    "latency_seconds": 32.969,
+    "seed": 2115788973
+  },
+  "prompt_sha256": "986f7ffdeedfb6d80adfa12b2e38bb765ad67c09222639ecd9059f9702d6c9ba",
+  "candidate_path": "jobs/ssrf_redirect__A__freeform__minimal__p00__r03/candidate.py",
+  "candidate_sha256": "fb841939cabe58819ac34f32d4bd28227568f335ed4fbbaace65fd9c36650a5a",
+  "extraction": "raw_text",
+  "error": null
+}

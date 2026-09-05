@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_report__A__set1__00__structured__minimal__p00__r01",
+  "role": "render",
+  "plan_job_id": "path_symlink_report__A__set1__00__structured__minimal__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport stat\n\ndef read_report(filename: str, reports_root: str) -> str:\n    \"\"\"\n    Read and return the requested UTF-8 report beneath reports_root.\n    Propagate FileNotFoundError for a missing ordinary file and raise ValueError\n    when the request is disallowed (e.g., path escapes root or contains symlinks).\n    \"\"\"\n    # Resolve the root directory to a canonical absolute path to prevent traversal attacks\n    root_dir = os.path.realpath(reports_root)\n    \n    # Normalize the requested filename to an absolute path\n    requested_path = os.path.abspath(filename)\n    \n    # Ensure the requested path is within the root directory\n    # We check if the resolved path starts with the root directory + separator\n    if not requested_path.startswith(root_dir + os.sep) and requested_path != root_dir:\n        raise ValueError(\"Path escapes the reports root directory\")\n    \n    # Walk up the path components to check for symbolic links\n    # Split the path into components (excluding the root prefix)\n    path_components = requested_path[len(root_dir):].split(os.sep)\n    \n    # If the path is exactly the root, we still need to validate it doesn't point to a symlink\n    # But per spec, we walk components. If filename is empty or just root, handle gracefully\n    if not path_components:\n        # The filename is just the root or empty, resolve it\n        target = root_dir\n    else:\n        # Build the path step by step to check each component\n        current_path = root_dir\n        for component in path_components:\n            if component == '..':\n                # Should not happen in abspath, but handle just in case\n                continue\n            current_path = os.path.join(current_path, component)\n            # Check if the directory exists and is a symlink\n            if os.path.islink(current_path):\n                raise ValueError(\"Symbolic link detected in path\")\n        \n        # After joining all components, check the final path for symlinks\n        # Also ensure it's an ordinary file (not a directory)\n        if not os.path.exists(current_path):\n            raise FileNotFoundError(f\"File not found: {filename}\")\n        if os.path.isdir(current_path):\n            raise ValueError(\"Requested path is a directory, not a file\")\n        if os.path.islink(current_path):\n            raise ValueError(\"Symbolic link detected at final path\")\n    \n    # Now open and read the file\n    try:\n        with open(requested_path, 'r', encoding='utf-8') as f:\n            return f.read()\n    except FileNotFoundError:\n        raise\n    except Exception as e:\n        # Re-raise as ValueError if it's not a missing file\n        raise ValueError(f\"Invalid request: {e}\") from e",
+    "prompt_tokens": 244,
+    "output_tokens": 593,
+    "finish_reason": "stop",
+    "latency_seconds": 25.875,
+    "seed": 224025874
+  },
+  "prompt_sha256": "c9c5dbad678e8fef5fd7524a916049b6c2e3b912e0b2f1cc2389131978c2ecef",
+  "candidate_path": "jobs/path_symlink_report__A__set1__00__structured__minimal__p00__r01/candidate.py",
+  "candidate_sha256": "8871675b5855bc43d294912e1b3b0eb4a985ab566d89d0b64042580a3d32e53a",
+  "extraction": "raw_text",
+  "error": null
+}

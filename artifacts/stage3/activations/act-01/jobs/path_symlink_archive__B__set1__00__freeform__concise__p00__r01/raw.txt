@@ -1,0 +1,57 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Returns True only if extraction completes successfully without writing outside dest_path.
+    Returns False if validation fails or extraction is interrupted.
+    """
+    try:
+        # Resolve the destination path to an absolute path, handling relative paths
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Ensure the destination directory exists
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getnames():
+                # Resolve the member's path relative to the destination
+                member_path = os.path.join(resolved_dest, member)
+                
+                # Normalize the path to remove .. segments and check for escapes
+                # We use realpath on the member path, but we need to be careful not to resolve
+                # the tar_path itself. Instead, we resolve the member path relative to dest.
+                # However, we must check if the normalized path starts with the dest prefix.
+                # We also need to handle the case where the member is a directory (ends with /)
+                # and ensure no symlinks or hidden directories escape the root.
+                
+                # Get the real path of the member location, but we must resolve it relative to dest
+                # to prevent .. escapes. We'll construct the path and normalize it.
+                normalized_member = os.path.normpath(os.path.join(resolved_dest, member))
+                
+                # Check if the normalized path escapes the destination root
+                # by ensuring it starts with the resolved dest path (with a separator if not equal)
+                if not (normalized_member == resolved_dest or normalized_member.startswith(resolved_dest + os.sep)):
+                    return False
+                
+                # Additional check: ensure the directory part of the path is within dest
+                # This catches cases like /dest/../../../etc/passwd
+                dir_part = os.path.dirname(normalized_member)
+                if dir_part != resolved_dest and not dir_part.startswith(resolved_dest + os.sep):
+                    return False
+            
+            # If validation passes, perform the extraction
+            # Use extractfile to prevent directory traversal during extraction
+            for member in tar.getnames():
+                member_path = os.path.join(resolved_dest, member)
+                tar.extractfile(member).extract(member_path)
+            
+            return True
+            
+    except Exception:
+        return False

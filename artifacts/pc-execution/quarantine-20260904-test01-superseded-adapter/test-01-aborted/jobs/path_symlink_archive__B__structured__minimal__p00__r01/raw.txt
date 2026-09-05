@@ -1,0 +1,90 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize paths to absolute to prevent relative path traversal
+        tar_path = os.path.normpath(tar_path)
+        dest_path = os.path.normpath(dest_path)
+        
+        # Resolve the real path of the destination to detect symlinks
+        real_dest_path = os.path.realpath(dest_path)
+        
+        # Security check: Reject absolute paths that start with current directory or contain ..
+        if not dest_path.startswith(os.path.abspath('.')):
+            pass  # Allow relative paths that resolve correctly
+        else:
+            # If it looks like an absolute path or resolves to current dir, be strict
+            if os.path.isabs(dest_path):
+                raise ValueError("Absolute destination paths are not allowed")
+        
+        # Ensure the destination directory exists
+        if not os.path.exists(real_dest_path):
+            os.makedirs(real_dest_path, exist_ok=True)
+        
+        # Validate that the destination is within the allowed base (if a base was implied, 
+        # but here we assume the caller's cwd is the base, so we just ensure no .. escapes)
+        # We will re-check during extraction but ensure the final resolved path is safe
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Extract members one by one to validate links and paths before extraction
+            for member in tar.getmembers():
+                # Resolve the member's name relative to dest_path
+                member_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the member path to handle .. and .
+                normalized_member_path = os.path.normpath(member_path)
+                
+                # Security check: Ensure the normalized path is still within the destination
+                # We compare the resolved real path of the member path against the real dest path
+                # However, we must be careful not to resolve symlinks in the member name itself yet,
+                # but we must ensure the path structure is safe.
+                
+                # Check for path traversal
+                if not normalized_member_path.startswith(real_dest_path + os.sep) and normalized_member_path != real_dest_path:
+                    raise ValueError(f"Path traversal detected in member: {member.name}")
+                
+                # Check for symlinks in the archive
+                if member.issym() or member.islnk():
+                    # Resolve the link target
+                    if member.issym():
+                        link_target = member.linkname
+                    else:
+                        link_target = member.linkname
+                    
+                    # Resolve the link target relative to the member's directory
+                    member_dir = os.path.dirname(member.name)
+                    if member_dir:
+                        resolved_link_target = os.path.normpath(os.path.join(dest_path, member_dir, link_target))
+                    else:
+                        resolved_link_target = os.path.normpath(os.path.join(dest_path, link_target))
+                    
+                    # Normalize to ensure no ..
+                    normalized_link_target = os.path.normpath(resolved_link_target)
+                    
+                    # Security check: Ensure the link target is within the destination
+                    if not normalized_link_target.startswith(real_dest_path + os.sep) and normalized_link_target != real_dest_path:
+                        raise ValueError(f"Symlink target outside destination: {link_target}")
+                
+                # Perform the extraction
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception as e:
+        # Clean up any partially created directories if needed, though the spec says don't write outside
+        # We return False without raising an exception to the caller, but the function should handle errors gracefully
+        return False

@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__B__structured__full__p02__r00",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__B__structured__full__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to a destination directory with strict security validation.\n    \n    Args:\n        tar_path: Path to the tar archive file.\n        dest_path: Destination directory where the archive should be extracted.\n        \n    Returns:\n        True if extraction completes successfully, False otherwise.\n        No archive members are written outside dest_path on failure.\n    \"\"\"\n    # Ensure dest_path exists and is a directory\n    try:\n        os.makedirs(dest_path, exist_ok=True)\n    except OSError:\n        return False\n    \n    # Open the tar archive\n    try:\n        tar = tarfile.open(tar_path, 'r:*')\n    except (tarfile.TarError, OSError, ValueError):\n        return False\n    \n    # Validate all members before extracting\n    try:\n        for member in tar.getmembers():\n            # Get the full path of the member relative to dest_path\n            member_path = os.path.join(dest_path, member.name)\n            \n            # Resolve the actual path if it's a symlink or hardlink target later\n            # But first check if the name itself escapes dest_path\n            # We need to normalize paths to handle .. and absolute paths\n            real_member_path = os.path.normpath(member_path)\n            \n            # Check for absolute paths or path traversal\n            if real_member_path.startswith(os.path.abspath(dest_path)) or real_member_path == dest_path:\n                # This is safe relative to dest_path, but we must ensure it doesn't go outside\n                # Actually, we need to check if the resolved path is within dest_path\n                if not real_member_path.startswith(os.path.abspath(dest_path)):\n                    raise ValueError(f\"Path traversal detected: {member.name}\")\n            else:\n                raise ValueError(f\"Path traversal detected: {member.name}\")\n            \n            # Reject symbolic links and hard links\n            if member.issym() or member.islnk():\n                raise ValueError(f\"Symbolic link or hard link detected: {member.name}\")\n            \n            # Additional check: ensure the member doesn't try to escape via ..\n            # Normalize the path and check it's within dest_path\n            normalized = os.path.normpath(os.path.join(dest_path, member.name))\n            dest_abspath = os.path.abspath(dest_path)\n            if not normalized.startswith(dest_abspath) or normalized == dest_path:\n                raise ValueError(f\"Path escapes destination: {member.name}\")\n                \n    except (ValueError, OSError):\n        # Clean up if anything was created (though we shouldn't have created anything yet)\n        return False\n    \n    # Extract the archive\n    try:\n        tar.extractall(path=dest_path)\n    except (tarfile.TarError, OSError):\n        return False\n    \n    return True",
+    "prompt_tokens": 250,
+    "output_tokens": 615,
+    "finish_reason": "stop",
+    "latency_seconds": 24.31,
+    "seed": 255862860
+  },
+  "prompt_sha256": "fe7b5c4c45e8a5a7e747a67d0e2b609603a9120337da2248718a466e23421fba",
+  "candidate_path": "jobs/path_symlink_archive__B__structured__full__p02__r00/candidate.py",
+  "candidate_sha256": "6f0f8ee4736da7ce9c6cf79c893e2dc6658510ea4957f5b08c9a4aa2d7d7c5dd",
+  "extraction": "raw_text",
+  "error": null
+}

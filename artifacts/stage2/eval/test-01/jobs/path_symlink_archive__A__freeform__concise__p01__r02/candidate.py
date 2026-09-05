@@ -1,0 +1,51 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path traversal validation.
+    Returns True on complete success, False otherwise.
+    """
+    try:
+        # Normalize the destination path to an absolute path without trailing separators
+        dest_path = os.path.normpath(dest_path)
+        
+        # Ensure the destination directory exists
+        dest_dir = os.path.dirname(dest_path)
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+        
+        # Get the absolute root of the destination
+        dest_root = os.path.abspath(dest_path)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Walk through each member in the archive
+            for member in tar.getmembers():
+                # Skip symbolic links and hard links
+                if member.issym() or member.islnk():
+                    continue
+                
+                # Construct the target path for this member
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the target path to check for traversal
+                target_path = os.path.normpath(target_path)
+                
+                # Resolve the absolute path of the target
+                resolved_target = os.path.abspath(target_path)
+                
+                # Check if the resolved target escapes the destination root
+                # The resolved target must start with the dest_root
+                if not resolved_target.startswith(dest_root):
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+                
+    except Exception:
+        return False
+    
+    return True

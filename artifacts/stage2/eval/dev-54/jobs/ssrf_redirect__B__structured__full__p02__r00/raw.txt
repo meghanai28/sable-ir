@@ -1,0 +1,40 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolver.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The response body if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not http or https, or if no IP addresses are resolved.
+    """
+    # Extract scheme and netloc
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    scheme = url.split('://')[0]
+    rest = url.split('://')[1]
+    
+    # Resolve hostname
+    hostname = rest.split('/')[0]
+    ip_addresses = resolve_host(hostname)
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses resolved for the hostname.")
+    
+    # Determine port based on scheme
+    port = 80 if scheme == 'http' else 443
+    
+    # Call transport
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed.")
+    
+    return body

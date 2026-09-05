@@ -1,0 +1,237 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If validation fails at any point.
+    """
+    current_url = url
+    redirects = 0
+    
+    while True:
+        # Validate the current URL
+        if not _validate_url(current_url):
+            raise ValueError("Invalid URL format")
+        
+        # Resolve hostname
+        hostnames = resolve_host(current_url)
+        if not hostnames:
+            raise ValueError("No public addresses found for hostname")
+        
+        # Check if any address is not a global public address
+        # Note: In a real scenario, this would check against a list of public IP ranges.
+        # For this specification, we assume the provided resolve_host handles the logic
+        # or we perform a basic check. Since the spec says "raise ValueError if it yields no addresses or any address is not a global public address",
+        # we need to implement the check. However, without a specific list of public IPs,
+        # we will assume the provided resolve_host function is trusted to return public IPs
+        # or we perform a basic check (e.g., checking for private ranges).
+        # Given the constraints, we'll implement a basic check for private IP ranges.
+        if _is_private_ip(hostnames):
+            raise ValueError("Non-public address found")
+        
+        # Call transport
+        status, headers, body = transport(current_url)
+        
+        # Check status
+        if status != 200:
+            raise ValueError("Unexpected status code")
+        
+        return body
+    
+    def _validate_url(url_str: str) -> bool:
+        """Validate URL format and scheme/port."""
+        if not url_str:
+            return False
+        
+        scheme = None
+        port = None
+        
+        # Parse scheme and port
+        if "://" in url_str:
+            scheme = url_str.split("://")[0]
+            rest = url_str.split("://", 1)[1]
+            
+            # Check for credentials
+            if "@" in rest:
+                # Extract and ignore credentials for validation, but reject if present
+                # The spec says "Require a hostname, no username or password"
+                # So we should reject URLs with credentials
+                return False
+            
+            # Parse port
+            if ":" in rest:
+                parts = rest.split(":", 1)
+                host_part = parts[0]
+                if len(parts) > 1:
+                    try:
+                        port = int(parts[1])
+                    except ValueError:
+                        return False
+            else:
+                host_part = rest
+        
+        # Validate scheme
+        if scheme not in ["http", "https"]:
+            return False
+        
+        # Validate port
+        if port is not None:
+            if port != 80 and scheme == "http":
+                return False
+            if port != 443 and scheme == "https":
+                return False
+        
+        # Validate host
+        if not host_part or not host_part.strip():
+            return False
+        
+        # Reconstruct URL for further processing
+        if scheme:
+            if port:
+                url_str = f"{scheme}://{host_part}:{port}"
+            else:
+                url_str = f"{scheme}://{host_part}"
+        
+        return True
+    
+    def _is_private_ip(addresses: list) -> bool:
+        """Check if any address is a private IP."""
+        for addr in addresses:
+            try:
+                ip = int(addr.replace(".", ""))
+                # Check for private ranges
+                # 10.0.0.0/8
+                if 10 <= ip < 16777216:
+                    return True
+                # 172.16.0.0/12
+                if 16777216 <= ip < 17877312:
+                    return True
+                # 192.168.0.0/16
+                if 16777216 <= ip < 16842735:
+                    return True
+                # 0.0.0.0/8
+                if 0 <= ip < 16777216:
+                    return True
+                # 127.0.0.0/8
+                if 16777216 <= ip < 16842735:
+                    return True
+            except ValueError:
+                pass
+        return False
+    
+    def _parse_location(location: str, base_url: str) -> str:
+        """Parse and validate redirect location."""
+        if not location:
+            raise ValueError("Missing Location header")
+        
+        # Remove query string and fragment
+        if "?" in location:
+            location = location.split("?")[0]
+        if "#" in location:
+            location = location.split("#")[0]
+        
+        # Check for credentials
+        if "@" in location:
+            raise ValueError("Credentials in redirect location")
+        
+        # Parse scheme and port
+        scheme = None
+        port = None
+        
+        if "://" in location:
+            scheme = location.split("://")[0]
+            rest = location.split("://", 1)[1]
+            
+            if ":" in rest:
+                parts = rest.split(":", 1)
+                host_part = parts[0]
+                if len(parts) > 1:
+                    try:
+                        port = int(parts[1])
+                    except ValueError:
+                        raise ValueError("Invalid port in redirect")
+            else:
+                host_part = rest
+        else:
+            # Relative URL
+            host_part = base_url.split("://")[1].split("/")[0]
+            port = None
+        
+        # Validate scheme
+        if scheme not in ["http", "https"]:
+            raise ValueError("Invalid scheme in redirect")
+        
+        # Validate port
+        if port is not None:
+            if port != 80 and scheme == "http":
+                raise ValueError("Invalid port in redirect")
+            if port != 443 and scheme == "https":
+                raise ValueError("Invalid port in redirect")
+        
+        # Validate host
+        if not host_part or not host_part.strip():
+            raise ValueError("Invalid host in redirect")
+        
+        # Reconstruct URL
+        if scheme:
+            if port:
+                new_url = f"{scheme}://{host_part}:{port}"
+            else:
+                new_url = f"{scheme}://{host_part}"
+        else:
+            # Relative URL
+            new_url = base_url
+        
+        return new_url
+    
+    # Initial validation
+    if not _validate_url(current_url):
+        raise ValueError("Invalid initial URL")
+    
+    while True:
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Unexpected status code")
+        
+        return body
+    
+    # Handle redirects
+    while True:
+        redirects += 1
+        if redirects > 5:
+            raise ValueError("Too many redirects")
+        
+        location = headers.get("location", "")
+        
+        if not location:
+            raise ValueError("Missing Location header")
+        
+        # Parse and validate new URL
+        new_url = _parse_location(location, current_url)
+        
+        if not _validate_url(new_url):
+            raise ValueError("Invalid redirect URL")
+        
+        # Check for credentials in new URL
+        if "@" in new_url:
+            raise ValueError("Credentials in redirect URL")
+        
+        # Resolve hostname
+        hostnames = resolve_host(new_url)
+        if not hostnames:
+            raise ValueError("No public addresses found for redirect hostname")
+        
+        # Check for non-public addresses
+        if _is_private_ip(hostnames):
+            raise ValueError("Non-public address found in redirect")
+        
+        current_url = new_url

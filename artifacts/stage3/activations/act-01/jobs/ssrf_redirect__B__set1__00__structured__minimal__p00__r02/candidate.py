@@ -1,0 +1,149 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security checks.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the scheme/port is invalid, hostname resolution fails,
+                    or the URL escapes the server's root domain.
+    """
+    from urllib.parse import urlparse, unquote, urljoin, urlsplit
+    
+    def is_safe_url(parsed_url, current_url):
+        """Check if the URL escapes the server's root domain."""
+        if not parsed_url.netloc:
+            return True
+        
+        current_netloc = current_url.split("://")[-1] if "://" in current_url else ""
+        if not current_netloc:
+            return True
+            
+        current_parts = urlparse(current_url)
+        if not current_parts.netloc:
+            return True
+            
+        # Compare netlocs
+        if parsed_url.netloc != current_netloc:
+            return True
+        
+        # If netlocs match, check path for escaping
+        # This is a simplified check; full implementation would involve more complex logic
+        # For this constraint, we assume if netloc matches and it's a relative URL, it's safe
+        if not parsed_url.path.startswith('/'):
+            return True
+            
+        return False
+
+    # Parse the URL
+    parsed = urlparse(url)
+    
+    # Check scheme and port
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    if scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    if scheme == 'http':
+        if port != 80:
+            raise ValueError("HTTP must use port 80")
+    elif scheme == 'https':
+        if port != 443:
+            raise ValueError("HTTPS must use port 443")
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    if len(ip_addresses) != 1:
+        raise ValueError(f"Hostname resolution returned multiple IPs: {hostname}")
+    
+    # Normalize and check URL for escaping
+    # Reconstruct URL with resolved IP to check for escaping
+    normalized_url = parsed._replace(netloc=ip_addresses[0], scheme=scheme).geturl()
+    
+    # Check for path escaping
+    if parsed.path and not parsed.path.startswith('/'):
+        raise ValueError("URL path escapes root domain")
+    
+    # Follow redirects at most 5 hops
+    current_url = normalized_url
+    hop_count = 0
+    
+    while True:
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            # If not 200, we might need to follow redirects
+            if 'location' in headers:
+                location = headers['location']
+                if hop_count >= 5:
+                    raise ValueError("Too many redirects")
+                
+                # Parse location
+                location_parsed = urlparse(location)
+                
+                # Check scheme and port of redirect
+                if location_parsed.scheme not in ['http', 'https']:
+                    raise ValueError("Redirect to invalid scheme")
+                
+                if location_parsed.scheme == 'http':
+                    if location_parsed.port != 80:
+                        raise ValueError("HTTP redirect to non-80 port")
+                elif location_parsed.scheme == 'https':
+                    if location_parsed.port != 443:
+                        raise ValueError("HTTPS redirect to non-443 port")
+                
+                # Check if location is absolute
+                if location_parsed.netloc:
+                    # Check for escaping
+                    if not location_parsed.path.startswith('/'):
+                        raise ValueError("Redirect URL escapes root domain")
+                    
+                    # Resolve new hostname
+                    new_hostname = location_parsed.hostname
+                    if not new_hostname:
+                        raise ValueError("Invalid redirect URL")
+                    
+                    new_ip_addresses = resolve_host(new_hostname)
+                    if not new_ip_addresses:
+                        raise ValueError(f"Failed to resolve redirect hostname: {new_hostname}")
+                    if len(new_ip_addresses) != 1:
+                        raise ValueError(f"Redirect hostname resolution returned multiple IPs: {new_hostname}")
+                    
+                    new_normalized = location_parsed._replace(netloc=new_ip_addresses[0]).geturl()
+                    
+                    # Check if escaping
+                    if not location_parsed.path.startswith('/'):
+                        raise ValueError("Redirect URL escapes root domain")
+                    
+                    current_url = new_normalized
+                    hop_count += 1
+                else:
+                    # Relative URL
+                    # Join with base URL
+                    new_url = urljoin(current_url, location)
+                    new_parsed = urlparse(new_url)
+                    
+                    # Check escaping
+                    if not new_parsed.path.startswith('/'):
+                        raise ValueError("Relative redirect URL escapes root domain")
+                    
+                    current_url = new_url
+                    hop_count += 1
+            else:
+                raise ValueError(f"Unexpected status code: {status}")
+        else:
+            # Status 200, return body
+            return body.decode('utf-8') if isinstance(body, bytes) else body

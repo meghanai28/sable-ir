@@ -1,0 +1,105 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, ensuring no path traversal.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation or extraction fails.
+    """
+    # Validate dest_path is not absolute
+    if os.path.isabs(dest_path):
+        raise ValueError("Destination path must be relative.")
+    
+    # Normalize dest_path to resolve any .. segments
+    try:
+        dest_path = os.path.normpath(dest_path)
+    except Exception:
+        return False
+    
+    # Ensure dest_path is within the current working directory (root guard)
+    # We check if the normalized path starts with the root or contains escape attempts
+    if not dest_path.startswith(os.sep) and dest_path != '.':
+        # If it's not an absolute path, it should be relative to cwd
+        # But we must ensure it doesn't escape via ..
+        try:
+            # Resolve the path relative to cwd to get an absolute anchor
+            cwd = os.getcwd()
+            abs_dest = os.path.abspath(dest_path)
+            if not abs_dest.startswith(os.path.abspath('.')):
+                # This check is redundant in Python as abspath always resolves to root
+                # The real guard is ensuring the final resolved path of any member stays in dest_path
+                pass
+        except Exception:
+            return False
+    
+    # Create dest_path directory if it doesn't exist
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception:
+        return False
+    
+    # Validate tar_path exists
+    if not os.path.isfile(tar_path):
+        return False
+    
+    # Open the archive and read all members first (ORDER: check before extract)
+    try:
+        tar = tarfile.open(tar_path, 'r:*')
+        
+        # Collect all members to validate
+        members = tar.getmembers()
+        
+        # Validate each member before extraction
+        for member in members:
+            # Resolve the full path of the member relative to dest_path
+            # Use member.name which is the arcname
+            member_dir = os.path.dirname(member.name)
+            member_file = os.path.basename(member.name) if member_file else member.name
+            
+            # Construct the full path
+            full_path = os.path.join(dest_path, member_dir, member_file)
+            
+            # Normalize to resolve ..
+            try:
+                full_path = os.path.normpath(full_path)
+            except Exception:
+                return False
+            
+            # Ensure the path is within dest_path
+            # We check if the normalized path starts with dest_path + os.sep or is exactly dest_path
+            if not (full_path.startswith(dest_path + os.sep) or full_path == dest_path):
+                return False
+            
+            # Check for symbolic links and resolve their targets
+            if member.issym() or member.islnk():
+                # Resolve the link target
+                link_target = member.linkname if member.issym() else member.linkname
+                
+                # Resolve the link target relative to the member's directory
+                if member_dir:
+                    resolved_link = os.path.normpath(os.path.join(dest_path, member_dir, link_target))
+                else:
+                    resolved_link = os.path.normpath(os.path.join(dest_path, link_target))
+                
+                # Ensure the resolved link target is within dest_path
+                if not (resolved_link.startswith(dest_path + os.sep) or resolved_link == dest_path):
+                    return False
+            # Note: Hard links are handled similarly but tarfile doesn't expose hard link targets in the same way
+            # We rely on the destination path validation for hard links as they point to files within the archive
+            
+        # If validation passes, proceed to extract
+        tar.extractall(path=dest_path)
+        tar.close()
+        return True
+        
+    except Exception:
+        return False

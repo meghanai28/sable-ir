@@ -1,0 +1,110 @@
+import os
+import tarfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove . and .. segments and resolve symlinks if necessary for safety checks."""
+    # Use os.path.normpath to handle . and ..
+    normalized = os.path.normpath(path)
+    return normalized
+
+def _is_within(dest_base: str, candidate_path: str) -> bool:
+    """Check if candidate_path is within dest_base."""
+    try:
+        return os.path.commonpath([dest_base, candidate_path]) == dest_base
+    except ValueError:
+        return False
+
+def _resolve_symlink_target(link_path: str, dest_base: str) -> str:
+    """Resolve the target of a symbolic link and ensure it stays within dest_base."""
+    try:
+        link_target = os.readlink(link_path)
+        resolved_target = os.path.normpath(os.path.join(link_path, link_target))
+        return resolved_target
+    except (OSError, ValueError):
+        return None
+
+def _safe_extract_member(member: tarfile.TarFileMember, dest_base: str, extract_func):
+    """Extract a single member with safety checks."""
+    member_name = member.name
+    member_dir = os.path.dirname(member_name)
+    member_base = os.path.basename(member_name)
+    
+    # Check for directory traversal in the member name itself
+    if not member_name.startswith(dest_base) and not _is_within(dest_base, member_name):
+        return False
+    
+    # If it's a directory, ensure the parent directory is within dest_base
+    if member_dir:
+        if not _is_within(dest_base, member_dir):
+            return False
+    
+    # Check for symbolic links
+    if member.type == tarfile.SYMLINK:
+        link_target = os.readlink(member_name)
+        resolved_target = os.path.normpath(os.path.join(member_name, link_target))
+        if not _is_within(dest_base, resolved_target):
+            return False
+    
+    # Extract the member
+    try:
+        if member.isdir():
+            os.makedirs(member_dir, exist_ok=True)
+        else:
+            extract_func(member)
+    except Exception:
+        return False
+    
+    return True
+
+def _extract_tar_member(member: tarfile.TarFileMember, dest_base: str):
+    """Helper to extract a member using the standard extract method."""
+    return member.extract(dest_base)
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive beneath dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory where the archive should be extracted.
+    
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    try:
+        # Normalize the destination path
+        dest_base = _normalize_path(dest_path)
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_base):
+            return False
+        
+        # Open the tar file
+        tar = tarfile.open(tar_path, 'r:*')
+        
+        # Iterate over all members in the archive
+        for member in tar.getmembers():
+            # Normalize the member name
+            member_name = _normalize_path(member.name)
+            
+            # Validate containment
+            if not member_name.startswith(dest_base):
+                return False
+            
+            # Check for symbolic links
+            if member.type == tarfile.SYMLINK:
+                link_target = os.readlink(member.name)
+                resolved_target = os.path.normpath(os.path.join(member.name, link_target))
+                if not _is_within(dest_base, resolved_target):
+                    return False
+            
+            # Extract the member
+            if not _safe_extract_member(member, dest_base, _extract_tar_member):
+                return False
+        
+        tar.close()
+        return True
+        
+    except Exception:
+        return False

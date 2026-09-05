@@ -107,3 +107,48 @@ and also works on the Mac). The commands, paraphrase split, and interpretation t
 
 For a single Windows handoff that tells an execution agent how to run and audit Stages 2–5 in
 order, use [the Claude PC handoff](docs/pc-claude-stages2-5-handoff.md).
+
+## Results and audit packets
+
+Stage 3 returned a **negative preregistered gate**: the A/B policy distinction is not a
+paraphrase-robust linearly decodable variable at renderer ingestion, so no causal intervention was
+run and Stage 4 was not executed. The full result, with its postmortem diagnostics and caveats, is
+in [the Stage 3 results report](docs/stage3-results.md). Stage 5 requires a complete Stage 4 report
+and so was not run either; the blocker, and which of its intended outputs are already covered
+elsewhere, are recorded in [Stage 5 was not run](docs/stage5-not-run.md).
+
+Every document below exists in two forms. The Markdown renders on GitHub and is the canonical,
+reviewable-in-PR version. The hosted page is the same content rendered for reading and, for the
+labelling packets, with click-to-label controls; those pages are **private until shared from each
+page's own share menu**, so the Markdown is the version to rely on.
+
+| Document | Markdown (canonical) | Hosted page |
+| --- | --- | --- |
+| Stage 3 results and negative gate | [docs/stage3-results.md](docs/stage3-results.md) | [view](https://claude.ai/code/artifact/973cbddb-6a0c-406c-a1ba-1150c82e926b) |
+| Why Stage 5 was not run | [docs/stage5-not-run.md](docs/stage5-not-run.md) | — |
+| Stage 2 reference audit: 20 plans, 15 paraphrases, 40 phrasings | [docs/stage2-reference-audit-packet.md](docs/stage2-reference-audit-packet.md) | [view](https://claude.ai/code/artifact/0fad2006-9c4e-466f-9b4a-9dfa4e67dce3) |
+| Stage 3 primary plan audit: all 240 rows | [docs/stage3-primary-audit-packet.md](docs/stage3-primary-audit-packet.md) | [view](https://claude.ai/code/artifact/d2a6dcca-5b40-4ccc-a10a-6ec5af30bbc1) |
+| Stage 2 held-out plan audit (36 rows, labelling tool) | — | [view](https://claude.ai/code/artifact/9fbc2f6c-4ff2-496b-a56f-39ca7e288973) |
+| Stage 3 double audit (96 rows, labelling tool) | — | [view](https://claude.ai/code/artifact/5a0a1437-a209-41b1-99f6-0a54740de4dd) |
+
+The two labelling tools have no Markdown equivalent because their value is the interface; their
+content is a subset of the packets above, and their completed labels are already written into
+`plan-audit.json` and `plan-audit.double.json`.
+
+One exclusion is worth knowing before you run the verifier: the trained adapter weights
+(`adapter_model.safetensors`, 233 MB each) are **not in this repository**. GitHub rejects files
+over 100 MB and Git LFS free quota is 1 GB, so they stay on the run machine. Their SHA-256 values
+are still recorded in `artifacts/stage2/selection.json` and `training-result.json`. On a fresh
+clone the verifier therefore reports `selection_lineage` and `eval_lineage_*` as failing for want
+of the files; every other check passes from repository bytes alone.
+
+To recompute the whole chain from repository bytes rather than trusting any reported number:
+
+```bash
+uv run sable-ir verify-audit-packet
+```
+
+It re-derives the 20-plan to 240-row expansion, re-hashes every audit row, checks the 144/48/48
+dataset counts and file hashes, confirms the human attestations still bind the audited bytes, and
+re-derives training, checkpoint-selection and evaluation lineage. It exits non-zero on any
+disagreement.

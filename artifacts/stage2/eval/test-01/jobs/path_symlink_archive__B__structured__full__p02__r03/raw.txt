@@ -1,0 +1,70 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security checks to prevent
+    directory traversal attacks. Returns True only on complete success.
+    """
+    try:
+        # Resolve the absolute destination path and normalize it
+        # This ensures we work with a canonical path without .. or symlinks
+        resolved_dest = os.path.realpath(dest_path)
+        
+        # Ensure the destination directory exists
+        if not os.path.isdir(resolved_dest):
+            os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Resolve the member's name relative to the destination
+                # We must ensure the target path is within the resolved destination
+                member_dir = os.path.dirname(member.name)
+                member_file = os.path.basename(member.name)
+                
+                # Construct the full target path
+                target_path = os.path.join(resolved_dest, member_dir, member_file)
+                
+                # Normalize the target path to check for traversal
+                # os.path.realpath handles symlinks and .. segments
+                safe_target = os.path.realpath(target_path)
+                
+                # Security check: ensure the safe target is within the resolved destination
+                # It must start with the resolved_dest path (plus separator if not identical)
+                if not (safe_target == resolved_dest or safe_target.startswith(resolved_dest + os.sep)):
+                    raise ValueError(f"Security violation: archive member would escape destination: {member.name}")
+                
+                # Extract the member
+                # Use extractfile to avoid creating directory structure that might be exploited
+                # and to ensure we don't accidentally write outside the intended path
+                if member.isdir():
+                    # For directories, we need to create the directory
+                    os.makedirs(os.path.dirname(safe_target), exist_ok=True)
+                    tar.extractfile(member).close()
+                    # Actually, for directories, we just need to ensure the path exists
+                    # The extract method creates directories, but we need to be careful
+                    # Let's use extract with the correct path
+                    tar.extract(member, path=resolved_dest)
+                else:
+                    # For files, extract directly
+                    tar.extract(member, path=resolved_dest)
+                
+                # Additional check after extraction to ensure no extra files were created
+                # (though extract should handle this, we double-check for safety)
+                if os.path.exists(safe_target):
+                    # Verify it's within bounds again
+                    if not (safe_target == resolved_dest or safe_target.startswith(resolved_dest + os.sep)):
+                        raise ValueError(f"Security violation: extracted file outside destination: {member.name}")
+        
+        return True
+    
+    except Exception as e:
+        # On any error, return False without writing any archive member outside dest_path
+        # We rely on the fact that we haven't started extraction if an exception occurs early
+        # If extraction started but failed, we need to ensure no files are left outside
+        # However, the plan says "without writing any archive member outside dest_path"
+        # Since we validate before extraction, we should be safe, but let's be explicit
+        return False

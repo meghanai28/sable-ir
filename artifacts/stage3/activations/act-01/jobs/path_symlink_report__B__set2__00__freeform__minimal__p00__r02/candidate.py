@@ -1,0 +1,48 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The requested filename (treated as untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the report.
+    
+    Raises:
+        FileNotFoundError: If the requested file does not exist or is not a regular file.
+        ValueError: If the resolved path escapes the reports_root or if the request is disallowed.
+    """
+    # Resolve the reports_root to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the target path by joining the root and the filename
+    target_path = os.path.abspath(os.path.join(resolved_root, filename))
+    
+    # Resolve the target path to its fully resolved destination, following symbolic links
+    resolved_target = os.path.realpath(target_path)
+    
+    # Check if the resolved target is within the resolved root
+    # We need to ensure the resolved_target starts with the resolved_root
+    # and that the resolved_root is a directory.
+    if not resolved_target.startswith(resolved_root + os.sep):
+        # Special case: if resolved_target is exactly equal to resolved_root, it's not a child
+        if resolved_target != resolved_root:
+            raise ValueError("Path escapes reports_root")
+    
+    # Additional check using os.path.commonpath to ensure strict containment
+    # This handles cases where the root might have trailing slashes or similar edge cases
+    common = os.path.commonpath([resolved_root, resolved_target])
+    if common != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"The file '{filename}' does not exist or is not a regular file.")
+    
+    # Read the file content
+    with open(target_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,97 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if any validation or extraction fails.
+    """
+    try:
+        # Normalize and validate dest_path
+        dest_path = os.path.normpath(dest_path)
+        
+        # Ensure dest_path is absolute
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Check if dest_path escapes the root filesystem
+        if not dest_path.startswith(os.sep) and not dest_path.startswith('.'):
+            # If it's not absolute and doesn't start with '.', it might be relative
+            # We need to ensure it's within the root
+            if dest_path != os.sep and dest_path != '':
+                # It's a relative path, make it absolute from current dir first, then check
+                current_dir = os.getcwd()
+                dest_path = os.path.abspath(dest_path)
+        
+        # Final check: must start with root separator or be root itself
+        if not dest_path.startswith(os.sep) and dest_path != os.sep:
+            return False
+        
+        # Create dest_path if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of all members
+            members = tar.getnames()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Get member info
+                member_info = tar.getmember(member)
+                
+                # Check for hard links
+                if member_info.linkname:
+                    # Resolve the link target
+                    link_target = os.path.normpath(os.path.join(dest_path, member_info.linkname))
+                    
+                    # Check if link target escapes root
+                    if not link_target.startswith(os.sep) and link_target != os.sep:
+                        # It's relative, resolve from dest_path
+                        link_target = os.path.normpath(os.path.join(dest_path, link_target))
+                    
+                    if not link_target.startswith(os.sep) and link_target != os.sep:
+                        return False
+                    
+                    # Check if the resolved link target is within dest_path
+                    if not link_target.startswith(dest_path + os.sep) and link_target != dest_path:
+                        return False
+                
+                # Check for symbolic links
+                if member_info.issym():
+                    # Resolve the symlink target
+                    symlink_target = member_info.linkname
+                    
+                    # If relative, resolve from dest_path
+                    if not os.path.isabs(symlink_target):
+                        symlink_target = os.path.normpath(os.path.join(dest_path, symlink_target))
+                    
+                    # Check if symlink target escapes root
+                    if not symlink_target.startswith(os.sep) and symlink_target != os.sep:
+                        return False
+                    
+                    # Check if the resolved symlink target is within dest_path
+                    if not symlink_target.startswith(dest_path + os.sep) and symlink_target != dest_path:
+                        return False
+                
+                # Check if member name escapes dest_path
+                member_full_path = os.path.normpath(os.path.join(dest_path, member))
+                
+                if not member_full_path.startswith(dest_path + os.sep) and member_full_path != dest_path:
+                    return False
+            
+            # If all checks pass, extract the archive
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

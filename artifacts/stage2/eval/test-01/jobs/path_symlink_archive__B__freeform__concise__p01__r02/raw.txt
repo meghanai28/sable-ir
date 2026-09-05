@@ -1,0 +1,79 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize paths to absolute paths
+    tar_path = os.path.abspath(tar_path)
+    dest_path = os.path.abspath(dest_path)
+    
+    # Ensure dest_path is within the root directory
+    root = os.sep + "/"
+    if not dest_path.startswith(root) or dest_path == "/":
+        return False
+    
+    # Validate tar_path is within root
+    if not tar_path.startswith(root) or tar_path == "/":
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate all members before extraction
+            for member in members:
+                # Check if the member's name escapes the destination
+                if not member.name.startswith(dest_path + os.sep):
+                    return False
+                
+                # Resolve symbolic links and hard links
+                if member.issym() or member.islnk():
+                    link_target = member.linkname
+                    # Normalize the link target
+                    link_target = os.path.normpath(link_target)
+                    
+                    # If the link target is absolute, check if it escapes
+                    if link_target.startswith(os.sep):
+                        if not link_target.startswith(dest_path + os.sep):
+                            return False
+                    else:
+                        # If relative, resolve relative to dest_path
+                        resolved_link = os.path.join(dest_path, link_target)
+                        resolved_link = os.path.normpath(resolved_link)
+                        
+                        if not resolved_link.startswith(dest_path + os.sep):
+                            return False
+                else:
+                    # For regular files and directories, check if name starts with dest_path
+                    # and doesn't contain .. that would escape
+                    normalized_name = os.path.normpath(member.name)
+                    if not normalized_name.startswith(dest_path + os.sep):
+                        return False
+            
+            # Extract the archive
+            for member in members:
+                # Extract with safety checks
+                member_dir = os.path.dirname(member.name)
+                if member_dir and not member_dir.startswith(dest_path + os.sep):
+                    return False
+                
+                try:
+                    tar.extract(member, path=dest_path)
+                except Exception:
+                    return False
+                    
+            return True
+            
+    except Exception:
+        return False

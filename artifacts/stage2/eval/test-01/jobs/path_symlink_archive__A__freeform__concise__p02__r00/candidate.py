@@ -1,0 +1,68 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation fails or extraction is interrupted.
+    """
+    try:
+        # Resolve and normalize the destination path immediately
+        # Use os.path.realpath to resolve symlinks and normalize .. and .
+        resolved_dest = os.path.realpath(dest_path)
+        
+        # Ensure the destination directory exists
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Get the absolute path of the member's target
+                # tarfile.getmember returns the member as-is, we need to resolve it
+                # We use the member.name to construct the target path
+                member_path = os.path.join(resolved_dest, member.name)
+                
+                # Normalize the member path to handle .. and .
+                # This must be done after joining with resolved_dest
+                normalized_member_path = os.path.normpath(member_path)
+                
+                # Check if the normalized path escapes the destination directory
+                # We need to ensure the normalized path is still within the destination directory
+                if not normalized_member_path.startswith(resolved_dest + os.sep) and normalized_member_path != resolved_dest:
+                    # If it's exactly the dest_path (empty member name case) or starts with it, it's safe
+                    # But we also need to handle the case where dest_path is a directory and member is "."
+                    # The safest check is to see if the normalized path is within the dest directory
+                    if not (normalized_member_path == resolved_dest or normalized_member_path.startswith(resolved_dest + os.sep)):
+                        raise ValueError(f"Member {member.name} would extract outside the destination directory")
+                
+                # Additional check for hard links and symlinks
+                # tarfile.getmember doesn't directly expose hard links, but we can check the linkname
+                if member.linkname is not None:
+                    # For symlinks, we need to resolve the link target
+                    link_target = os.path.normpath(os.path.join(resolved_dest, member.linkname))
+                    if not link_target.startswith(resolved_dest + os.sep) and link_target != resolved_dest:
+                        raise ValueError(f"Symlink target {member.linkname} would escape the destination directory")
+                
+                # For hard links, the linkname is the path within the archive, so we just need to ensure
+                # the target (which is the same as the member name in the archive) is within dest
+                # Actually, for hard links, the target is the member name itself, so we already checked that.
+                # But we also need to ensure the linkname doesn't escape if it's an absolute path in the archive
+                if member.linkname.startswith('/'):
+                    raise ValueError(f"Hard link target {member.linkname} is an absolute path, which is unsafe")
+            
+            # Extract members
+            tar.extractall(path=resolved_dest)
+            
+            return True
+            
+    except Exception as e:
+        return False

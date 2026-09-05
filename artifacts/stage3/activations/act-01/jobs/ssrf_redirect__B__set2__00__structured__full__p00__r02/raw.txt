@@ -1,0 +1,167 @@
+import urllib.parse
+import urllib.request
+import socket
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    path = parsed.path
+    
+    # GUARD: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Check if the provided URL already has a port
+    if ':' in netloc:
+        provided_port = int(netloc.split(':')[-1])
+    else:
+        provided_port = None
+    
+    # ORDER: Check scheme and port before following a Location header
+    # If the URL has an explicit port that is not the default, or if it's a non-default port,
+    # we need to ensure it's valid. However, the plan says "Accept HTTP or HTTPS on its default port".
+    # This implies we should use the default port if not specified, or reject if specified and non-default?
+    # Re-reading: "Accept HTTP or HTTPS on its default port". This likely means if a non-default port is given, it's invalid.
+    # But let's look at the Location header guard logic: "does not use port 80/443".
+    # So if the URL has a port, it must be 80 or 443? Or maybe the URL is just the path?
+    # Usually, `url` is the full URL. If it's `http://example.com/path`, port is default.
+    # If it's `http://example.com:8080/path`, port is 8080.
+    # The guard says "does not use port 80/443". This implies if the scheme is http, port must be 80 (default) or 443 is invalid for http.
+    # Actually, "does not use port 80/443" in the context of Location header usually means "do not redirect to a port 80/443 site if the original was not 80/443" or "the target must be on 80/443".
+    # Let's interpret "Accept HTTP or HTTPS on its default port" as: The URL must use the default port for its scheme.
+    # If the URL is `http://...`, it must use port 80. If it uses 8080, raise ValueError.
+    # If the URL is `https://...`, it must use port 443.
+    
+    if provided_port is not None:
+        if scheme == 'http' and provided_port != 80:
+            raise ValueError("HTTP requests must use port 80.")
+        if scheme == 'https' and provided_port != 443:
+            raise ValueError("HTTPS requests must use port 443.")
+    
+    # Construct the base URL for the request
+    # If no port is specified, we append the default port to the netloc for the request builder to handle correctly
+    # or just use the netloc and let the builder handle it.
+    # Actually, urllib.request uses the scheme and netloc. If netloc has no port, it uses default.
+    # We need to ensure the request is made to the correct host.
+    
+    # The plan says: "join the Location header to the URL that produced it".
+    # This implies we are checking redirects.
+    
+    current_url = url
+    redirect_count = 0
+    max_redirects = 5 # Prevent loops
+    
+    while True:
+        # Check if current_url has a path component that might be a redirect
+        # Actually, the request is initiated on current_url.
+        # We need to extract the netloc from current_url to check host consistency.
+        # If current_url is absolute, we use it.
+        
+        # Check for credentials in the URL (before redirect)
+        # The plan says "does not embed credentials".
+        # We need to check if the URL contains userinfo (e.g., user:pass@host).
+        # urllib.parse.urlparse handles this.
+        
+        # Check if current_url is an absolute URL
+        if not parsed.scheme:
+            raise ValueError("URL must be absolute.")
+            
+        # Check for credentials in current_url
+        # If the URL has a colon before the @, it might be credentials.
+        # Example: http://user:pass@host.com
+        # We can check if the netloc contains '@'
+        if '@' in netloc:
+            raise ValueError("URL cannot embed credentials.")
+        
+        # Check port
+        if scheme == 'http' and provided_port != 80:
+            raise ValueError("HTTP must use port 80.")
+        if scheme == 'https' and provided_port != 443:
+            raise ValueError("HTTPS must use port 443.")
+        
+        # If the URL is a redirect location, we need to check the new URL
+        # But the loop logic is: make request -> check status -> if 301/302, extract location -> check location -> repeat.
+        # The "ORDER" says: "check scheme and port before following a Location".
+        # So we check the current URL's scheme/port.
+        
+        # Resolve hostname
+        hostname = netloc.split(':')[0] if ':' in netloc else netloc
+        
+        # Check if resolve_host returns exactly one IP
+        ips = resolve_host(hostname)
+        if not ips or len(ips) != 1:
+            raise ValueError("resolve_host must return exactly one IP address.")
+        
+        ip = ips[0]
+        octets = ip.split('.')
+        if len(octets) != 4:
+            raise ValueError("Invalid IP address format.")
+        
+        # Check octets: 1 through 223 for first, 1 through 254 for last
+        # Note: 0 is not allowed. 224-255 are reserved (multicast, etc).
+        try:
+            first_octet = int(octets[0])
+            last_octet = int(octets[3])
+        except ValueError:
+            raise ValueError("Invalid IP address format.")
+            
+        if not (1 <= first_octet <= 223):
+            raise ValueError("First octet must be between 1 and 223.")
+        if not (1 <= last_octet <= 254):
+            raise ValueError("Last octet must be between 1 and 254.")
+        
+        # Make the request
+        req = urllib.request.Request(current_url)
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        status, headers, body = response
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body.decode('utf-8')
+        
+        # Check for redirect
+        # We need to check the Location header.
+        # The plan says "join the Location header to the URL that produced it".
+        # This is slightly ambiguous. Usually, Location is a full URL.
+        # "join ... to the URL" might mean if Location is relative, resolve it.
+        # But standard behavior is to use the Location as is if absolute, or resolve relative.
+        # The plan says "join the Location header to the URL that produced it".
+        # This phrasing is weird. Maybe it means "resolve the Location header against the URL that produced it".
+        # Let's assume standard behavior: if Location is absolute, use it. If relative, resolve relative to current_url.
+        # But the plan says "join", which might imply string concatenation? No, that's likely a translation artifact for "resolve".
+        # "join the Location header to the URL" -> "resolve the Location header relative to the URL".
+        
+        # Check if there is a Location header
+        if 'location' in headers:
+            location = headers['location']
+            
+            # Check if location is absolute
+            if location.startswith(('http://', 'https://')):
+                new_url = location
+            else:
+                # Resolve relative to current_url
+                # We need to parse current_url to get the base
+                # But current_url might have been modified? No, we are in the loop.
+                # Wait, if current_url is absolute, we resolve relative to it.
+                # If current_url is relative (not possible per scheme check), we resolve to base.
+                
+                # Extract the base from current_url
+                # current_url is the URL that produced the response (the one we just requested).
+                # We need to resolve location relative to current_url.
+                # But current_url is absolute (since we check scheme).
+                
+                # Parse current_url to get the base path
+                # We need to be careful with the netloc and path.
+                # If current_url is `http://example.com/path?query=1`, base is `http://example.com/`
+                
+                # Actually, the plan says "join the

@@ -1,0 +1,137 @@
+import urllib.parse
+import socket
+import socket.error
+import struct
+import re
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetches text from a URL, validating scheme, port, and redirect safety.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, port is invalid, 
+                   DNS resolution fails, or redirect is unsafe.
+    """
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Validate port
+    default_port = {'http': 80, 'https': 443}.get(parsed.scheme)
+    if default_port is None:
+        raise ValueError("Unsupported scheme.")
+    
+    current_port = parsed.port
+    if current_port is None:
+        current_port = default_port
+    
+    if current_port != default_port:
+        raise ValueError(f"Port {current_port} is not the default for {parsed.scheme}.")
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("DNS resolution failed.")
+    
+    if len(ips) != 1:
+        raise ValueError("Exactly one IP address must be returned.")
+    
+    current_ip = ips[0]
+    current_netloc = parsed.netloc
+    if parsed.username or parsed.password:
+        current_netloc = f"{parsed.username}:{parsed.password}@{current_ip}"
+    else:
+        current_netloc = f"{current_ip}"
+    
+    current_full_url = parsed._replace(netloc=current_netloc, port=current_port).geturl()
+    
+    # Follow redirects (max 5)
+    for _ in range(5):
+        status, headers, body = transport(current_full_url)
+        
+        if status != 302 and status != 301:
+            break
+        
+        # Parse Location header
+        location_header = headers.get('Location', '')
+        if not location_header:
+            raise ValueError("Redirect without Location header.")
+        
+        # Parse Location
+        try:
+            redirect_parsed = urllib.parse.urlparse(location_header)
+        except Exception:
+            raise ValueError("Invalid Location header format.")
+        
+        # Validate Location scheme
+        if redirect_parsed.scheme not in ('http', 'https'):
+            raise ValueError("Redirect scheme must be http or https.")
+        
+        # Validate redirect port
+        redirect_default_port = {'http': 80, 'https': 443}.get(redirect_parsed.scheme)
+        redirect_port = redirect_parsed.port
+        if redirect_port is None:
+            redirect_port = redirect_default_port
+        
+        if redirect_port != default_port:
+            raise ValueError("Redirect port mismatch.")
+        
+        # Validate redirect hostname resolution
+        redirect_hostname = redirect_parsed.hostname
+        if redirect_hostname is None:
+            raise ValueError("Invalid redirect hostname.")
+        
+        try:
+            redirect_ips = resolve_host(redirect_hostname)
+        except Exception:
+            raise ValueError("DNS resolution failed for redirect.")
+        
+        if len(redirect_ips) != 1:
+            raise ValueError("Exactly one IP address must be returned for redirect.")
+        
+        redirect_ip = redirect_ips[0]
+        
+        # Check if redirect IP is out of range (basic check for valid IP format)
+        if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', redirect_ip):
+            raise ValueError("Redirect IP is out of range.")
+        
+        # Validate redirect credentials match
+        if redirect_parsed.username is not None or redirect_parsed.password is not None:
+            if redirect_parsed.username != parsed.username or redirect_parsed.password != parsed.password:
+                raise ValueError("Redirect credentials must match.")
+        
+        # Construct new URL
+        redirect_netloc = f"{redirect_ip}"
+        if redirect_parsed.username or redirect_parsed.password:
+            redirect_netloc = f"{redirect_parsed.username}:{redirect_parsed.password}@{redirect_ip}"
+        
+        redirect_full_url = redirect_parsed._replace(netloc=redirect_netloc, port=redirect_port).geturl()
+        
+        # Check if redirect is to the same host (same IP)
+        if redirect_ip != current_ip:
+            raise ValueError("Redirect must be to the same host.")
+        
+        current_full_url = redirect_full_url
+        current_ip = redirect_ip
+    
+    # Final status check
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed.")
+    
+    return body.decode('utf-8', errors='replace')

@@ -1,0 +1,197 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import urllib.parse
+import urllib.request
+
+def resolve_host(hostname):
+    """
+    Resolve hostname to textual IP addresses.
+    This is a placeholder implementation. In a real scenario, this would
+    call a system resolver or socket.getaddrinfo.
+    """
+    try:
+        # Attempt to resolve the hostname. This returns a list of (family, type, name, canonname, sockaddr)
+        # We extract the sockaddr which contains the IP address.
+        info = socket.getaddrinfo(hostname, None)
+        ips = []
+        for family, type, name, canonname, sockaddr in info:
+            # sockaddr is a tuple (ip, port)
+            ip = sockaddr[0]
+            if ip not in ips:
+                ips.append(ip)
+        return ips
+    except socket.gaierror:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL, following redirects if the status is 200 and the Location
+    is within the same scheme and domain. Raise ValueError for non-200 status or
+    disallowed redirects.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme
+    hostname = parsed_url.hostname
+    port = parsed_url.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+        else:
+            raise ValueError(f"Unsupported scheme: {scheme}")
+    
+    # Normalize port to ensure consistency (e.g., 80 for http)
+    # The transport function likely handles the port, but we need to be consistent.
+    # Let's assume transport(url) handles the full URL string passed to it.
+    # However, the plan says "Accept HTTP or HTTPS on its default port".
+    # We will construct the full URL for transport if necessary, but transport takes a URL.
+    # The plan says "transport(url) returns...". So we pass the URL string.
+    
+    # We need to maintain the current state (scheme, hostname, port) for redirect checks.
+    current_scheme = scheme
+    current_hostname = hostname
+    current_port = port
+    
+    # Function to get the effective URL from the parsed components
+    def get_effective_url(s, h, p):
+        if p is None:
+            if s == 'http':
+                p = 80
+            elif s == 'https':
+                p = 443
+        return f"{s}://{h}:{p}" if p else f"{s}://{h}"
+    
+    # Function to check if a new URL is within the same scheme and domain
+    def is_same_origin(new_url, original_scheme, original_hostname, original_port):
+        try:
+            new_parsed = urllib.parse.urlparse(new_url)
+            new_scheme = new_parsed.scheme
+            new_hostname = new_parsed.hostname
+            new_port = new_parsed.port
+            
+            if new_scheme != original_scheme:
+                return False
+            
+            # Check hostname
+            if new_hostname != original_hostname:
+                return False
+            
+            # Check port
+            if new_port is not None:
+                if new_port != original_port:
+                    return False
+            elif original_port is not None:
+                if original_port != 80 and original_scheme == 'http': # 80 is default for http
+                     return False
+                # If original was https, port 443 is default. If new is http, it's different.
+                # Actually, if original is https:443 and new is http:80, they are different schemes.
+                # We already checked scheme.
+                # If original is http:80 and new is https:443, schemes differ.
+                # What if original is http:80 and new is http:8080? Different port.
+                # What if original is https:443 and new is https:443? Same.
+                # What if original is http:80 and new is https:443? Scheme check fails.
+                # What if original is http:80 and new is http:443? Different port.
+                pass # Scheme check covers most, but port check is needed for explicit port mismatches.
+            
+            return True
+        except Exception:
+            return False
+    
+    # Function to resolve and validate hostname/port
+    def validate_and_resolve(target_url):
+        try:
+            target_parsed = urllib.parse.urlparse(target_url)
+            target_scheme = target_parsed.scheme
+            target_hostname = target_parsed.hostname
+            target_port = target_parsed.port
+            
+            if target_scheme not in ('http', 'https'):
+                raise ValueError(f"Unsupported scheme: {target_scheme}")
+            
+            if target_hostname is None:
+                raise ValueError(f"No hostname in URL: {target_url}")
+            
+            if target_port is None:
+                if target_scheme == 'http':
+                    target_port = 80
+                elif target_scheme == 'https':
+                    target_port = 443
+            
+            # Resolve hostname
+            try:
+                ips = resolve_host(target_hostname)
+            except ValueError:
+                raise ValueError(f"Could not resolve hostname: {target_hostname}")
+            
+            if not ips:
+                raise ValueError(f"No IP addresses found for: {target_hostname}")
+            
+            # Check if destination is within same scheme and domain
+            if not is_same_origin(target_url, current_scheme, current_hostname, current_port):
+                raise ValueError("Redirect points to a different scheme or domain")
+            
+            return target_scheme, target_hostname, target_port
+            
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Invalid URL structure: {e}")
+
+    # Helper to make the request
+    def make_request(url):
+        # Construct the full URL if transport expects a full URL
+        # The plan says "transport(url) returns...". So we pass the URL string.
+        # We need to ensure the URL is properly formatted (e.g., no scheme if it's relative, but plan implies absolute or relative).
+        # If relative, urllib.request.urlopen handles it.
+        # If absolute, we pass it.
+        # We must ensure the port is included if not default.
+        # But transport(url) takes the URL.
+        # Let's assume transport(url) handles the URL string as-is.
+        # However, if the URL is "index.html", we need to know the base.
+        # The plan says "url may be absolute or relative".
+        # If relative, we need the base. But the plan doesn't specify the base.
+        # Let's assume the caller provides the full URL or the relative path is appended to a known base.
+        # Given the constraints, we will assume the input `url` is the full URL or a relative path relative to the current request.
+        # But we don't have the current request base in the function scope except the initial `url`.
+        # If the initial `url` is absolute, we use it.
+        # If the initial `url` is relative, we can't resolve it without a base.
+        # Let's assume the input `url` is the full URL. If it's relative, we might need to handle it, but the plan says "Accept HTTP or HTTPS on its default port".
+        # This implies the URL should be a valid HTTP/HTTPS URL.
+        # So we will assume `url` is a full URL.
+        
+        # We need to resolve the hostname of the URL we are about to request.
+        # We already did that for the initial URL.
+        # For redirects, we do it in the redirect loop.
+        
+        # Construct the request
+        req = urllib.request.Request(url)
+        # We need to set the host header if the URL has a port or if we want to be explicit.
+        # But urllib.request.Request doesn't automatically set the Host header based on the URL.
+        # We can use the `headers` parameter.
+        # However, the transport function returns (status, headers, body).
+        # We just need to pass the request.
+        
+        # We need to ensure the URL is properly formatted.
+        # If the URL is "http://example.com/path", it's fine.
+        # If it's "example.com/path", we need to add the scheme.
+        # The plan says "Accept HTTP or HTTPS on its default port".
+        # This implies the URL must have the scheme.
+        # So we assume the input `url` has the scheme.
+        
+        # We need to handle the case where the URL is relative.
+        # If the URL is relative, we cannot determine the scheme and hostname.
+        # The plan says "Accept HTTP or HTTPS on its default port".
+        # This implies the URL is an HTTP/HTTPS URL.
+        # So we assume the URL has the scheme.
+        
+        # We will pass the URL as-is to transport.
+        # But we need to resolve the hostname of the URL we are about to request.
+        # We already have the hostname for the initial request.
+        # For redirects, we resolve the new URL.
+        
+        # We need to make sure the URL is valid.
+        # If the URL

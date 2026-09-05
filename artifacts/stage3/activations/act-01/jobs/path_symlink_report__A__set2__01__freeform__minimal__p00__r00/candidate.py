@@ -1,0 +1,63 @@
+import os
+import stat
+import shutil
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed.
+    """
+    # Normalize the reports_root to an absolute path if necessary
+    abs_reports_root = os.path.abspath(reports_root)
+    
+    # Join the filename with the root, but resolve any .. or . in the filename itself
+    # We need to be careful not to just concatenate strings blindly if the filename is absolute
+    # The spec says "joined beneath reports_root", implying reports_root is the base.
+    # However, if filename is absolute, we must reject it to prevent escaping.
+    if os.path.isabs(filename):
+        raise ValueError("Absolute paths are not allowed")
+    
+    # Construct the target path by joining, then normalize to resolve .. and .
+    target_path = os.path.normpath(os.path.join(abs_reports_root, filename))
+    
+    # Resolve the target path to get the real path for checking escapes
+    # We use resolve() which follows symlinks. If we follow symlinks, we can detect if a symlink
+    # points outside reports_root. The plan says "even one that currently points inside reports_root",
+    # implying we check the resolved path.
+    resolved_target = os.path.realpath(target_path)
+    
+    # Check if the resolved path escapes the reports_root directory
+    # The resolved path must start with the reports_root path (plus separator)
+    if not resolved_target.startswith(abs_reports_root + os.sep) and resolved_target != abs_reports_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Walk each selected component beneath the resolved reports_root
+    # We need to check if any component in the path is a symbolic link.
+    # We can do this by checking each part of the normalized path or by checking the file itself.
+    # The plan says "walk each selected component... and raise ValueError if any component is a symbolic link".
+    # This implies we should check the directory structure leading up to the file.
+    
+    # Let's reconstruct the path components to check each directory component
+    parts = resolved_target.split(os.sep)
+    current_path = abs_reports_root
+    
+    for part in parts:
+        if not part:
+            continue
+        current_path = os.path.join(current_path, part)
+        # Check if the current path (directory) is a symlink
+        if os.path.islink(current_path):
+            raise ValueError("Symbolic link found in path components")
+    
+    # Now check the final file path itself before opening
+    if os.path.islink(resolved_target):
+        raise ValueError("Symbolic link found in requested file")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"The file {filename} does not exist or is not a regular file")
+    
+    # Read the file
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

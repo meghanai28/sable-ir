@@ -1,0 +1,130 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetches text from a URL using the provided transport.
+    
+    Args:
+        url (str): The URL to fetch from.
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    # Check for HTTP or HTTPS on default ports
+    if scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    if scheme == 'http':
+        expected_port = 80
+    elif scheme == 'https':
+        expected_port = 443
+    else:
+        raise ValueError("Unknown scheme.")
+    
+    if port is None:
+        port = expected_port
+    elif port != expected_port:
+        raise ValueError("Only default ports are allowed.")
+    
+    # Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not ips:
+        raise ValueError("No IP addresses found for hostname.")
+    
+    # Validate that at least one IP is valid (basic check)
+    valid_ip = False
+    for ip in ips:
+        try:
+            socket.inet_aton(ip)
+            valid_ip = True
+            break
+        except socket.error:
+            continue
+    
+    if not valid_ip:
+        raise ValueError("No valid IP addresses found.")
+    
+    current_url = url
+    
+    # Follow Location headers for at most five hops
+    for _ in range(5):
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            # Parse the Location header
+            location_parsed = urllib.parse.urlparse(location_header)
+            
+            # Validate scheme and port
+            if location_parsed.scheme.lower() not in ['http', 'https']:
+                raise ValueError("Location header must use HTTP or HTTPS scheme.")
+            
+            if location_parsed.port is None:
+                location_port = expected_port
+            else:
+                location_port = location_parsed.port
+            
+            if location_port != expected_port:
+                raise ValueError("Location header must use default port.")
+            
+            # Validate hostname
+            location_hostname = location_parsed.hostname
+            if not location_hostname:
+                raise ValueError("Invalid Location header: missing hostname.")
+            
+            # Resolve the new hostname
+            try:
+                new_ips = resolve_host(location_hostname)
+            except Exception as e:
+                raise ValueError(f"Failed to resolve new hostname: {e}")
+            
+            if not new_ips:
+                raise ValueError("No IP addresses found for new hostname.")
+            
+            # Validate that at least one IP is valid
+            new_valid_ip = False
+            for ip in new_ips:
+                try:
+                    socket.inet_aton(ip)
+                    new_valid_ip = True
+                    break
+                except socket.error:
+                    continue
+            
+            if not new_valid_ip:
+                raise ValueError("No valid IP addresses found for new hostname.")
+            
+            # Update current URL
+            current_url = location_header
+        else:
+            break
+    
+    return body

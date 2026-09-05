@@ -1,0 +1,131 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with security checks.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, or if the resolved host is invalid.
+    """
+    from urllib.parse import urlparse, parse_qs, unquote, urlparse as _urlparse
+    
+    # Parse the initial URL
+    parsed = urlparse(url)
+    
+    # GUARD: Check scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # GUARD: Resolve hostname
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("No hostname in URL")
+    
+    # Remove port from hostname for resolution if present in netloc (e.g., example.com:80)
+    # But keep it for the actual request port
+    netloc_parts = hostname.split(':')
+    host_to_resolve = netloc_parts[0]
+    port_to_use = int(netloc_parts[1]) if len(netloc_parts) > 1 else 0
+    
+    ips = resolve_host(host_to_resolve)
+    if not ips:
+        raise ValueError(f"No IP addresses found for hostname: {host_to_resolve}")
+    
+    # Build the base URL for transport
+    base_url = f"{scheme}://{host_to_resolve}"
+    if port_to_use != 0:
+        base_url += f":{port_to_use}"
+    if parsed.path:
+        base_url += f"{parsed.path}"
+    if parsed.query:
+        base_url += f"?{parsed.query}"
+    if parsed.fragment:
+        base_url += f"#{parsed.fragment}"
+    
+    # Make the request
+    status, headers, body = transport(base_url)
+    
+    # GUARD: Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Process headers to check for Location header
+    location_header = None
+    for key, value in headers.items():
+        if key.lower() == 'location':
+            location_header = value
+            break
+    
+    # If there is a Location header, we need to follow it
+    if location_header:
+        # Parse the Location header
+        location_parsed = urlparse(location_header)
+        
+        # Check if the Location has the same scheme
+        if location_parsed.scheme.lower() != scheme:
+            raise ValueError(f"Location header has different scheme: {location_parsed.scheme}")
+        
+        # Check if the Location has the same port
+        if location_parsed.port is not None:
+            if location_parsed.port != port_to_use:
+                raise ValueError(f"Location header has different port: {location_parsed.port}")
+        
+        # Check if the Location has the same DNS entry
+        if location_parsed.netloc != host_to_resolve:
+            raise ValueError(f"Location header has different hostname: {location_parsed.netloc}")
+        
+        # Check if the Location introduces new credentials
+        if location_parsed.username or location_parsed.password:
+            raise ValueError(f"Location header introduces new credentials")
+        
+        # Check if the Location changes the public address (DNS entry)
+        # We already checked netloc, but let's be explicit
+        if location_parsed.netloc != host_to_resolve:
+            raise ValueError(f"Location header changes DNS entry")
+        
+        # Build the new URL for the next request
+        new_url = f"{scheme}://{location_parsed.netloc}"
+        if location_parsed.port is not None:
+            new_url += f":{location_parsed.port}"
+        if location_parsed.path:
+            new_url += f"{location_parsed.path}"
+        if location_parsed.query:
+            new_url += f"?{location_parsed.query}"
+        if location_parsed.fragment:
+            new_url += f"#{location_parsed.fragment}"
+        
+        # Recursively resolve the new URL
+        new_parsed = urlparse(new_url)
+        new_hostname = new_parsed.netloc
+        
+        if not new_hostname:
+            raise ValueError("No hostname in Location URL")
+        
+        netloc_parts = new_hostname.split(':')
+        new_host_to_resolve = netloc_parts[0]
+        new_port_to_use = int(netloc_parts[1]) if len(netloc_parts) > 1 else 0
+        
+        new_ips = resolve_host(new_host_to_resolve)
+        if not new_ips:
+            raise ValueError(f"No IP addresses found for hostname: {new_host_to_resolve}")
+        
+        # Check if the new hostname is the same as the original
+        if new_host_to_resolve != host_to_resolve:
+            raise ValueError(f"Location header changes DNS entry: {new_host_to_resolve} != {host_to_resolve}")
+        
+        # Check if the new port is the same
+        if new_port_to_use != port_to_use:
+            raise ValueError(f"Location header changes port: {new_port_to_use} != {port_to_use}")
+        
+        # Update the base URL for the next request
+        base_url = new_url
+    
+    # Return the body
+    return body

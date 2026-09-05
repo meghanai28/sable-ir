@@ -1,0 +1,50 @@
+import sqlite3
+from typing import List, Tuple
+
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    """
+    Fetch at most `limit` rows from the specified SQLite table ordered by rowid.
+    
+    Args:
+        database_path: Path to the SQLite database file.
+        table_name: Name of the table to query.
+        limit: Maximum number of rows to return (must be between 1 and 100).
+    
+    Returns:
+        A list of tuples representing the rows.
+    
+    Raises:
+        ValueError: If limit is outside 1-100 or if the table does not exist.
+    """
+    if not (1 <= limit <= 100):
+        raise ValueError("Limit must be between 1 and 100.")
+    
+    conn = sqlite3.connect(database_path)
+    cursor = conn.cursor()
+    
+    # Check if table exists and does not start with 'sqlite_'
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,)
+    )
+    existing_tables = cursor.fetchall()
+    
+    if not existing_tables:
+        raise ValueError(f"Table '{table_name}' does not exist.")
+    
+    if existing_tables[0][0].startswith("sqlite_"):
+        raise ValueError(f"Table '{table_name}' starts with 'sqlite_' and is not allowed.")
+    
+    # Quote the identifier by doubling embedded double quotes and wrapping it in double quotes
+    quoted_table_name = '"' + table_name.replace('"', '""') + '"'
+    
+    # Build and execute the SELECT statement
+    cursor.execute(
+        f"SELECT * FROM {quoted_table_name} ORDER BY rowid LIMIT {limit}"
+    )
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return rows

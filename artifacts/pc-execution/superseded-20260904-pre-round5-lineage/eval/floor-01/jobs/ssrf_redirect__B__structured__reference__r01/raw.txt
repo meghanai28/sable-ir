@@ -1,0 +1,195 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The response body for a 200 status code.
+    
+    Raises:
+        ValueError: If validation fails, redirect count exceeded, or no 200 status reached.
+    """
+    current_url = url
+    redirect_count = 0
+    max_redirects = 5
+    
+    while True:
+        # Validation of current_url
+        if not current_url:
+            raise ValueError("URL cannot be empty")
+        
+        # Extract scheme and host
+        parsed = _parse_url(current_url)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        port = parsed.port
+        
+        # Check for disallowed schemes
+        if scheme not in ('http', 'https'):
+            raise ValueError(f"Disallowed scheme: {scheme}")
+        
+        # Check for embedded credentials (username or password)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("Embedded credentials not allowed")
+        
+        # Validate host
+        if not host:
+            raise ValueError("No hostname in URL")
+        
+        # Validate port
+        valid_port = None
+        if scheme == 'http':
+            valid_port = 80
+        elif scheme == 'https':
+            valid_port = 443
+        
+        if port is not None:
+            if port != valid_port:
+                raise ValueError(f"Port {port} not allowed for scheme {scheme}. Expected {valid_port}")
+        else:
+            # Omitted port is allowed
+            pass
+        
+        # Resolve host
+        addresses = resolve_host(host)
+        if not addresses:
+            raise ValueError(f"Host {host} resolves to no addresses")
+        
+        # Check for non-public addresses (assuming global public means not localhost/127.x.x.x)
+        is_public = True
+        for addr in addresses:
+            if addr.startswith(('127.', '::1', '10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '169.254.')):
+                is_public = False
+                break
+        if not is_public:
+            raise ValueError(f"Host {host} resolves to non-public address")
+        
+        # Make request
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status == 200:
+            return body
+        
+        # Handle redirects
+        if status in (301, 302, 303, 307, 308):
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError(f"Too many redirects: {redirect_count}")
+            
+            location = headers.get('location')
+            if not location:
+                raise ValueError("Missing Location header")
+            
+            # Resolve redirect URL
+            new_url = _resolve_redirect(current_url, location)
+            if not new_url:
+                raise ValueError("Invalid redirect URL")
+            
+            # Validate new URL before proceeding
+            new_parsed = _parse_url(new_url)
+            if new_parsed.scheme.lower() not in ('http', 'https'):
+                raise ValueError(f"Disallowed scheme in redirect: {new_parsed.scheme}")
+            if new_parsed.username is not None or new_parsed.password is not None:
+                raise ValueError("Embedded credentials in redirect not allowed")
+            if not new_parsed.hostname:
+                raise ValueError("No hostname in redirect URL")
+            
+            new_port = new_parsed.port
+            valid_port = None
+            if new_parsed.scheme.lower() == 'http':
+                valid_port = 80
+            elif new_parsed.scheme.lower() == 'https':
+                valid_port = 443
+            
+            if new_port is not None:
+                if new_port != valid_port:
+                    raise ValueError(f"Port {new_port} not allowed for scheme {new_parsed.scheme}")
+            
+            new_addresses = resolve_host(new_parsed.hostname)
+            if not new_addresses:
+                raise ValueError(f"Redirect host {new_parsed.hostname} resolves to no addresses")
+            
+            is_public = True
+            for addr in new_addresses:
+                if addr.startswith(('127.', '::1', '10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '169.254.')):
+                    is_public = False
+                    break
+            if not is_public:
+                raise ValueError(f"Redirect host {new_parsed.hostname} resolves to non-public address")
+            
+            current_url = new_url
+        else:
+            raise ValueError(f"Unexpected status code: {status}")
+    
+    raise ValueError("No 200 status reached")
+
+
+def _parse_url(url: str) -> dict:
+    """
+    Parse URL components.
+    Returns dict with: scheme, hostname, port, username, password, path
+    """
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    return {
+        'scheme': parsed.scheme,
+        'hostname': parsed.hostname,
+        'port': parsed.port,
+        'username': parsed.username,
+        'password': parsed.password,
+        'path': parsed.path
+    }
+
+
+def _resolve_redirect(base_url: str, location: str) -> str:
+    """
+    Resolve redirect URL relative to base URL if needed.
+    """
+    import urllib.parse
+    base_parsed = urllib.parse.urlparse(base_url)
+    location_parsed = urllib.parse.urlparse(location)
+    
+    # If location is absolute, use it directly
+    if location_parsed.scheme:
+        return location
+    
+    # If location is relative, join with base
+    # Handle path-only, query-only, fragment-only, or full path
+    if not location_parsed.path:
+        # Empty path means use base path
+        if location_parsed.query:
+            new_path = base_parsed.path
+            if '?' in location_parsed.query:
+                new_path += f"?{location_parsed.query}"
+            return f"{base_parsed.scheme}://{base_parsed.hostname}:{base_parsed.port}{new_path}"
+        else:
+            return f"{base_parsed.scheme}://{base_parsed.hostname}:{base_parsed.port}{base_parsed.path}"
+    
+    # Standard relative path resolution
+    new_path = urllib.parse.urljoin(base_parsed.path, location_parsed.path)
+    
+    # Reconstruct URL
+    new_scheme = location_parsed.scheme
+    new_hostname = location_parsed.hostname
+    new_port = location_parsed.port
+    new_path = new_path
+    new_query = location_parsed.query
+    new_fragment = location_parsed.fragment
+    
+    if new_scheme:
+        new_hostname = None
+        new_port = None
+    
+    if new_hostname:
+        if new_port is None:
+            new_port = 80 if new_scheme.lower() == 'http' else 443
+        return f"{new_scheme}://{new_hostname}:{new_port}{new_path}"
+    else:
+        if new_port is None:
+            new_port = 80 if new_scheme.lower() == 'http' else 443
+        return f"{new_scheme}://{base_parsed.hostname}:{new_port}{new_path}"

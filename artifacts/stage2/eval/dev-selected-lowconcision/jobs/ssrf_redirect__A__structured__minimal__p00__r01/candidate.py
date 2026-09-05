@@ -1,0 +1,51 @@
+def fetch_text(url, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch (untrusted).
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if resolve_host returns no IPs,
+                    or if a redirect is detected.
+    """
+    # Parse the URL to extract scheme and netloc
+    from urllib.parse import urlparse
+    
+    parsed_url = urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    hostname = parsed_url.netloc
+    
+    # GUARD: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # GUARD: Resolve hostname
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("resolve_host returned no IP addresses.")
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Build the full URL for transport (including port)
+    full_url = f"{scheme}://{hostname}:{default_port}"
+    
+    # Call transport
+    status, headers, body = transport(full_url)
+    
+    # GUARD: Do not follow redirects. Check for redirect status codes.
+    # Common redirect status codes: 301, 302, 303, 307, 308
+    if status in (301, 302, 303, 307, 308):
+        raise ValueError("Redirects are not allowed.")
+    
+    # EFFECT: Return body for status 200
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

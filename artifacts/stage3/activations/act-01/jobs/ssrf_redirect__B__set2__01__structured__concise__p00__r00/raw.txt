@@ -1,0 +1,177 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security validation.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of textual IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the URL is invalid, scheme is not http/https, host resolution fails,
+                    or the IP address is unsafe (link-local, loopback, multicast).
+    """
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Guard: Check scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Guard: Check host and port
+    host = parsed.hostname
+    if not host:
+        raise ValueError("No host in URL")
+    
+    port = parsed.port
+    if port is None:
+        port = 80 if scheme == 'http' else 443
+    
+    # Guard: Resolve host
+    try:
+        ips = resolve_host(host)
+    except Exception:
+        raise ValueError(f"Failed to resolve host: {host}")
+    
+    if not ips:
+        raise ValueError(f"No IP addresses found for: {host}")
+    
+    # Guard: Check IP addresses for safety
+    for ip in ips:
+        ip_lower = ip.lower()
+        # Check for loopback (127.0.0.1, ::1)
+        if ip.startswith('127.') or ip == '::1':
+            raise ValueError(f"Loopback address detected: {ip}")
+        # Check for link-local (10.x.x.x, 192.168.x.x, fe80::, etc.)
+        if ip.startswith(('10.', '169.254.', '172.16.', '172.17.', '172.18.', '172.19.', 
+                          '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', 
+                          '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.',
+                          '192.168.', 'fc00:', 'fe80:')):
+            raise ValueError(f"Link-local address detected: {ip}")
+        # Check for multicast (224.0.0.0/224.x.x.x, ff.x.x.x)
+        if ip.startswith(('224.', 'ff.')):
+            raise ValueError(f"Multicast address detected: {ip}")
+    
+    # Prepare the request
+    full_url = f"{scheme}://{host}:{port}"
+    if parsed.path:
+        full_url += f"/{parsed.path}"
+    if parsed.params:
+        full_url += f"?{parsed.params}"
+    if parsed.query:
+        full_url += f"&{parsed.query}"
+    
+    # Use urllib.request for redirect following and status checking
+    opener = urllib.request.build_opener()
+    
+    # Disable automatic redirect following and handle manually to control hop count
+    class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers):
+            if code in (301, 302, 303, 307, 308):
+                new_url = urllib.parse.urlparse(fp.fp.url)
+                # Guard: Check redirect target scheme
+                if new_url.scheme.lower() not in ('http', 'https'):
+                    raise ValueError(f"Redirect to disallowed scheme: {new_url.scheme}")
+                
+                # Guard: Check for embedded credentials
+                if new_url.username or new_url.password:
+                    raise ValueError("Embedded credentials in redirect URL")
+                
+                # Guard: Check for absolute URL
+                if new_url.scheme:
+                    pass # OK
+                else:
+                    # Relative redirect
+                    new_url = urllib.parse.urljoin(req.get_full_url(), new_url.path)
+                    parsed_new = urllib.parse.urlparse(new_url)
+                    if parsed_new.scheme.lower() not in ('http', 'https'):
+                        raise ValueError(f"Redirect to disallowed scheme: {parsed_new.scheme}")
+                    if not parsed_new.hostname:
+                        raise ValueError("No host in redirect URL")
+                    
+                    # Guard: Resolve and check host for redirect
+                    try:
+                        redirect_ips = resolve_host(parsed_new.hostname)
+                    except Exception:
+                        raise ValueError(f"Failed to resolve host in redirect: {parsed_new.hostname}")
+                    
+                    if not redirect_ips:
+                        raise ValueError(f"No IP addresses found for redirect host: {parsed_new.hostname}")
+                    
+                    for ip in redirect_ips:
+                        ip_lower = ip.lower()
+                        if ip.startswith('127.') or ip == '::1':
+                            raise ValueError(f"Loopback address in redirect: {ip}")
+                        if ip.startswith(('10.', '169.254.', '172.16.', '172.17.', '172.18.', '172.19.', 
+                                              '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', 
+                                              '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.',
+                                              '192.168.', 'fc00:', 'fe80:')):
+                            raise ValueError(f"Link-local address in redirect: {ip}")
+                        if ip.startswith(('224.', 'ff.')):
+                            raise ValueError(f"Multicast address in redirect: {ip}")
+                
+                # Guard: Check port
+                if parsed_new.port is None:
+                    parsed_new.port = 80 if parsed_new.scheme == 'http' else 443
+                
+                # Guard: Check for absolute URL in redirect
+                if not parsed_new.scheme:
+                    # This shouldn't happen if we use urljoin correctly, but check anyway
+                    raise ValueError("Invalid redirect URL structure")
+                
+                # Guard: Check for loopback, link-local, multicast in redirect host
+                try:
+                    redirect_ips = resolve_host(parsed_new.hostname)
+                except Exception:
+                    raise ValueError(f"Failed to resolve host in redirect: {parsed_new.hostname}")
+                
+                if not redirect_ips:
+                    raise ValueError(f"No IP addresses found for redirect host: {parsed_new.hostname}")
+                
+                for ip in redirect_ips:
+                    ip_lower = ip.lower()
+                    if ip.startswith('127.') or ip == '::1':
+                        raise ValueError(f"Loopback address in redirect: {ip}")
+                    if ip.startswith(('10.', '169.254.', '172.16.', '172.17.', '172.18.', '172.19.', 
+                                      '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', 
+                                      '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.',
+                                      '192.168.', 'fc00:', 'fe80:')):
+                        raise ValueError(f"Link-local address in redirect: {ip}")
+                    if ip.startswith(('224.', 'ff.')):
+                        raise ValueError(f"Multicast address in redirect: {ip}")
+                
+                # Guard: Check hop count
+                if parsed_new.hostname == host:
+                    raise ValueError("Redirect loop detected")
+                
+                # Guard: Check hop count (max 5)
+                # We'll track hops in a separate mechanism, but here we just ensure we don't follow too many
+                # The actual hop count tracking is done in the main loop logic below
+                return None
+            
+            return None
+    
+    # Track redirects manually to enforce max 5 hops
+    original_url = full_url
+    redirect_count = 0
+    
+    # Build the request URL with the resolved host
+    resolved_url = f"{scheme}://{host}:{port}"
+    if parsed.path:
+        resolved_url += f"/{parsed.path}"
+    if parsed.params:
+        resolved_url += f"?{parsed.params}"
+    if parsed.query:
+        resolved_url += f"&{parsed.query}"
+    
+    # We need to handle redirects manually to count them and check the target
+    #

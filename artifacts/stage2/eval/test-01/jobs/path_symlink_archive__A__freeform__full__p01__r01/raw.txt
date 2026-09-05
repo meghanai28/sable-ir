@@ -1,0 +1,84 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    # Normalize dest_path to an absolute path, resolving any relative components
+    # but not following symlinks yet. We need the absolute path for validation.
+    try:
+        dest_path = os.path.realpath(dest_path)
+    except (OSError, ValueError):
+        return False
+    
+    # Ensure dest_path exists and is a directory
+    if not os.path.isdir(dest_path):
+        return False
+    
+    # Open the tar file
+    try:
+        tar = tarfile.open(tar_path, 'r:*')
+    except (tarfile.TarError, OSError, ValueError):
+        return False
+    
+    # Validation and extraction loop
+    for member in tar.getmembers():
+        # Security checks for the member name
+        if member.name.startswith('/') or '..' in member.name:
+            return False
+        
+        # Resolve the member's target relative to dest_path
+        member_dir = os.path.dirname(member.name)
+        if member_dir:
+            member_dir = os.path.normpath(os.path.join(dest_path, member_dir))
+        else:
+            member_dir = dest_path
+        
+        # Check if the resolved path escapes dest_path
+        if not member_dir.startswith(dest_path):
+            return False
+        
+        # Additional check for absolute paths in member name (though normalized above)
+        # The member.name itself shouldn't be absolute, but we check the resolved path
+        
+        # Check for symlinks and hardlinks that point outside dest_path
+        if member.issym() or member.islnk():
+            # For symlinks and hardlinks, check the target
+            # The target is stored in member.linkname for symlinks
+            # We need to resolve the link target relative to dest_path
+            try:
+                # If it's a symlink, the linkname is the target
+                # If it's a hardlink, the linkname is the target file
+                link_target = member.linkname
+                
+                # Resolve the link target relative to dest_path
+                # If the link target is absolute, it's dangerous
+                if link_target.startswith('/'):
+                    return False
+                
+                # Resolve relative to dest_path
+                resolved_link_target = os.path.normpath(os.path.join(dest_path, link_target))
+                
+                # Check if resolved link target escapes dest_path
+                if not resolved_link_target.startswith(dest_path):
+                    return False
+            except (OSError, ValueError):
+                return False
+        
+        # Perform extraction
+        try:
+            tar.extract(member, dest_path, set_attrs=False)
+        except (tarfile.TarError, OSError, ValueError):
+            return False
+    
+    # If we get here, all members were extracted successfully
+    return True

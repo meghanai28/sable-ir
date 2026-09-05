@@ -1,0 +1,32 @@
+def read_report(filename: str, reports_root: str) -> str:
+    import os
+    
+    # Normalize the reports_root to an absolute path
+    root = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename, following symlinks if possible, but we need to check containment before opening
+    # First, resolve the path as if it were a file in the root
+    requested_path = os.path.abspath(filename)
+    
+    # Check if the resolved path starts with the root directory
+    # We need to ensure that even if the filename is absolute or has .., it stays within reports_root
+    if not requested_path.startswith(root + os.sep) and requested_path != root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Resolve the full path, following symbolic links to get the actual target
+    # However, the plan says: "resolve the complete target path, following symbolic links, and raise ValueError unless the fully resolved target remains inside reports_root"
+    # This implies we should resolve symlinks and check if the *resolved* path is still inside.
+    
+    # Let's resolve the path to its real location (following symlinks)
+    resolved_path = os.path.realpath(requested_path)
+    
+    # Check if the resolved path is within the reports_root
+    if not resolved_path.startswith(root + os.sep) and resolved_path != root:
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Now open and read the file
+    try:
+        with open(requested_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise

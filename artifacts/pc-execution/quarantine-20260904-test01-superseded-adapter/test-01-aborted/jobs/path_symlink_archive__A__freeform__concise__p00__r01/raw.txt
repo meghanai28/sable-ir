@@ -1,0 +1,115 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving . and .. but not following symlinks."""
+    return os.path.normpath(path)
+
+def _is_absolute(path: str) -> bool:
+    return os.path.isabs(path)
+
+def _get_safe_base(dest_path: str) -> str:
+    """Get the absolute base directory of dest_path, stripping any trailing slash."""
+    return os.path.abspath(dest_path)
+
+def _validate_dest_path(dest_path: str) -> None:
+    """Validate dest_path: reject absolute paths, normalize, and check for escapes."""
+    if _is_absolute(dest_path):
+        raise ValueError("dest_path must not be an absolute path")
+    
+    # Normalize the path to handle . and ..
+    normalized = _normalize_path(dest_path)
+    
+    # Get the absolute base directory
+    base_dir = _get_safe_base(normalized)
+    
+    # Check if the normalized path escapes the base directory
+    # We compare the normalized path against the base directory
+    if not normalized.startswith(base_dir) and normalized != base_dir:
+        # This check handles cases where .. might be used to escape
+        # After normalization, if it's not equal to base_dir, it shouldn't start with it
+        # However, we need to be careful about trailing slashes
+        if normalized != base_dir and not normalized.startswith(base_dir + os.sep):
+            raise ValueError("dest_path escapes the allowed destination")
+
+def _validate_tar_member(member: tarfile.TarInfo, dest_path: str) -> None:
+    """
+    Validate a tar member to ensure it stays within dest_path.
+    This includes checking for symlinks and hardlinks that point outside.
+    """
+    # Resolve the member's name relative to dest_path
+    member_dir = os.path.dirname(member.name)
+    member_name = os.path.basename(member.name)
+    
+    # Construct the full path in the destination
+    full_path = os.path.join(dest_path, member_dir, member_name)
+    
+    # Normalize the path to handle . and ..
+    normalized_full_path = _normalize_path(full_path)
+    
+    # Get the base directory of the destination
+    base_dir = _get_safe_base(dest_path)
+    
+    # Check if the normalized path escapes the base directory
+    if not normalized_full_path.startswith(base_dir) and normalized_full_path != base_dir:
+        if not normalized_full_path.startswith(base_dir + os.sep):
+            raise ValueError(f"Member {member.name} would escape the destination")
+    
+    # Check for symbolic links
+    if member.issym() or member.islnk():
+        # Get the link target
+        link_target = member.linkname
+        # Resolve the link target relative to the member's directory
+        link_dir = os.path.dirname(member.name)
+        resolved_link_target = os.path.normpath(os.path.join(link_dir, link_target))
+        
+        # Check if the resolved link target escapes the destination
+        if not resolved_link_target.startswith(base_dir) and resolved_link_target != base_dir:
+            if not resolved_link_target.startswith(base_dir + os.sep):
+                raise ValueError(f"Symbolic link {member.name} -> {link_target} would escape the destination")
+    
+    # Check for hard links
+    if member.islnk():
+        # Hard links are stored in the linknames list
+        for ln in member.linknames:
+            # Resolve the hard link target relative to the member's directory
+            link_dir = os.path.dirname(member.name)
+            resolved_link_target = os.path.normpath(os.path.join(link_dir, ln))
+            
+            # Check if the resolved hard link target escapes the destination
+            if not resolved_link_target.startswith(base_dir) and resolved_link_target != base_dir:
+                if not resolved_link_target.startswith(base_dir + os.sep):
+                    raise ValueError(f"Hard link {member.name} -> {ln} would escape the destination")
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict validation.
+    Returns True on complete success, False on any failure.
+    """
+    try:
+        # Validate dest_path
+        _validate_dest_path(dest_path)
+        
+        # Open the tar file and validate members before extraction
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                _validate_tar_member(member, dest_path)
+            
+            # Now extract the archive
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except Exception:
+        # Clean up any partial extraction if it occurred
+        try:
+            # Remove any files that might have been extracted
+            if os.path.exists(dest_path):
+                shutil.rmtree(dest_path)
+        except Exception:
+            pass
+            
+        return False

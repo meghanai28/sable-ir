@@ -1,0 +1,95 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving symlinks and removing redundant separators."""
+    return os.path.normpath(os.path.realpath(path))
+
+def _check_path_within(dest: str, candidate: str) -> bool:
+    """Check if candidate is within dest, handling potential escape attempts."""
+    try:
+        # Resolve both paths to their canonical forms if possible, but be careful with symlinks
+        # We need to ensure the candidate doesn't escape the dest directory
+        dest_resolved = os.path.realpath(dest)
+        candidate_resolved = os.path.realpath(candidate)
+        
+        # Ensure candidate starts with dest_resolved (or is exactly dest_resolved)
+        # We use os.path.commonpath to handle cases where dest might be a prefix
+        common = os.path.commonpath([dest_resolved, candidate_resolved])
+        return common == dest_resolved
+    except (ValueError, OSError):
+        # If realpath fails (e.g., on network drives or broken symlinks), use normpath
+        # This is a weaker check but sufficient for local filesystems
+        return os.path.commonpath([dest, candidate]) == dest
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive beneath dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory where the archive should be extracted.
+    
+    Returns:
+        True if extraction completed successfully, False otherwise.
+        No archive members are written outside dest_path if validation fails.
+    """
+    # Normalize the destination path immediately
+    dest_path = _normalize_path(dest_path)
+    
+    # Validate that tar_path exists and is a file
+    if not os.path.isfile(tar_path):
+        return False
+    
+    # Ensure dest_path exists and is a directory
+    if not os.path.isdir(dest_path):
+        return False
+    
+    # Create dest_path if it doesn't exist
+    os.makedirs(dest_path, exist_ok=True)
+    
+    # Validate the destination path itself doesn't escape (though we just created it)
+    # This is a safeguard if dest_path was constructed dynamically elsewhere
+    try:
+        # Check if dest_path resolves to something unexpected relative to current dir
+        # (e.g., if dest_path is "./foo/../../../etc")
+        if not _check_path_within(os.getcwd(), dest_path):
+            return False
+    except Exception:
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of all members
+            members = tar.getnames()
+            
+            for member in members:
+                # Resolve the member's target relative to dest_path
+                member_path = os.path.join(dest_path, member)
+                
+                # Normalize the member path to check for escapes
+                normalized_member = _normalize_path(member_path)
+                
+                # Check if the normalized path escapes the dest_path
+                if not _check_path_within(dest_path, normalized_member):
+                    return False
+                
+                # Additional check for links: if a member is a link, ensure its target
+                # doesn't escape the dest_path when resolved
+                if member.isdir() or member.issym() or member.islnk():
+                    if member.isfile() and member.linkname:
+                        # Resolve the link target
+                        link_target = os.path.join(dest_path, member.linkname)
+                        normalized_link = _normalize_path(link_target)
+                        if not _check_path_within(dest_path, normalized_link):
+                            return False
+            
+            # Perform the extraction
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

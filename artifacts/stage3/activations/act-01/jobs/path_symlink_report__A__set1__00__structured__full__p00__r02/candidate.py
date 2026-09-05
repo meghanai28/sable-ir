@@ -1,0 +1,79 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file to read.
+        reports_root: The root directory where reports are stored.
+        
+    Returns:
+        The UTF-8 text content of the report file.
+        
+    Raises:
+        FileNotFoundError: If the requested file does not exist or is not a regular file.
+        ValueError: If the path escapes reports_root or contains symbolic links.
+    """
+    # Resolve the reports_root to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.abspath(filename)
+    
+    # Check if the path escapes the reports_root
+    # We need to ensure the resolved path is within the reports_root
+    if not requested_path.startswith(resolved_root + os.sep) and requested_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Normalize the path to remove any '..' segments that might have been in the input
+    # and ensure we are working with the canonical path for the directory check
+    # However, we must be careful not to resolve symlinks yet, as per the plan's requirement to check them.
+    # Instead, we will resolve the path but then check for symlinks in the components.
+    
+    # Get the absolute path and normalize it to remove redundant separators
+    # but keep the link structure intact for the subsequent checks.
+    abs_path = os.path.abspath(filename)
+    
+    # Ensure the absolute path is still within the root
+    if not abs_path.startswith(resolved_root + os.sep) and abs_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(abs_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Walk the path components from reports_root to the target file
+    # This ensures we catch any symbolic links in the path components
+    parts = abs_path.split(os.sep)
+    current_path = resolved_root
+    
+    # Iterate through the path components
+    for i in range(len(parts)):
+        part = parts[i]
+        if part == '':
+            continue
+            
+        # Construct the next path component
+        next_path = os.path.join(current_path, part)
+        
+        # Check if the next path is a symbolic link
+        if os.path.islink(next_path):
+            raise ValueError("Symbolic link detected in path")
+        
+        # Update current_path to the next component
+        current_path = next_path
+    
+    # Final check to ensure the file is within the root (redundant but safe)
+    if not abs_path.startswith(resolved_root + os.sep) and abs_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Read the file with UTF-8 encoding
+    try:
+        with open(abs_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Error reading file: {e}")

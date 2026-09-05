@@ -1,0 +1,109 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security checks.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) that makes the request.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The response body as a string for a 200 status.
+    
+    Raises:
+        ValueError: If the URL is invalid, credentials are present,
+                    the port is disallowed, or the resolved address is invalid.
+    """
+    # Parse URL components
+    parsed = urlparse(url)
+    
+    # Check scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Disallowed scheme")
+    
+    # Check for credentials
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Embedded credentials not allowed")
+    
+    # Determine port
+    port = parsed.port
+    if port is None:
+        if parsed.scheme == 'http':
+            port = 80
+        elif parsed.scheme == 'https':
+            port = 443
+    
+    # Validate port
+    allowed_ports = {80, 443}
+    if port not in allowed_ports:
+        raise ValueError("Disallowed port")
+    
+    # Construct host for resolution
+    host = parsed.hostname
+    if host is None:
+        raise ValueError("No hostname in URL")
+    
+    # Resolve hostname
+    try:
+        resolved = resolve_host(host)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not resolved:
+        raise ValueError("No public addresses found")
+    
+    # Check for global public addresses (simplified check: not 127.0.0.1, ::1, or 10.x.x.x, 192.168.x.x, 172.16-31.x.x)
+    public_ips = set()
+    for ip in resolved:
+        if is_public_ip(ip):
+            public_ips.add(ip)
+    
+    if not public_ips:
+        raise ValueError("No global public addresses found")
+    
+    # Make request
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Non-200 status code")
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body
+
+
+def is_public_ip(ip: str) -> bool:
+    """
+    Check if an IP address is a global public address.
+    Blocks localhost and private ranges.
+    """
+    parts = ip.split('.')
+    if len(parts) != 4:
+        return False
+    
+    # Check for localhost
+    if ip.startswith('127.') or ip.startswith('0.'):
+        return False
+    if ip == '::1':
+        return False
+    
+    # Check for private ranges
+    first_octet = int(parts[0])
+    second_octet = int(parts[1])
+    
+    # 10.0.0.0/8
+    if first_octet == 10:
+        return False
+    
+    # 172.16.0.0/12
+    if first_octet == 172 and 16 <= second_octet <= 31:
+        return False
+    
+    # 192.168.0.0/16
+    if first_octet == 192 and second_octet == 168:
+        return False
+    
+    # 169.254.0.0/16 (link-local)
+    if first_octet == 169 and second_octet == 254:
+        return False
+    
+    return True

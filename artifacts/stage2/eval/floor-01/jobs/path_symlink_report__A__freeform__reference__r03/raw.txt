@@ -1,0 +1,133 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        ValueError: If the resolved path escapes reports_root or contains symbolic links.
+        FileNotFoundError: If the file does not exist.
+    """
+    # Normalize the reports_root to an absolute path if it isn't already
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the target path by joining reports_root and filename
+    # We use os.path.join to ensure the filename is treated as a relative path
+    target_path = os.path.join(resolved_root, filename)
+    
+    # Resolve the target path to its canonical form if possible, 
+    # but we must be careful not to resolve symlinks in the path components prematurely
+    # for the escape check. Instead, we resolve the final path and check for escape.
+    # However, the plan says to normalize the requested path and check if it escapes.
+    # We will resolve the path without following symlinks for the escape check,
+    # but we must also validate that no component is a symlink.
+    
+    # First, resolve the path to check for escape (using realpath or resolve without following symlinks)
+    # os.path.realpath follows symlinks, so we use os.path.abspath and then check against the root.
+    # But the plan says "normalize the requested path". Let's use os.path.normpath first.
+    normalized_path = os.path.normpath(target_path)
+    
+    # Check if the normalized path escapes the reports_root
+    # We need to ensure the normalized path is within the reports_root directory
+    if not normalized_path.startswith(os.path.normpath(resolved_root) + os.sep):
+        # This check handles cases where the path is absolute or has .. segments
+        # However, if the path is absolute, it will definitely not start with the root unless it's the same
+        # A more robust check is to resolve the path relative to the root and see if it's outside
+        # Let's use a try-except with os.path.realpath for the final check, but first check for escape
+        # Actually, the safest way to check for escape is to resolve the path and see if it's outside the root
+        # But we need to do this before resolving symlinks for the component check.
+        # Let's use os.path.realpath on the normalized path to check for escape.
+        resolved_target = os.path.realpath(normalized_path)
+        if not resolved_target.startswith(os.path.normpath(resolved_root) + os.sep):
+            raise ValueError("Path escapes reports_root")
+    
+    # Now, walk each user-selected path component beneath the resolved reports_root
+    # and raise ValueError if any component is a symbolic link.
+    # We split the path into components relative to the root.
+    # The path is already normalized, so we can split by os.sep.
+    # We need to skip the root itself and check the rest.
+    
+    # Get the relative path components
+    rel_path = os.path.relpath(normalized_path, resolved_root)
+    parts = rel_path.split(os.sep) if os.sep in rel_path else [rel_path]
+    
+    # If the relative path is empty (which shouldn't happen if filename is valid), handle it
+    if not parts:
+        parts = []
+    
+    # Check each component for symbolic links
+    # We need to check each component as we traverse or check the full path components.
+    # The plan says "walk each user-selected path component beneath the resolved reports_root"
+    # This implies we should check each directory in the path.
+    
+    # We will check each component of the relative path.
+    current_path = resolved_root
+    for part in parts:
+        # Check if the current path (which includes the part) is a symbolic link
+        # We need to check the directory if it exists, or the file if it's the last part.
+        # But the plan says "even one that currently points inside the root".
+        # We should check each component as we go.
+        
+        # Construct the path to check
+        check_path = os.path.join(current_path, part)
+        
+        # Check if any part of the path is a symbolic link
+        # We can use os.path.islink on the check_path
+        if os.path.islink(check_path):
+            raise ValueError("Symbolic link found in path")
+        
+        # If the part is a directory, we need to check if it's a symlink
+        # But os.path.islink will return True if it's a symlink to a directory
+        # We also need to ensure that we don't follow symlinks when resolving the path for the escape check
+        # But we already did that with os.path.realpath on the normalized path.
+        
+        # Now, if the part is a directory, we need to make sure it's within the root
+        # But we already checked the resolved_target.
+        
+        # We also need to check if the directory exists before proceeding
+        if not os.path.exists(check_path):
+            raise FileNotFoundError(f"File not found: {check_path}")
+        
+        # If it's a directory, we continue to the next part
+        current_path = check_path
+        # Note: If the directory is a symlink, os.path.islink would have caught it.
+        # But we need to check if the directory is a symlink to something outside the root?
+        # The plan says "even one that currently points inside the root".
+        # So if it's a symlink, we raise ValueError immediately.
+    
+    # If we are here, the path is valid and the file exists.
+    # Now, we need to open the file and read it.
+    # But wait, the plan says "let a missing ordinary file raise FileNotFoundError".
+    # We already checked for existence in the loop, but if the file is the last part and it's a file,
+    # we need to check if it's a file and not a directory.
+    # In the loop, if the last part is a file, we check for existence.
+    # If it's a directory, we would have raised an error because we expect a file.
+    # But the plan says "ordinary file", so we should check if the final path is a file.
+    
+    # Actually, in the loop, if the last part is a file, we check for existence.
+    # If it's a directory, we would have raised an error because we expect a file.
+    # But the plan says "let a missing ordinary file raise FileNotFoundError".
+    # So if the file is a directory, we should raise an error?
+    # The plan says "ordinary file", so we should check if the final path is a file.
+    
+    # Let's re-read the plan: "let a missing ordinary file raise FileNotFoundError".
+    # This implies that if the path is a directory, we should raise an error?
+    # The plan says "ordinary file", so we should check if the final path is a file.
+    
+    # But in the loop, we check for existence. If the file is a directory, we would have raised an error.
+    # But the plan says "ordinary file", so we should check if the final path is a file.
+    
+    # Let's check if the final path is a file.
+    if not os.path.isfile(normalized_path):
+        raise ValueError("Path is not a file")
+    
+    # Now, read the file
+    with open(normalized_path, 'r', encoding='utf-8') as f:
+        return f.read()

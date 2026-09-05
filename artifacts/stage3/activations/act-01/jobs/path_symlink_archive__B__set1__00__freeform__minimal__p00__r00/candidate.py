@@ -1,0 +1,92 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        No files are written outside dest_path on failure.
+    """
+    try:
+        # Normalize dest_path to absolute path, removing trailing slashes
+        dest_path = os.path.normpath(dest_path)
+        
+        # Ensure dest_path is absolute
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Validate dest_path does not escape root (check for .. in normalized path)
+        # After normpath, the path should be clean, but we check if it's not under current dir
+        if dest_path.startswith(os.path.abspath(os.sep)) or dest_path == os.path.abspath(os.sep):
+            return False
+            
+        # Create dest_path if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members and validate them
+            members = tar.getmembers()
+            
+            for member in members:
+                # Check for dangerous member names (paths starting with .. or /)
+                if member.name.startswith(('/', '..')):
+                    return False
+                
+                # Resolve the full path of the member
+                full_member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check if the member path escapes the dest directory
+                # We need to ensure the normalized path is still within dest_path
+                if not full_member_path.startswith(dest_path + os.sep) and full_member_path != dest_path:
+                    return False
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    # For symbolic links, we need to check the target
+                    # Note: tarfile.getmembers() doesn't resolve symlink targets by default
+                    # We need to check the link target if we were to follow it, but tarfile doesn't provide that directly
+                    # However, the spec says "follow symbolic links" - we need to be careful here
+                    # Actually, tarfile.extractall() by default doesn't follow symlinks, but we need to validate them
+                    # The safest approach is to check if the link target would escape the directory
+                    # But tarfile doesn't give us the link target in getmembers() directly for resolution
+                    # We'll rely on the path check above and also check if the member name itself is suspicious
+                    
+                    # Additional check: if the member name contains .. it's dangerous
+                    if '..' in member.name:
+                        return False
+                
+                # Check for device files and other dangerous types
+                if member.isdir() or member.isfile():
+                    # For directories, we need to create them
+                    if not os.path.exists(full_member_path):
+                        os.makedirs(full_member_path, exist_ok=True)
+                elif member.isfile():
+                    # For files, extract them
+                    # We need to ensure we don't overwrite existing files with different permissions
+                    # and that we validate the content
+                    if not os.path.exists(full_member_path):
+                        os.makedirs(os.path.dirname(full_member_path), exist_ok=True)
+                        tar.extractfile(member).extractall(full_member_path)
+                    else:
+                        # File exists, skip or handle appropriately
+                        # For security, we should not overwrite without validation
+                        # But the spec says return False on failure, so we'll skip existing files
+                        pass
+                else:
+                    # Skip other member types (devices, etc.)
+                    pass
+            
+            # If we get here, all members were validated
+            return True
+            
+    except Exception as e:
+        return False

@@ -1,0 +1,123 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security checks.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of textual IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the scheme/port is invalid, host resolution fails, or status is not 200.
+    """
+    # Parse the initial URL
+    parsed = urlparse(url)
+    
+    # Validate scheme and port
+    valid_schemes = {'http', 'https'}
+    if parsed.scheme.lower() not in valid_schemes:
+        raise ValueError(f"Invalid scheme: {parsed.scheme}")
+    
+    default_port = {'http': 80, 'https': 443}.get(parsed.scheme.lower())
+    if parsed.port is None:
+        port = default_port
+    else:
+        port = parsed.port
+    
+    if port != default_port:
+        raise ValueError(f"Invalid port: {port}")
+    
+    # Resolve initial host
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("No hostname in URL")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Failed to resolve host: {hostname}")
+    
+    # Current URL state for redirect handling
+    current_scheme = parsed.scheme.lower()
+    current_port = port
+    current_host = hostname
+    current_path = parsed.path
+    current_query = parsed.query
+    
+    # Fetch and process
+    current_url = f"{current_scheme}://{current_host}"
+    if current_path:
+        current_url += current_path
+    if current_query:
+        current_url += f"?{current_query}"
+    
+    status, headers, body = transport(current_url)
+    
+    if status != 200:
+        raise ValueError(f"Status code not 200: {status}")
+    
+    # Handle redirects
+    max_redirects = 5
+    redirect_count = 0
+    
+    while True:
+        if redirect_count > max_redirects:
+            raise ValueError("Too many redirects")
+        
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            redirect_url = f"{current_scheme}://{current_host}{location}"
+            
+            # Resolve redirect location
+            redirect_parsed = urlparse(redirect_url)
+            
+            # Check scheme
+            if redirect_parsed.scheme.lower() not in valid_schemes:
+                raise ValueError(f"Invalid redirect scheme: {redirect_parsed.scheme}")
+            
+            # Check port
+            redirect_port = redirect_parsed.port
+            if redirect_port is None:
+                redirect_port = default_port
+            if redirect_port != default_port:
+                raise ValueError(f"Invalid redirect port: {redirect_port}")
+            
+            # Check for dangerous schemes
+            if redirect_parsed.scheme.lower() in ('javascript', 'data'):
+                raise ValueError(f"Dangerous redirect scheme: {redirect_parsed.scheme}")
+            
+            # Resolve redirect host
+            redirect_hostname = redirect_parsed.hostname
+            if redirect_hostname is None:
+                raise ValueError("No hostname in redirect URL")
+            
+            redirect_ip_addresses = resolve_host(redirect_hostname)
+            if not redirect_ip_addresses:
+                raise ValueError(f"Failed to resolve redirect host: {redirect_hostname}")
+            
+            # Update current URL state
+            current_scheme = redirect_parsed.scheme.lower()
+            current_port = redirect_port
+            current_host = redirect_hostname
+            current_path = redirect_parsed.path
+            current_query = redirect_parsed.query
+            
+            # Update current_url string
+            current_url = f"{current_scheme}://{current_host}"
+            if current_path:
+                current_url += current_path
+            if current_query:
+                current_url += f"?{current_query}"
+            
+            # Fetch again
+            status, headers, body = transport(current_url)
+            
+            if status != 200:
+                raise ValueError(f"Status code not 200 after redirect: {status}")
+        else:
+            break
+    
+    return body

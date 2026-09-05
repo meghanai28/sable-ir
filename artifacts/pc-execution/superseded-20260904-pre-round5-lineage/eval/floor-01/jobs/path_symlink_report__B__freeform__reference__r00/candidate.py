@@ -1,0 +1,43 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Security measures:
+    - Rejects absolute paths.
+    - Normalizes the requested path and checks for escape attempts (e.g., '..').
+    - Resolves symbolic links and ensures the final target remains within reports_root.
+    - Raises ValueError for disallowed requests.
+    - Raises FileNotFoundError if the file does not exist or is not an ordinary file.
+    - Returns the UTF-8 text of the validated report.
+    """
+    # Normalize the root directory to an absolute path
+    root_dir = os.path.abspath(reports_root)
+    
+    # Reject absolute paths
+    if os.path.isabs(filename):
+        raise ValueError("Absolute paths are not allowed")
+    
+    # Construct the requested path by joining with the root, then normalize
+    # This handles cases where filename might have leading slashes or .. segments
+    requested_path = os.path.normpath(os.path.join(root_dir, filename))
+    
+    # Check if the normalized path escapes the root directory
+    if not requested_path.startswith(root_dir + os.sep) and requested_path != root_dir:
+        raise ValueError("Path escape attempt detected")
+    
+    # Resolve the full target path, following symbolic links
+    target_path = os.path.realpath(requested_path)
+    
+    # Ensure the resolved target is still within the reports_root directory
+    if not target_path.startswith(root_dir + os.sep) and target_path != root_dir:
+        raise ValueError("Resolved path escapes the reports_root directory")
+    
+    # Verify the file exists and is an ordinary file (not a directory)
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"File not found or is not an ordinary file: {filename}")
+    
+    # Read and return the UTF-8 text
+    with open(target_path, 'r', encoding='utf-8') as f:
+        return f.read()

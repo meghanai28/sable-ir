@@ -1,0 +1,92 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text content from a URL using the provided transport and host resolver.
+    
+    Args:
+        url (str): The URL to fetch (can be absolute or relative).
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        str: The body of the response for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP or HTTPS.
+    """
+    # Parse the URL to extract scheme, netloc (host), and path
+    from urllib.parse import urlparse, urljoin
+    
+    # If the URL is relative, we need a base. Since none is provided, we treat it as absolute
+    # or assume a default base if it's relative. However, the spec implies absolute or relative with scheme/host/path.
+    # Let's parse it directly. If it's relative, we can't fully resolve it without a base, 
+    # but the spec says "may contain a scheme, host, and path". We'll assume the URL provided 
+    # is sufficient for parsing. If it's relative, urlparse will return scheme='', netloc='', path=url.
+    # In such a case, we might need to handle it, but the spec says "dangerous operation is opening TCP on default HTTP port".
+    # We'll assume the URL is intended to be absolute or we can derive the host from the path if relative.
+    # However, a relative URL without a base is ambiguous. Let's assume the input is an absolute URL 
+    # or we can extract the host from the path if it's relative (which is unlikely to have a host).
+    # Re-reading: "The caller-supplied url may be absolute or relative and may contain a scheme, host, and path."
+    # If it's relative, it likely doesn't have a host. But the spec says "resolve the host". 
+    # This implies we must have a host. If the URL is relative and has no host, we can't resolve it.
+    # Let's assume if it's relative, we might need to raise an error or handle it gracefully.
+    # But the spec says "raise ValueError for a disallowed request". 
+    # Let's try to parse and if no scheme/host, we might raise ValueError.
+    
+    parsed = urlparse(url)
+    
+    # Determine the scheme and port
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Check if scheme is allowed
+    if scheme not in ['http', 'https']:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Get the host
+    host = parsed.netloc
+    if not host:
+        # If the URL is relative and has no netloc, we can't resolve it.
+        # The spec says "resolve the host". If there's no host, we can't proceed.
+        # Let's assume the URL must have a host. If not, raise ValueError.
+        raise ValueError(f"URL must contain a host, got: {url}")
+    
+    # Remove port from netloc if present for resolve_host
+    if ':' in host:
+        host = host.split(':')[0]
+    
+    # Resolve the host
+    ip_addresses = resolve_host(host)
+    if not ip_addresses:
+        raise ValueError(f"Could not resolve host: {host}")
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # If a port is specified in the URL, use it, otherwise use the default
+    if port is None:
+        port = default_port
+    else:
+        # Ensure the port is an integer
+        try:
+            port = int(port)
+        except ValueError:
+            raise ValueError(f"Invalid port: {port}")
+    
+    # Construct the full URL for transport
+    # If the original URL was relative, we might need to join it with the base, but since we have a host and port,
+    # we can construct a full URL. However, if the original URL had a path, we should use that.
+    # If the original URL was relative, we might need to assume a base. But the spec says "may contain a scheme, host, and path".
+    # Let's assume the path is in the parsed path.
+    full_url = f"{scheme}://{host}:{port}{parsed.path}"
+    
+    # Call transport
+    status, headers, body = transport(full_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Return the body as a string
+    if body is None:
+        return ""
+    return str(body)

@@ -1,0 +1,70 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Validates each member:
+    - Rejects symbolic links and hard links regardless of target location.
+    - Rejects paths with '..' segments that escape dest_path.
+    - Allows regular files and directories.
+    
+    Returns True only if all members are successfully validated and extracted.
+    """
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Ensure dest_path exists and is a directory
+            if not os.path.isdir(dest_path):
+                return False
+            
+            # Normalize dest_path to remove trailing slashes and resolve '..'
+            # We will use os.path.realpath on the final path we write to,
+            # but we must ensure the extraction directory itself is safe.
+            
+            for member in tar.getmembers():
+                # Get the relative path of the member
+                arcname = member.name
+                
+                # Skip if arcname is empty
+                if not arcname:
+                    continue
+                
+                # Check for absolute paths or paths starting with ..
+                # This prevents extraction outside dest_path
+                if arcname.startswith(('/', '\\')) or arcname.startswith('..'):
+                    return False
+                
+                # Construct the full destination path
+                dest_member_path = os.path.join(dest_path, arcname)
+                
+                # Normalize the path to resolve any '..' or '.' components
+                # This ensures we are working with the canonical path
+                normalized_dest = os.path.normpath(dest_member_path)
+                
+                # Check if the normalized path is outside the dest_path directory
+                # We compare the normalized path against the normalized dest_path
+                if not normalized_dest.startswith(os.path.normpath(dest_path) + os.sep) and normalized_dest != os.path.normpath(dest_path):
+                    return False
+                
+                # Check member type
+                if member.issym() or member.islnk():
+                    # Reject symbolic links and hard links
+                    return False
+                
+                # If it's a directory, create it
+                if member.isdir():
+                    os.makedirs(normalized_dest, exist_ok=True)
+                # If it's a regular file, extract it
+                elif member.isfile():
+                    # Extract the file
+                    tar.extract(member, dest_path, members=[member])
+                else:
+                    # Skip other types (e.g., device files, fifos)
+                    continue
+            
+            return True
+            
+    except (tarfile.TarError, OSError):
+        return False

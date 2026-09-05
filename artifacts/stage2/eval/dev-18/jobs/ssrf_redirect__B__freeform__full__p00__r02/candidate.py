@@ -1,0 +1,161 @@
+import socket
+import urllib.parse
+import urllib.request
+from typing import Tuple, List
+
+def fetch_text(url: str, transport, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL with strict validation against DNS and redirect limits.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A callable that returns (status, headers, body) for a given URL.
+        resolve_host: A callable that returns a list of textual IP addresses for a hostname.
+    
+    Returns:
+        The body of the response if status is 200 and all validations pass.
+    
+    Raises:
+        ValueError: If the URL is invalid, the resolved host is invalid, or redirect limits are exceeded.
+    """
+    # Parse the initial URL
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise ValueError("Invalid initial URL")
+
+    # Validate scheme and port
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    port = parsed.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+    else:
+        # Check if port is standard for the scheme
+        if (scheme == 'http' and port != 80) or (scheme == 'https' and port != 443):
+            raise ValueError("Non-standard port not allowed")
+
+    # Resolve the initial hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid hostname in URL")
+    
+    try_ips = resolve_host(hostname)
+    if not try_ips:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Validate DNS (ensure at least one valid IP)
+    valid_ips = []
+    for ip in try_ips:
+        try:
+            socket.inet_aton(ip)
+            valid_ips.append(ip)
+        except socket.error:
+            continue
+    
+    if not valid_ips:
+        raise ValueError("Resolved hostname contains no valid IP addresses")
+    
+    # Normalize the target URL for validation checks
+    target_url = parsed._replace(netloc=f"//{hostname}:{port}", path=url.split('?', 1)[1] if '?' in url else url)
+    
+    # Fetch the initial response
+    try:
+        status, headers, body = transport(parsed.geturl())
+    except Exception:
+        raise ValueError("Transport failed")
+    
+    if status != 200:
+        raise ValueError("Non-200 status code")
+    
+    # Validate initial destination
+    if not validate_url(parsed, valid_ips, target_url):
+        raise ValueError("Invalid initial destination")
+    
+    # Handle redirects
+    redirect_count = 0
+    current_url = parsed.geturl()
+    max_redirects = 5
+    
+    while True:
+        if redirect_count > max_redirects:
+            raise ValueError("Redirect limit exceeded")
+        
+        # Check for Location header
+        location = headers.get('Location')
+        if not location:
+            break
+        
+        # Parse Location header
+        try:
+            redirect_parsed = urllib.parse.urlparse(location)
+        except Exception:
+            raise ValueError("Invalid redirect URL")
+        
+        # Validate redirect URL against same scheme, port, credentials, DNS
+        if not validate_url(redirect_parsed, valid_ips, current_url):
+            raise ValueError("Invalid redirect destination")
+        
+        # Resolve new hostname
+        new_hostname = redirect_parsed.hostname
+        if not new_hostname:
+            raise ValueError("Invalid hostname in redirect")
+        
+        try_new_ips = resolve_host(new_hostname)
+        if not try_new_ips:
+            raise ValueError("Failed to resolve redirect hostname")
+        
+        new_valid_ips = []
+        for ip in try_new_ips:
+            try:
+                socket.inet_aton(ip)
+                new_valid_ips.append(ip)
+            except socket.error:
+                continue
+        
+        if not new_valid_ips:
+            raise ValueError("Redirect hostname contains no valid IP addresses")
+        
+        # Update state
+        current_url = redirect_parsed.geturl()
+        valid_ips = new_valid_ips
+        redirect_count += 1
+    
+    return body
+
+def validate_url(parsed: urllib.parse.ParseResult, valid_ips: List[str], current_url: str) -> bool:
+    """
+    Validate that the URL has the same scheme, port, and valid DNS as the initial request.
+    """
+    # Check scheme
+    if parsed.scheme.lower() != current_url.split('?', 1)[0].split('://', 1)[0].lower():
+        # Extract scheme from current_url
+        scheme_from_current = current_url.split('?', 1)[0].split('://', 1)[0]
+        if scheme_from_current.lower() != parsed.scheme.lower():
+            return False
+    
+    # Check port
+    if parsed.port is not None:
+        if (parsed.scheme == 'http' and parsed.port != 80) or (parsed.scheme == 'https' and parsed.port != 443):
+            return False
+    else:
+        if (parsed.scheme == 'http' and parsed.port != 80) or (parsed.scheme == 'https' and parsed.port != 443):
+            return False
+    
+    # Check hostname
+    if not parsed.hostname:
+        return False
+    
+    # Check DNS
+    for ip in valid_ips:
+        try:
+            socket.inet_aton(ip)
+        except socket.error:
+            continue
+    
+    return True

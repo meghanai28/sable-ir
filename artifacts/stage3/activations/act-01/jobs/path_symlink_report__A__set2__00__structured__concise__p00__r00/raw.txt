@@ -1,0 +1,39 @@
+import os
+import sys
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file (may be relative or absolute).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist and is not a symbolic link.
+        ValueError: If the path escapes reports_root or if it's a symbolic link.
+    """
+    # Normalize the root directory to an absolute path
+    reports_root = os.path.abspath(reports_root)
+    
+    # Construct the target path
+    target_path = os.path.abspath(filename)
+    
+    # Check if the path escapes the reports_root
+    if not target_path.startswith(reports_root + os.sep) and target_path != reports_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the path is a symbolic link
+    if os.path.islink(target_path):
+        raise ValueError("Symbolic links are not allowed")
+    
+    # Check if the file exists
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read the file content
+    with open(target_path, 'r', encoding='utf-8') as f:
+        return f.read()

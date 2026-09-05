@@ -1,0 +1,58 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Security measures:
+    - Rejects any archive member that is a symbolic link or hard link.
+    - Validates that all members, when extracted, would remain within dest_path.
+    - Performs validation before any extraction occurs.
+    - Returns True only if extraction completes successfully without errors.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members from the archive
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Skip directories (they are handled by the extraction logic, but we check for safety)
+                if member.isdir():
+                    continue
+                
+                # Reject symbolic links and hard links
+                if member.issym() or member.ishardlink():
+                    return False
+                
+                # Calculate the target path for this member
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Normalize paths to prevent path traversal
+                # We need to ensure the member.name does not contain ..
+                if '..' in member.name.split(os.sep):
+                    return False
+                
+                # Resolve the target path and ensure it's within dest_path
+                # Use os.path.normpath to handle any redundant separators
+                normalized_target = os.path.normpath(target_path)
+                
+                # Ensure the normalized target is still under dest_path
+                # We check that the normalized target starts with dest_path + os.sep or is equal to dest_path
+                if not (normalized_target == dest_path or normalized_target.startswith(dest_path + os.sep)):
+                    return False
+            
+            # If all validations pass, extract the archive
+            tar.extractall(dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

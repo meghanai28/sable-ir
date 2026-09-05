@@ -1,0 +1,108 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, ensuring no files are written outside dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize dest_path to an absolute path and ensure it's a directory
+        dest_path = os.path.normpath(dest_path)
+        
+        # Ensure dest_path is absolute
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Check if dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Resolve the actual destination root to prevent path traversal via ..
+        dest_root = os.path.realpath(dest_path)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of all members
+            members = tar.getnames()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Resolve the member's target path relative to dest_path
+                member_dir = os.path.dirname(member)
+                member_name = os.path.basename(member)
+                
+                # Construct the full path where the file would be extracted
+                # We need to resolve the path to check for escapes
+                if member_dir:
+                    full_member_path = os.path.join(dest_path, member_dir)
+                else:
+                    full_member_path = dest_path
+                
+                # Normalize and resolve to check for .. escapes
+                resolved_member_path = os.path.normpath(full_member_path)
+                resolved_member_path = os.path.realpath(resolved_member_path)
+                
+                # Check if the resolved path is within dest_root
+                # Use os.path.commonpath to ensure we are strictly inside
+                try:
+                    common = os.path.commonpath([resolved_member_path, dest_root])
+                    if common != dest_root:
+                        return False
+                except ValueError:
+                    return False
+                
+                # Check for symbolic links and hard links
+                if member.isdir() or member.issym() or member.islnk():
+                    # For symlinks and hardlinks, we need to check the target
+                    if member.issym():
+                        link_target = member.linkname
+                        # Resolve the link target relative to the member's location
+                        if member_dir:
+                            link_target_path = os.path.join(dest_path, member_dir, link_target)
+                        else:
+                            link_target_path = dest_path + '/' + link_target
+                        
+                        # Normalize and resolve
+                        resolved_link_target = os.path.normpath(link_target_path)
+                        resolved_link_target = os.path.realpath(resolved_link_target)
+                        
+                        # Check if the resolved link target is within dest_root
+                        try:
+                            common = os.path.commonpath([resolved_link_target, dest_root])
+                            if common != dest_root:
+                                return False
+                        except ValueError:
+                            return False
+                    elif member.islnk():
+                        # Hard links are relative to the directory containing the file
+                        link_target = member.linkname
+                        if member_dir:
+                            link_target_path = os.path.join(dest_path, member_dir, link_target)
+                        else:
+                            link_target_path = dest_path + '/' + link_target
+                        
+                        resolved_link_target = os.path.normpath(link_target_path)
+                        resolved_link_target = os.path.realpath(resolved_link_target)
+                        
+                        try:
+                            common = os.path.commonpath([resolved_link_target, dest_root])
+                            if common != dest_root:
+                                return False
+                        except ValueError:
+                            return False
+                
+                # Extract the member
+                tar.extract(member, dest_path, set_attrs=True)
+            
+            return True
+            
+    except Exception:
+        return False

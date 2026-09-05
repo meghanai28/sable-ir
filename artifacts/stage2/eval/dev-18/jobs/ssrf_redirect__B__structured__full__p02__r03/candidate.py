@@ -1,0 +1,128 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolver.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, port is not default,
+                   no IP found, or redirect violates safety rules.
+    """
+    import urllib.parse
+    from urllib.request import Request, urlopen
+    
+    def _parse_url(url_str):
+        parsed = urllib.parse.urlparse(url_str)
+        scheme = parsed.scheme.lower()
+        port = parsed.port
+        hostname = parsed.hostname
+        path = parsed.path
+        if not path:
+            path = "/"
+        if not hostname:
+            raise ValueError("Invalid URL: missing hostname")
+        return scheme, port, hostname, path
+    
+    def _validate_url(scheme, port, hostname):
+        default_ports = {"http": 80, "https": 443}
+        expected_port = default_ports.get(scheme)
+        if scheme not in default_ports:
+            raise ValueError(f"Disallowed scheme: {scheme}")
+        if port is not None and port != expected_port:
+            raise ValueError(f"Port {port} not allowed for scheme {scheme}")
+        return scheme, hostname
+    
+    def _resolve_redirects(current_url, current_scheme, current_port, current_hostname, current_path):
+        """
+        Follow redirects, validating each step.
+        """
+        redirects = 0
+        while True:
+            if redirects > 5:
+                raise ValueError("Too many redirects")
+            
+            # Parse current URL
+            current_parsed = urllib.parse.urlparse(current_url)
+            if not current_parsed.path:
+                current_path = "/"
+            
+            # Check for javascript: or data: in the path or query
+            if "javascript:" in current_parsed.path.lower() or "data:" in current_parsed.path.lower():
+                raise ValueError("Disallowed protocol in redirect: javascript: or data:")
+            
+            # Get headers and body
+            status, headers, body = transport(current_url)
+            
+            if status != 302 and status != 303:
+                # No redirect, return body
+                return body
+            
+            location = headers.get("Location")
+            if not location:
+                # No redirect location, return body
+                return body
+            
+            # Parse location
+            redirect_parsed = urllib.parse.urlparse(location)
+            
+            # Determine the new scheme, port, hostname, path
+            new_scheme = redirect_parsed.scheme.lower()
+            new_port = redirect_parsed.port
+            new_hostname = redirect_parsed.hostname
+            new_path = redirect_parsed.path
+            if not new_path:
+                new_path = "/"
+            
+            # Validate scheme and port
+            if new_scheme not in default_ports:
+                raise ValueError(f"Disallowed redirect scheme: {new_scheme}")
+            if new_port is not None and new_port != default_ports[new_scheme]:
+                raise ValueError(f"Disallowed redirect port: {new_port}")
+            
+            # Validate hostname
+            if not new_hostname:
+                raise ValueError("Invalid redirect URL: missing hostname")
+            
+            # Resolve hostname
+            ips = resolve_host(new_hostname)
+            if not ips:
+                raise ValueError(f"No IP found for hostname: {new_hostname}")
+            
+            # Check for same scheme, port, and hostname
+            if new_scheme != current_scheme or new_port != current_port or new_hostname != current_hostname:
+                raise ValueError("Redirect must share same scheme, port, and hostname")
+            
+            # Build new URL
+            new_url = f"{new_scheme}://{new_hostname}{new_path}"
+            
+            # Update current URL and increment redirect count
+            current_url = new_url
+            current_scheme = new_scheme
+            current_port = new_port
+            current_hostname = new_hostname
+            current_path = new_path
+            
+            redirects += 1
+    
+    # Parse and validate initial URL
+    scheme, port, hostname, path = _parse_url(url)
+    _validate_url(scheme, port, hostname)
+    
+    # Resolve initial hostname
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError(f"No IP found for hostname: {hostname}")
+    
+    # Build the base URL for the request
+    base_url = f"{scheme}://{hostname}{path}"
+    
+    # Follow redirects
+    response_body = _resolve_redirects(base_url, scheme, port, hostname, path)
+    
+    return response_body

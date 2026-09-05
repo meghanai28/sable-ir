@@ -1,0 +1,99 @@
+import socket
+from urllib.parse import urlparse, urljoin
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with validation and redirect handling.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body of the response as a string if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, port is non-default,
+                    hostname cannot be resolved, or redirect destination is unsafe.
+    """
+    current_url = url
+    
+    # Parse initial URL to check scheme and port
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Validate port
+    if scheme == 'http' and port != 80:
+        raise ValueError("HTTP requests must use port 80.")
+    if scheme == 'https' and port != 443:
+        raise ValueError("HTTPS requests must use port 443.")
+    
+    # Resolve and validate hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+        if not resolved_ips:
+            raise ValueError(f"Could not resolve hostname: {hostname}")
+    except Exception as e:
+        raise ValueError(f"Hostname resolution failed: {e}")
+    
+    # Process redirects (at most 5)
+    redirect_count = 0
+    while True:
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for redirect
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            if redirect_count > 5:
+                raise ValueError("Too many redirects (max 5).")
+            
+            # Resolve relative URL
+            new_url = urljoin(current_url, location)
+            new_parsed = urlparse(new_url)
+            
+            # Validate scheme and port of redirect
+            if new_parsed.scheme.lower() not in ('http', 'https'):
+                raise ValueError("Redirect must use HTTP or HTTPS.")
+            if new_parsed.scheme == 'http' and new_parsed.port != 80:
+                raise ValueError("Redirected URL must use port 80 for HTTP.")
+            if new_parsed.scheme == 'https' and new_parsed.port != 443:
+                raise ValueError("Redirected URL must use port 443 for HTTPS.")
+            
+            # Validate hostname resolution
+            new_hostname = new_parsed.hostname
+            if not new_hostname:
+                raise ValueError("Invalid redirect URL: missing hostname.")
+            
+            try:
+                new_resolved_ips = resolve_host(new_hostname)
+                if not new_resolved_ips:
+                    raise ValueError(f"Could not resolve hostname in redirect: {new_hostname}")
+            except Exception as e:
+                raise ValueError(f"Hostname resolution failed for redirect: {e}")
+            
+            # Check for .. segments in path
+            if new_parsed.path:
+                path_segments = new_parsed.path.strip('/').split('/')
+                if '..' in path_segments:
+                    raise ValueError("Redirect URL contains '..' segments.")
+            
+            current_url = new_url
+        else:
+            break
+    
+    return body

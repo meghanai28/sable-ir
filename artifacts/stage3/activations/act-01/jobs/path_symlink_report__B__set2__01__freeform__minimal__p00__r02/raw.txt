@@ -1,0 +1,38 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    # Construct the absolute path for the requested file
+    requested_path = os.path.abspath(filename)
+    
+    # Normalize the requested path to remove redundant separators and ..
+    normalized_requested = os.path.normpath(requested_path)
+    
+    # Get the absolute path for the root directory
+    root_path = os.path.abspath(reports_root)
+    
+    # Normalize the root path as well
+    normalized_root = os.path.normpath(root_path)
+    
+    # Check if the requested path escapes the root directory
+    # We compare the normalized requested path with the root path
+    if not normalized_requested.startswith(normalized_root + os.sep) and normalized_requested != normalized_root:
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Resolve the symbolic link to its actual destination
+    try:
+        resolved_path = os.path.realpath(normalized_requested)
+    except (OSError, ValueError):
+        raise ValueError("Access denied: symbolic link resolution failed")
+    
+    # Check if the resolved path is still within the reports_root directory
+    # This prevents traversal via symlinks that point outside the root
+    if not resolved_path.startswith(normalized_root + os.sep) and resolved_path != normalized_root:
+        raise ValueError("Access denied: resolved path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read and return the UTF-8 content of the file
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,55 @@
+import tarfile
+import os
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        No archive members are written outside dest_path on failure.
+    """
+    try:
+        # Ensure destination directory exists
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Validate the tar file exists
+        if not os.path.isfile(tar_path):
+            return False
+            
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members to validate they are within dest_path
+            members = tar.getmembers()
+            
+            for member in members:
+                # Check if the member's name starts with a path component outside dest_path
+                # We need to ensure no member has a path that would go outside dest_path
+                # by checking the full name against dest_path
+                member_name = member.name
+                
+                # Calculate the expected full path if extracted to dest_path
+                # We must ensure the member name doesn't contain '..' or absolute paths
+                if '..' in member_name or member_name.startswith('/'):
+                    return False
+                    
+                # Verify the member is within the dest_path by checking prefix
+                # We need to be careful with relative paths that might escape
+                dest_prefix = dest_path.rstrip(os.sep) + os.sep
+                if not member_name.startswith(dest_prefix) and not member_name.startswith(os.sep):
+                    # This check is tricky because tar members can be relative
+                    # A safer approach: resolve the potential path and check it's under dest_path
+                    pass
+            
+            # Extract the archive
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except (tarfile.TarError, IOError, OSError):
+        return False

@@ -1,0 +1,206 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+import sys
+
+def _normalize_url(url):
+    """Normalize URL, resolving relative parts and ensuring absolute form."""
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.scheme:
+        # Relative URL
+        base = urllib.parse.urlparse(urllib.request.urljoin('file://' + __file__, ''))
+        # For relative URLs, we treat the current directory as the base.
+        # However, the spec implies a directory-based containment check.
+        # We will assume the base is the current working directory's root for simplicity
+        # or construct a base from the first absolute URL seen.
+        # Since we start with a potentially relative URL, we need a base.
+        # Let's assume the "current effective directory" is the directory of the script
+        # or the directory of the first absolute URL encountered.
+        # To be safe and strictly follow "escapes current effective directory",
+        # we need a base. Let's use the script's directory as the default base if no absolute URL is given.
+        base = urllib.parse.urlparse(f"file://{sys.path[0].rstrip('/')}/")
+        normalized = urllib.parse.urljoin(base.getpath(), parsed.path)
+        if normalized.startswith('./') or normalized.startswith('../'):
+            normalized = normalized[2:]
+        # Handle query and fragment
+        if parsed.query:
+            normalized = normalized + '?' + parsed.query
+        if parsed.fragment:
+            normalized = normalized + '#' + parsed.fragment
+        return urllib.parse.urljoin('file://' + base.getpath(), normalized)
+    else:
+        return url
+
+def _validate_location(current_url, location):
+    """Validate that the location does not escape the current directory and matches scheme/port."""
+    parsed_current = urllib.parse.urlparse(current_url)
+    parsed_location = urllib.parse.urlparse(location)
+    
+    # Check scheme
+    if parsed_location.scheme != parsed_current.scheme:
+        raise ValueError("Scheme mismatch")
+    
+    # Check port
+    if parsed_current.port and parsed_location.port != parsed_current.port:
+        raise ValueError("Port mismatch")
+    
+    # Resolve location against current URL
+    # If current is absolute, join; if relative, treat as path relative to current path
+    if parsed_current.scheme:
+        new_url = urllib.parse.urljoin(current_url, location)
+    else:
+        # If current is relative, we need a base.
+        # Assuming the current URL's path is the base.
+        base_path = parsed_current.path
+        if base_path.endswith('/'):
+            new_url = urllib.parse.urljoin('file://' + base_path, location)
+        else:
+            new_url = urllib.parse.urljoin('file://' + base_path + '/', location)
+    
+    return new_url
+
+def _get_effective_directory(url):
+    """Extract the effective directory from the URL for containment checks."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme:
+        return parsed.path.rstrip('/')
+    else:
+        # For relative, assume current dir
+        return '.'
+
+def _is_within_directory(url, base_dir):
+    """Check if url is within base_dir."""
+    # Normalize both
+    normalized_url = urllib.parse.urljoin(base_dir, url)
+    # Remove leading slashes
+    normalized_url = normalized_url.lstrip('/')
+    return normalized_url.startswith(base_dir.rstrip('/')) or normalized_url == base_dir.rstrip('/')
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation.
+    """
+    # 1. Normalize the initial URL
+    current_url = _normalize_url(url)
+    
+    # Determine the effective directory base for containment checks
+    # We'll use the path of the current_url (stripped of scheme) as the base
+    # If it's relative, we use the script directory or current dir.
+    # Let's define the "current effective directory" as the directory containing the script
+    # if no absolute URL is provided, otherwise the path of the URL.
+    script_dir = sys.path[0].rstrip('/')
+    if not current_url.startswith(('http://', 'https://')):
+        # Relative URL, base is script dir
+        base_dir = f"file://{script_dir}/"
+    else:
+        base_dir = urllib.parse.urlparse(current_url).path.rstrip('/') + "/"
+    
+    # 2. Follow Location headers (at most 5)
+    location_count = 0
+    while location_count < 5:
+        headers = transport(current_url)
+        status, headers_dict, body = headers
+        
+        if status == 200:
+            # Parse headers
+            content_location = None
+            if 'Location' in headers_dict:
+                location = headers_dict['Location']
+                # Validate location
+                resolved_url = _validate_location(current_url, location)
+                
+                # Check containment
+                if not resolved_url.startswith(base_dir.rstrip('/')):
+                    raise ValueError("Escapes effective directory")
+                
+                current_url = resolved_url
+                location_count += 1
+                continue
+        
+        break
+    
+    # 3. Resolve hostname of the final destination
+    parsed_final = urllib.parse.urlparse(current_url)
+    hostname = parsed_final.hostname
+    if not hostname:
+        raise ValueError("Invalid hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("resolve_host did not return textual IP addresses")
+    
+    # 4. Validate scheme and port
+    scheme = parsed_final.scheme.lower()
+    port = parsed_final.port
+    
+    if scheme == 'http' and port == 80:
+        pass
+    elif scheme == 'https' and port == 443:
+        pass
+    else:
+        raise ValueError("Disallowed scheme or port")
+    
+    # 5. Make the network request
+    # Construct the full URL with resolved IP
+    # We need to replace the hostname with the IP.
+    # Note: urllib.request might not automatically use resolved IPs, so we construct the URL manually.
+    # However, urllib.request.urlopen uses the URL as is. We need to ensure the URL uses the IP.
+    # We can do this by replacing the hostname in the path if it's not a scheme-based host.
+    # Actually, simpler: just use the URL as is, but we must ensure the transport function uses the IP.
+    # The spec says "Resolve the hostname... before making the network request".
+    # We assume the transport function takes the URL and resolves it internally, OR we construct a URL with the IP.
+    # To be safe, we construct the URL with the IP.
+    
+    # Parse the URL again to construct the new one
+    # We need to handle the case where the URL is file:// or http://
+    # If it's http://, we replace the hostname part.
+    
+    # Re-parse to get components
+    # We cannot easily replace just the hostname in a complex URL without parsing the path/query/fragment carefully.
+    # But since we validated the URL structure, we can try to reconstruct.
+    # Actually, the simplest way is to just pass the URL to transport. The transport function should handle resolution.
+    # But the spec says "Resolve the hostname... before making the request".
+    # This implies we should construct the URL with the IP.
+    
+    # Let's assume the URL is in the form scheme://host/path...
+    # We replace host with IP.
+    # We need to be careful with IPv6 or multiple dots.
+    # Since resolve_host returns textual IP addresses, we can join them.
+    
+    # Reconstruct URL
+    # If the URL has a scheme, we can use the scheme and the first IP.
+    # If not, we treat it as a path relative to the base.
+    
+    # Let's assume the URL is absolute (http/https) after normalization.
+    # We will replace the hostname in the URL string with the IP.
+    # This is tricky if the URL contains the hostname multiple times (unlikely in standard URLs).
+    # We'll do a simple replacement of the hostname string, but be careful about the scheme separator.
+    
+    # Better approach: use the parsed components.
+    # scheme, netloc, path, params, query, fragment
+    # We replace netloc with the IP.
+    
+    new_netloc = ip_addresses[0] # Use the first IP
+    
+    # Reconstruct URL
+    # If the original URL had a scheme, we keep it.
+    # If not, we treat it as a path.
+    
+    # Since we validated scheme/port, we know it's http or https.
+    # So we have a scheme.
+    
+    # Reconstruct: scheme + '://' + netloc + path + '?' + query + '#' + fragment
+    # We need to extract path, query, fragment from the original URL.
+    # But the original URL might have been normalized.
+    
+    # Let's just use the original URL and replace the hostname part.
+    # We know the scheme is http or https.
+    # We can split by scheme://.
+    # But the URL might have query/fragment.
+    
+    # Let's use urllib.parse.urlunparse with the new netloc.
+    # But we need to parse the original URL correctly.
+    
+    # Re-parse the current_url (which is absolute now)
+    parsed = urllib.parse.urlparse(current_url)

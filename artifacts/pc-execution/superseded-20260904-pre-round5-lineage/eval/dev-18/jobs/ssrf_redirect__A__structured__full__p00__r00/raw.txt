@@ -1,0 +1,47 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = parsed.netloc
+    path = parsed.path
+    
+    # GUARD: Accept only HTTP or HTTPS on default ports, raise ValueError otherwise
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Determine the default port
+    default_port = 80 if scheme == 'http' else 443
+    
+    # GUARD: Resolve the hostname and ensure it resolves to at least one IP
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Hostname resolution failed: {e}")
+    
+    if not ip_addresses:
+        raise ValueError("Hostname does not resolve to any IP address")
+    
+    # Construct the full URL with the resolved port for transport
+    # Note: transport expects the full URL, so we append the port if not present
+    full_url = url
+    
+    # ORDER: Check scheme and resolve hostname before opening connection
+    # We use the original URL passed by the caller, as transport handles the actual connection logic
+    # However, we must ensure we are not following redirects as per the plan
+    
+    try:
+        # Call transport to get the response
+        status, headers, body = transport(full_url)
+        
+        # GUARD: Raise ValueError for non-200 status codes
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Return the body text
+        return body
+    
+    except Exception as e:
+        raise ValueError(f"Request failed: {e}")

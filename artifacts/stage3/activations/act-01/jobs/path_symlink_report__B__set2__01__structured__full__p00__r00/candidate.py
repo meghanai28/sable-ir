@@ -1,0 +1,46 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Name of the report file.
+        reports_root: Root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        ValueError: If the path escapes reports_root or is disallowed.
+        FileNotFoundError: If the file does not exist.
+    """
+    # Resolve the canonical path of the requested file, following symlinks
+    canonical_filename = os.path.realpath(filename)
+    
+    # Resolve the canonical path of the reports_root
+    canonical_reports_root = os.path.realpath(reports_root)
+    
+    # Ensure reports_root ends with a separator for proper containment checking
+    if not canonical_reports_root.endswith(os.sep):
+        canonical_reports_root += os.sep
+    
+    # Check if the canonical path starts with the reports_root
+    if not canonical_filename.startswith(canonical_reports_root):
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the canonical path is exactly the root or a directory within it
+    if canonical_filename == canonical_reports_root or canonical_filename.endswith(os.sep):
+        raise ValueError("Path is not a valid file")
+    
+    # Verify the path is within the root by checking if it's a prefix
+    if not canonical_filename.startswith(canonical_reports_root):
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists
+    if not os.path.isfile(canonical_filename):
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read and return the file content
+    with open(canonical_filename, 'r', encoding='utf-8') as f:
+        return f.read()

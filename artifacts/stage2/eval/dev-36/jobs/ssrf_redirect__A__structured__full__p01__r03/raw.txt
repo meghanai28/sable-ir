@@ -1,0 +1,60 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL, resolving hostnames and validating the scheme.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http or https, or if host resolution fails.
+    """
+    # Parse the URL to extract scheme and netloc
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    
+    # GUARD: Check scheme and raise ValueError if not http or https
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # GUARD: Resolve hostname to IP address
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("Invalid URL: missing netloc.")
+    
+    # Remove port if present for resolution, but keep it for transport
+    if ':' in hostname:
+        hostname, _ = hostname.rsplit(':', 1)
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Host resolution failed.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for the hostname.")
+    
+    # ORDER: Resolve and check scheme before making the request
+    # The plan specifies: "follow only the initial request and raise ValueError for every redirect"
+    # This means we do not follow redirects. We use the initial parsed netloc.
+    
+    # Construct the full URL for transport, preserving the port if it was in the original
+    if parsed.port:
+        full_url = f"{parsed.scheme}://{hostname}:{parsed.port}{parsed.path}"
+    else:
+        full_url = f"{parsed.scheme}://{hostname}{parsed.path}"
+    
+    # Call transport
+    status, headers, body = transport(full_url)
+    
+    # EFFECT: Return the response body for status 200
+    if status != 200:
+        raise ValueError("Unexpected status code.")
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

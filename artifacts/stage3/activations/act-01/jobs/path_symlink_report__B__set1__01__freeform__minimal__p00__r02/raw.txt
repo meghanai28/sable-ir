@@ -1,0 +1,93 @@
+import os
+import sys
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+    """
+    # Normalize the root directory to avoid directory traversal via ..
+    # Use os.path.realpath to resolve the root, but we need to be careful not to resolve it if it's a symlink that shouldn't be trusted for containment checks,
+    # However, the spec says "normalize the requested path and raise ValueError if it escapes the resolved reports_root".
+    # Typically, we resolve the root to its real path to prevent symlink escapes from the root itself.
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Construct the target path
+    target_path = os.path.join(reports_root, filename)
+    
+    # Normalize the target path to remove .. and . components
+    # We must do this before resolving symlinks to check for escape attempts
+    normalized_target = os.path.normpath(target_path)
+    
+    # Check if the normalized path escapes the root (even if normalized)
+    # We compare the normalized path against the root. If the normalized path starts with the root + separator (or is the root itself), it's safe.
+    # However, a more robust check is to ensure the normalized path is within the resolved root.
+    # Note: os.path.normpath does not resolve symlinks.
+    
+    # Check for escape attempts in the normalized path relative to the root
+    # We need to ensure that the normalized path is a descendant of the resolved_root.
+    # A safe way is to check if the normalized path starts with the resolved_root.
+    # But we must handle the case where resolved_root is a directory.
+    if not (normalized_path := normalized_target).startswith(resolved_root + os.sep) and normalized_path != resolved_root:
+        # This check is tricky because normpath might collapse paths.
+        # A better approach: resolve the normalized path's components relative to the root.
+        # Actually, the standard secure way is:
+        # 1. Resolve the root.
+        # 2. Join filename with root.
+        # 3. Normalize the joined path (removes ..).
+        # 4. Check if the normalized path starts with the resolved root.
+        # 5. Resolve symlinks on the normalized path.
+        # 6. Check if the resolved symlink target is still within the resolved root.
+        
+        # Let's refine the check.
+        # If normalized_target is not within resolved_root, raise ValueError.
+        # We can use a helper to check containment.
+        pass
+    
+    # Re-evaluating containment logic strictly:
+    # 1. Resolve root.
+    # 2. Join filename with root.
+    # 3. Normalize (remove .., .).
+    # 4. If normalized path does not start with resolved_root + os.sep or equals resolved_root, it's an escape.
+    # 5. Resolve the normalized path (following symlinks).
+    # 6. If the resolved path does not start with resolved_root + os.sep or equals resolved_root, it's an escape (via symlink).
+    # 7. Check if it's a regular file.
+    # 8. Read and return.
+    
+    # Step 1: Resolve root
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Step 2 & 3: Join and normalize
+    # We use os.path.normpath which handles .. and .
+    target_path = os.path.normpath(os.path.join(reports_root, filename))
+    
+    # Step 4: Check containment before resolving symlinks
+    # The normalized path must be a descendant of the resolved root.
+    # We check if target_path starts with resolved_root + os.sep OR target_path == resolved_root
+    # Note: target_path might be exactly resolved_root if filename is empty or just ., but os.path.join handles that.
+    # We must ensure target_path is not an ancestor of resolved_root (which shouldn't happen with normpath if we join correctly, but good to be safe).
+    # Actually, if filename is "a/b/..", normpath makes it "a". If "a" is inside resolved_root, it's fine.
+    # The risk is if filename is "../etc/passwd", normpath makes it "/etc/passwd" (on Unix) or "..\etc\passwd" (on Windows).
+    # So we must check if the normalized path starts with resolved_root.
+    
+    if not (target_path == resolved_root or target_path.startswith(resolved_root + os.sep)):
+        raise ValueError("Path escapes reports_root")
+    
+    # Step 5: Resolve symlinks
+    # We need to resolve the target path to check if the final location is still inside the root.
+    # Note: os.path.realpath resolves the entire path including the root if we pass the whole thing,
+    # but we want to resolve just the target part relative to the root.
+    # We can use os.path.realpath on the target_path.
+    resolved_target = os.path.realpath(target_path)
+    
+    # Step 6: Check containment after symlink resolution
+    if not (resolved_target == resolved_root or resolved_target.startswith(resolved_root + os.sep)):
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Step 7: Check if it's a regular file
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"File not found: {target_path}")
+    
+    # Step 8: Read and return
+    with open(target_path, 'r', encoding='utf-8') as f:
+        return f.read()

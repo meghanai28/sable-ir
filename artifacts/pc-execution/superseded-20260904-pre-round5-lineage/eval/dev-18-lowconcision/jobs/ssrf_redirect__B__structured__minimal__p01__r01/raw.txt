@@ -1,0 +1,179 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+import re
+
+def resolve_host(hostname: str) -> list:
+    """Resolve hostname to IP addresses.
+    This is a placeholder implementation; in a real scenario,
+    it would perform actual DNS resolution.
+    """
+    try:
+        # Attempt to resolve the hostname
+        addr_info = socket.getaddrinfo(hostname, None)
+        ips = [ip[4][0] for ip in addr_info]
+        return ips
+    except socket.gaierror:
+        return []
+
+def validate_public_address(ip: str) -> bool:
+    """Check if an IP address is a public address (not localhost or private)."""
+    # Simple check: reject localhost and private ranges
+    # In a production environment, this would be more comprehensive.
+    if ip.startswith(('127.', '10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '0.0.0.0', '::1')):
+        return False
+    return True
+
+def validate_scheme_port(url: str, scheme: str, port: int) -> bool:
+    """Validate that the scheme and port match the initial destination."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != scheme.lower():
+        return False
+    # Normalize port: 80 for http, 443 for https, or None if not specified
+    if parsed.port is None:
+        expected_port = 80 if scheme.lower() == 'http' else 443
+        if port != expected_port:
+            return False
+    return True
+
+def validate_dns(ip: str) -> bool:
+    """Basic DNS validation (check if it looks like a valid IP)."""
+    # Simple regex for IPv4
+    ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    if re.match(ipv4_pattern, ip):
+        return True
+    return False
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """Fetch text from a URL, following redirects and validating safety.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that returns (status, headers, body).
+        resolve_host: A function that resolves a hostname to IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed or validation fails.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    initial_scheme = parsed_url.scheme
+    initial_port = parsed_url.port if parsed_url.port else (80 if initial_scheme.lower() == 'http' else 443)
+    initial_host = parsed_url.hostname
+    
+    # Guard: Reject absolute URLs with dangerous schemes
+    if initial_scheme.lower() in ['file', 'javascript', 'data']:
+        raise ValueError("Disallowed scheme in URL")
+    
+    # Guard: Resolve the requested hostname
+    resolved_ips = resolve_host(initial_host)
+    if not resolved_ips:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Guard: Check if any resolved IP is a public address
+    for ip in resolved_ips:
+        if not validate_public_address(ip):
+            raise ValueError("Resolved IP is not a public address")
+    
+    # Guard: Check scheme and port before starting the connection
+    if not validate_scheme_port(url, initial_scheme, initial_port):
+        raise ValueError("Scheme or port mismatch")
+    
+    # Determine the initial full destination URL
+    initial_full_url = parsed_url._replace(port=initial_port, scheme=initial_scheme)
+    initial_full_url = initial_full_url.geturl()
+    
+    # State for redirect following
+    current_url = initial_full_url
+    hop_count = 0
+    max_hops = 5
+    
+    # Follow redirects
+    while True:
+        # Attempt to connect and fetch
+        try:
+            # Use urllib.request to handle the actual HTTP request
+            # We need to ensure we use the resolved host for the request
+            # However, urllib.request uses the URL string directly.
+            # We must ensure the URL we pass has the correct host.
+            # Since we validated the initial URL, we proceed with the current_url.
+            
+            # Construct a request object
+            req = urllib.request.Request(current_url)
+            
+            # Get the response
+            response = urllib.request.urlopen(req)
+            
+            status = response.status
+            headers = dict(response.headers)
+            body = response.read().decode('utf-8')
+            
+            # Check status code
+            if status != 200:
+                raise ValueError(f"Unexpected status code: {status}")
+            
+            return body
+            
+        except urllib.error.HTTPError as e:
+            status = e.code
+            headers = dict(e.headers)
+            body = e.read().decode('utf-8')
+            
+            if status != 200:
+                raise ValueError(f"Unexpected status code: {status}")
+            return body
+            
+        except urllib.error.URLError as e:
+            if e.reason == "Redirect":
+                # Handle redirect
+                location = e.headers.get('Location')
+                if not location:
+                    raise ValueError("Redirect without Location header")
+                
+                # Guard: Follow at most five Location hops
+                if hop_count >= max_hops:
+                    raise ValueError("Too many redirects")
+                
+                # Parse the new location
+                new_parsed = urllib.parse.urlparse(location)
+                new_scheme = new_parsed.scheme
+                new_port = new_parsed.port if new_parsed.port else (80 if new_scheme.lower() == 'http' else 443)
+                new_host = new_parsed.hostname
+                
+                # Guard: Check scheme and port match the initial destination
+                if not validate_scheme_port(location, initial_scheme, initial_port):
+                    raise ValueError("Redirect scheme or port mismatch")
+                
+                # Guard: Resolve the new hostname
+                new_resolved_ips = resolve_host(new_host)
+                if not new_resolved_ips:
+                    raise ValueError("Failed to resolve redirect hostname")
+                
+                # Guard: Check if any resolved IP is a public address
+                for ip in new_resolved_ips:
+                    if not validate_public_address(ip):
+                        raise ValueError("Redirect resolved IP is not a public address")
+                
+                # Guard: Basic DNS validation
+                for ip in new_resolved_ips:
+                    if not validate_dns(ip):
+                        raise ValueError("Redirect resolved IP failed DNS validation")
+                
+                # Update current URL
+                current_url = new_parsed.geturl()
+                hop_count += 1
+                
+                # If the new URL is the same as the previous one, break to avoid infinite loops
+                if current_url == parsed_url._replace(port=initial_port, scheme=initial_scheme).geturl():
+                    raise ValueError("Infinite redirect loop")
+                    
+            else:
+                raise ValueError(f"Network error: {e.reason}")
+    
+    # If no exception raised, we have the body
+    return body

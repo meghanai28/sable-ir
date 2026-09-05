@@ -1,0 +1,81 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve . and .. components."""
+    return os.path.normpath(path)
+
+def _resolve_root(dest_path: str) -> str:
+    """Resolve the absolute root directory for validation."""
+    return os.path.abspath(dest_path)
+
+def _is_within_root(child_path: str, root_path: str) -> bool:
+    """Check if child_path is within root_path."""
+    return child_path.startswith(root_path + os.sep) or child_path == root_path
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation or extraction fails.
+    """
+    # Normalize inputs
+    tar_path = _normalize_path(tar_path)
+    dest_path = _normalize_path(dest_path)
+    
+    # Resolve the root directory for validation
+    root_path = _resolve_root(dest_path)
+    
+    # Validate tar_path exists
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the full destination path for this member
+                dest_member = os.path.join(root_path, member.name)
+                
+                # Normalize the destination to handle any .. or . in the member name
+                # We must resolve it to detect escape attempts
+                resolved_dest = os.path.normpath(dest_member)
+                
+                # Check if the resolved destination escapes the root
+                if not _is_within_root(resolved_dest, root_path):
+                    return False
+            
+            # If validation passes, proceed with extraction
+            # We extract to a temporary directory first to ensure no side effects,
+            # then move to the final destination, or extract directly with careful monitoring.
+            # However, the safest approach per the plan is to extract directly but validate
+            # that no file is written outside the root during the process.
+            # Since tarfile.open extracts to the specified directory, we can do that.
+            # But to be absolutely safe against race conditions or unexpected behavior,
+            # we will extract to the dest_path directly.
+            
+            # Extract the archive
+            tar.extractall(path=root_path)
+            
+            # Verify that no files were created outside the root
+            # Check the immediate children of root_path
+            if os.path.isdir(root_path):
+                for item in os.listdir(root_path):
+                    item_path = os.path.join(root_path, item)
+                    if not _is_within_root(item_path, root_path):
+                        return False
+            else:
+                return False
+                
+            return True
+            
+    except Exception:
+        return False

@@ -1,0 +1,47 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagates FileNotFoundError for a missing ordinary file and raises ValueError
+    when the request is disallowed (path escapes root or is not an ordinary file).
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the target path by joining filename with the root
+    target_path = os.path.join(resolved_root, filename)
+    
+    # Normalize the path to remove any redundant separators or current directory references
+    # We use os.path.normpath, but we must be careful not to resolve symlinks yet for the containment check
+    # However, the plan says to resolve the complete target path following symbolic links for the final check.
+    # Let's first check if the filename is safe to join without resolving symlinks to prevent path traversal via ..
+    # Actually, the safest approach per the plan:
+    # 1. Resolve the path components to prevent .. traversal.
+    # 2. Then resolve symlinks for the final containment check.
+    
+    # Step 1: Normalize the path to prevent directory traversal using ..
+    # We resolve the filename relative to the root, but we want to ensure no .. escapes the root before any symlink resolution.
+    # A robust way is to resolve the path components.
+    safe_path = os.path.normpath(target_path)
+    
+    # Step 2: Resolve the symbolic links to get the actual file location
+    resolved_target = os.path.realpath(safe_path)
+    
+    # Check if the resolved target is within the reports_root
+    # os.path.commonpath ensures we stay within the root
+    if not resolved_target.startswith(os.path.normpath(resolved_root) + os.sep) and resolved_target != os.path.normpath(resolved_root):
+        # If the resolved path is exactly the root (which shouldn't happen for a file) or outside
+        # We need to handle the case where the root itself might be the only valid path, but typically reports are files.
+        # A safer check: ensure the resolved path starts with the normalized root path.
+        normalized_root = os.path.normpath(resolved_root)
+        if not resolved_target.startswith(normalized_root + os.sep) and resolved_target != normalized_root:
+            raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is an ordinary file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"File not found: {resolved_target}")
+    
+    # Read the file content
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

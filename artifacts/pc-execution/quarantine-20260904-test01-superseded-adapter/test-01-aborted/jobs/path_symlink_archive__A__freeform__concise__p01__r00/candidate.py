@@ -1,0 +1,79 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict safety checks.
+    
+    Rejects any archive containing:
+    - Symbolic links
+    - Hard links
+    - Any member whose target (if symlink) escapes dest_path
+    
+    Returns True only if extraction completes successfully; False otherwise.
+    No files are written outside dest_path on failure.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar file in read-only mode
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            members = tar.getmembers()
+            
+            for member in members:
+                # Skip directories only if they are not being extracted (but we extract all)
+                # Check for symbolic links
+                if member.issym():
+                    return False
+                
+                # Check for hard links
+                if member.islnk():
+                    return False
+                
+                # Resolve the target for symlinks (though we already check issym)
+                # For regular files and directories, check if the path would escape dest_path
+                # We need to resolve the member's name relative to dest_path
+                
+                # Get the full path where this member would be extracted
+                # The member.name is relative to the archive root
+                # We need to resolve it against dest_path
+                
+                # First, resolve the member's name to an absolute path relative to dest_path
+                member_dir = os.path.dirname(member.name)
+                member_base = os.path.basename(member.name)
+                
+                # Construct the full destination path
+                if member_dir:
+                    full_dest = os.path.join(dest_path, member_dir)
+                    # Normalize to prevent .. escapes
+                    full_dest = os.path.normpath(full_dest)
+                else:
+                    full_dest = os.path.join(dest_path, member_base)
+                    full_dest = os.path.normpath(full_dest)
+                
+                # Ensure the resolved path is within dest_path
+                # Use os.path.commonpath to check if full_dest is under dest_path
+                try:
+                    common = os.path.commonpath([dest_path, full_dest])
+                    if common != dest_path:
+                        return False
+                except ValueError:
+                    return False
+                
+                # Additional check: ensure no .. components in the path
+                # This is covered by commonpath but let's be explicit
+                parts = member.name.split(os.sep)
+                for part in parts:
+                    if part == '..':
+                        return False
+            
+            # If all checks pass, perform extraction
+            tar.extractall(dest_path)
+            return True
+            
+    except Exception:
+        return False

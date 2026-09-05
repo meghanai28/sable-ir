@@ -1,0 +1,80 @@
+import os
+import urllib.parse
+import socket
+import ssl
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict path traversal and protocol validation.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns IP addresses.
+    
+    Returns:
+        The response body as a string if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., path escapes root, non-200 status).
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme (HTTP or HTTPS only)
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Resolve the hostname
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("Invalid URL: missing netloc.")
+    
+    # Remove port from hostname if present for resolution
+    if ':' in hostname:
+        hostname = hostname.split(':')[0]
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname resolution failed.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses resolved for hostname.")
+    
+    # Validate the path does not escape the configured root
+    # The plan implies a "configured root", but none is provided in the input.
+    # We assume the root is the directory containing the script or a safe default if not specified.
+    # However, since no root is passed, we must treat the URL path relative to the script's location or validate absolute paths.
+    # A strict interpretation of "joined beneath the configured root" without a root implies we check if the path is absolute and escapes the current directory or uses ..
+    
+    # Check for absolute paths or path traversal
+    if parsed.path.startswith('/'):
+        # Absolute path - check for traversal
+        path_parts = parsed.path.strip('/').split('/')
+        if '..' in path_parts:
+            raise ValueError("Path traversal detected.")
+    else:
+        # Relative path - check for traversal
+        path_parts = parsed.path.split('/')
+        if '..' in path_parts:
+            raise ValueError("Path traversal detected.")
+    
+    # Attempt to open the URL
+    try:
+        # Use the transport function which handles the actual connection
+        status, headers, body = transport(url)
+    except Exception as e:
+        raise ValueError(f"Request failed: {e}")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

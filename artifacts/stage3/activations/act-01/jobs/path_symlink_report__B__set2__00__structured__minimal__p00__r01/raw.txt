@@ -1,0 +1,52 @@
+import os
+import sys
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes reports_root or is a symlink
+    resolving outside).
+    """
+    # Normalize the root to an absolute path if necessary
+    abs_root = os.path.abspath(reports_root)
+    
+    # Construct the full path by joining the filename with the root
+    # We must ensure the filename is treated as a relative path to the root
+    # if it's not already absolute, or handle absolute paths carefully.
+    # The plan says "joined beneath reports_root", implying the filename is relative
+    # to the reports_root directory, but we should handle absolute inputs defensively
+    # by resolving them relative to the root if they don't start with the root.
+    
+    if os.path.isabs(filename):
+        # If filename is absolute, we need to check if it's within reports_root
+        # or if it's a symlink pointing outside.
+        full_path = os.path.normpath(filename)
+    else:
+        # Treat as relative to reports_root
+        full_path = os.path.normpath(os.path.join(reports_root, filename))
+    
+    # Resolve the path, following symbolic links
+    resolved_path = os.path.realpath(full_path)
+    
+    # Check if the resolved path is within the reports_root directory
+    # We compare the directory part of the resolved path with the directory part of reports_root
+    resolved_dir = os.path.dirname(resolved_path)
+    root_dir = os.path.dirname(abs_root)
+    
+    # Ensure the resolved path is inside the root directory
+    # Use os.path.commonpath or string comparison to ensure containment
+    if not (resolved_dir == root_dir or resolved_dir.startswith(root_dir + os.sep) or 
+            (resolved_dir == root_dir and resolved_path == abs_root)):
+        # More robust check: ensure the resolved path starts with the root path
+        # and is either the root itself or a child of it.
+        if not (resolved_path == abs_root or resolved_path.startswith(abs_root + os.sep)):
+            raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file with UTF-8 encoding
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

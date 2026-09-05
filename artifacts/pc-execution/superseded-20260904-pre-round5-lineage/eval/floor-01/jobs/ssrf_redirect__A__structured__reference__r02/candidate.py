@@ -1,0 +1,108 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for a 200 status.
+    
+    Raises:
+        ValueError: If the URL is invalid, uses a disallowed scheme/port,
+                   embeds credentials, resolves to non-public addresses,
+                   or if a redirect status is encountered.
+    """
+    from urllib.parse import urlparse, parse_qs
+    
+    # Parse the URL
+    parsed = urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Check for credentials (username or password)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URLs with embedded credentials are not allowed.")
+    
+    # Validate host and port
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("URL must have a valid hostname.")
+    
+    port = parsed.port
+    
+    # Validate port
+    if port is not None:
+        if parsed.scheme == 'http' and port != 80:
+            raise ValueError("HTTP must use port 80.")
+        if parsed.scheme == 'https' and port != 443:
+            raise ValueError("HTTPS must use port 443.")
+    
+    # Resolve hostname
+    try:
+        addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname.")
+    
+    if not addresses:
+        raise ValueError("Hostname resolved to no addresses.")
+    
+    # Check for non-public addresses (assuming IPv4 public range or IPv6)
+    # A simple heuristic: if all addresses are 127.0.0.0/8, ::1, or 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    # For this specification, we'll check if any address is a private/reserved range
+    private_prefixes = [
+        '127.0.0.0/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+        '::1', 'fc00::/7', 'fe80::/10'
+    ]
+    
+    def is_private_ip(ip):
+        if ':' in ip:
+            # IPv6
+            if ip == '::1':
+                return True
+            if ip.startswith('fc') or ip.startswith('fe'):
+                return True
+        else:
+            # IPv4
+            parts = ip.split('.')
+            if len(parts) != 4:
+                return False
+            try:
+                first = int(parts[0])
+                if 127 <= first <= 127:
+                    return True
+                if first == 10:
+                    return True
+                if first == 192 and second := int(parts[1]) == 168:
+                    return True
+                if first == 172 and second := int(parts[1]):
+                    if 16 <= second <= 31:
+                        return True
+            except ValueError:
+                return False
+        return False
+    
+    for addr in addresses:
+        if is_private_ip(addr):
+            raise ValueError("Resolved address is not a global public address.")
+    
+    # Construct the URL for transport
+    if port is None:
+        port_str = ''
+    else:
+        port_str = f':{port}'
+    
+    transport_url = f"{parsed.scheme}{hostname}{port_str}{parsed.path}{parsed.query}"
+    
+    # Call transport
+    status, headers, body = transport(transport_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only 200 status is allowed.")
+    
+    return body

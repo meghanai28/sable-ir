@@ -1,0 +1,93 @@
+```python
+import os
+import urllib.parse
+import socket
+from typing import Tuple, List
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text content from a URL after validating and normalizing the path.
+    Rejects requests that attempt to escape the document root or follow unsafe symlinks.
+    """
+    # Parse the URL to extract the path component
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Determine the scheme and port
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    # Default ports for HTTP and HTTPS
+    default_ports = {'http': 80, 'https': 443}
+    
+    # Validate scheme
+    if scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Use default port if not specified
+    if port is None:
+        port = default_ports[scheme]
+    
+    # Resolve the hostname to get the IP address
+    try:
+        ip_addresses = resolve_host(parsed_url.hostname)
+        if not ip_addresses:
+            raise ValueError("Failed to resolve hostname")
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    # Fetch the response using the transport
+    status, headers, body = transport(url)
+    
+    # Check for successful status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Decode the body to text
+    text_body = body.decode('utf-8') if isinstance(body, bytes) else body
+    
+    # Validate and normalize the path to prevent directory traversal
+    # Extract the path from the URL (path part of the parsed URL)
+    request_path = parsed_url.path
+    
+    # Ensure the path is not empty
+    if not request_path:
+        request_path = '/'
+    
+    # Normalize the path to remove .. and . segments
+    # This handles cases like /foo/../../../bar
+    normalized_path = os.path.normpath(request_path)
+    
+    # Construct the full path (assuming current working directory or a fixed root if specified)
+    # Since the plan mentions "application's document root", we'll assume a safe default root
+    # In a real scenario, this would be a configurable constant
+    document_root = '/var/www/html'
+    
+    # Join the normalized path with the document root
+    # Use os.path.join to ensure proper path handling
+    full_path = os.path.join(document_root, normalized_path)
+    
+    # Normalize the full path to resolve any remaining .. segments
+    # This is critical to prevent directory traversal attacks
+    normalized_full_path = os.path.normpath(full_path)
+    
+    # Check if the normalized path is within the document root
+    # We need to ensure it starts with the document root and is not a parent directory
+    if not (normalized_full_path.startswith(document_root + os.sep) or 
+            normalized_full_path == document_root):
+        raise ValueError("Path escapes the document root")
+    
+    # Resolve symbolic links and check if the target is still within the root
+    try:
+        resolved_path = os.path.realpath(full_path)
+    except (OSError, ValueError):
+        raise ValueError("Could not resolve symbolic link or file does not exist")
+    
+    # Final containment check after resolving symlinks
+    if not (resolved_path.startswith(document_root + os.sep) or 
+            resolved_path == document_root):
+        raise ValueError("Resolved path escapes the document root")
+    
+    # Read and return the file content
+    with open(resolved_path, 'r') as f:
+        return f.read()
+```

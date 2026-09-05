@@ -1,0 +1,143 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security validations.
+    
+    Args:
+        url: The URL to fetch (may be absolute or relative).
+        transport: A function taking a URL and returning (status, headers, body).
+        resolve_host: A function taking a hostname and returning list of IP addresses.
+    
+    Returns:
+        The body text for status 200.
+    
+    Raises:
+        ValueError: If the URL is absolute, resolves to an IP, or violates redirect rules.
+    """
+    import urllib.parse
+    
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed_url.scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Check if URL is absolute (has a scheme)
+    if parsed_url.scheme:
+        # Ensure it's not an IP address directly
+        try:
+            ip_addresses = resolve_host(parsed_url.hostname)
+            if ip_addresses:
+                raise ValueError("Absolute URLs pointing to IP addresses are disallowed")
+        except (ValueError, AttributeError):
+            raise ValueError("Invalid hostname in URL")
+    
+    # Helper to get scheme, port, credentials, hostname from a parsed URL
+    def get_url_components(parsed):
+        return (
+            parsed.scheme,
+            parsed.port,
+            parsed.username or parsed.password,
+            parsed.hostname
+        )
+    
+    # Helper to resolve hostname to IP
+    def resolve_hostname(hostname):
+        try:
+            ip_addresses = resolve_host(hostname)
+            if not ip_addresses:
+                raise ValueError(f"Failed to resolve hostname: {hostname}")
+            return ip_addresses
+        except Exception as e:
+            raise ValueError(f"Failed to resolve hostname: {hostname}") from e
+    
+    # Helper to validate URL components match the initial destination
+    def validate_url_components(parsed, initial_scheme, initial_port, initial_creds, initial_dns):
+        if parsed.scheme != initial_scheme:
+            raise ValueError("Scheme mismatch in redirect")
+        if parsed.port is None:
+            # Default port check
+            if initial_scheme == 'http' and parsed.port != 80:
+                raise ValueError("Port mismatch in redirect")
+            if initial_scheme == 'https' and parsed.port != 443:
+                raise ValueError("Port mismatch in redirect")
+        elif parsed.port != initial_port:
+            raise ValueError("Port mismatch in redirect")
+        if parsed.username or parsed.password:
+            if initial_creds is None or initial_creds != (parsed.username, parsed.password):
+                raise ValueError("Credentials mismatch in redirect")
+        if parsed.hostname is None:
+            raise ValueError("Hostname is None")
+        try:
+            resolved_ips = resolve_hostname(parsed.hostname)
+            if not resolved_ips:
+                raise ValueError(f"Failed to resolve hostname: {parsed.hostname}")
+        except ValueError:
+            raise ValueError(f"Failed to resolve hostname: {parsed.hostname}")
+    
+    # Helper to join current URL with relative URL
+    def join_url(base, relative):
+        return urllib.parse.urljoin(base, relative)
+    
+    # Store initial components
+    initial_scheme, initial_port, initial_creds, initial_dns = get_url_components(parsed_url)
+    
+    # Resolve initial hostname
+    try:
+        resolve_hostname(parsed_url.hostname)
+    except ValueError:
+        raise ValueError("Initial URL hostname resolution failed")
+    
+    current_url = parsed_url
+    max_redirects = 5
+    redirect_count = 0
+    
+    while True:
+        # Check for absolute URL in current location
+        if current_url.scheme:
+            # If it's not the original URL and we've followed redirects, check strict matching
+            # But the spec says "reject absolute URLs" in the context of redirects
+            # Actually, the spec says "reject absolute URLs" generally, but then says "follow at most five HTTP redirects"
+            # The guard says "follow at most five HTTP redirects; each Location header must be resolved against the current URL and must have the same scheme, port, credentials, and DNS as the initial destination"
+            # This implies we can have absolute URLs in redirects if they match the initial destination exactly
+            # However, the first check says "reject absolute URLs"
+            # Let's interpret: If the URL is absolute and not the initial one, it's a redirect.
+            # But the guard says "reject absolute URLs" - this might mean if the URL is absolute and points to a different host, reject it.
+            # Given the context, we'll treat any absolute URL as a redirect candidate if it's not the initial one.
+            pass
+        
+        # Resolve current URL hostname
+        try:
+            resolve_hostname(current_url.hostname)
+        except ValueError:
+            raise ValueError("Hostname resolution failed")
+        
+        # Make the request
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+    
+    # Handle redirects
+    if 'Location' in headers:
+        redirect_location = headers['Location']
+        redirect_count += 1
+        
+        if redirect_count > max_redirects:
+            raise ValueError("Too many redirects")
+        
+        # Join current URL with redirect location
+        new_url = join_url(current_url, redirect_location)
+        parsed_new_url = urllib.parse.urlparse(new_url)
+        
+        # Validate the new URL against initial destination
+        validate_url_components(parsed_new_url, initial_scheme, initial_port, initial_creds, initial_dns)
+        
+        # Update current URL
+        current_url = parsed_new_url
+    else:
+        break
+    
+    return body

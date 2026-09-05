@@ -1,0 +1,97 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body text for a 200 status code.
+    
+    Raises:
+        ValueError: If the URL scheme/port is invalid, hostname resolution fails,
+                    or if a redirect is followed (which is disallowed).
+    """
+    import urllib.parse
+    from urllib.request import Request, urlopen
+    
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    allowed_schemes = {'http', 'https'}
+    if parsed_url.scheme not in allowed_schemes:
+        raise ValueError(f"Only HTTP and HTTPS schemes are allowed, got {parsed_url.scheme}")
+    
+    allowed_ports = {80: 'http', 443: 'https'}
+    expected_port = allowed_ports[parsed_url.scheme]
+    
+    if parsed_url.port is None:
+        actual_port = parsed_url.scheme == 'http'
+    else:
+        actual_port = parsed_url.port
+    
+    if actual_port != expected_port:
+        raise ValueError(f"Only default ports ({expected_port}) are allowed for {parsed_url.scheme}")
+    
+    # Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname resolution failed")
+    
+    if not resolved_ips:
+        raise ValueError("No IP addresses resolved for hostname")
+    
+    # Prepare the request
+    req = Request(url)
+    
+    # Open the connection (non-redirecting for now to check initial destination)
+    # We will use urlopen but prevent redirects by not following them,
+    # though the spec says "never follow a redirect", we need to handle the response.
+    # Actually, the simplest way to enforce "never follow" is to read the headers
+    # and check for Location headers, then reject if present.
+    
+    # However, standard urlopen follows redirects. We need to manually control this.
+    # Let's use http.client for more control or construct a request that doesn't follow.
+    # Since the environment is Python, we can use urllib.request with a custom opener or http.client.
+    # Given the constraints, using http.client is safer for strict control.
+    
+    from http.client import HTTPConnection, HTTPSConnection
+    
+    # Determine connection class
+    conn_class = HTTPSConnection if parsed_url.scheme == 'https' else HTTPConnection
+    
+    # Connect to the resolved IP
+    # We pick the first resolved IP
+    conn = conn_class(resolved_ips[0], parsed_url.port, context=None)
+    
+    try:
+        conn.request('GET', url)
+        response = conn.getresponse()
+        
+        # Check status code
+        if response.status != 200:
+            raise ValueError(f"Expected status 200, got {response.status}")
+        
+        # Check for redirects in headers (even though we didn't follow, we must reject if present)
+        # The spec says "never follow a redirect". If the initial response has a Location header,
+        # it implies a redirect was intended, so we reject.
+        content_type = response.getheader('Content-Type')
+        # Check for Location header
+        location = response.getheader('Location')
+        if location:
+            raise ValueError("Redirects are disallowed")
+        
+        # Read the body
+        body = response.read().decode('utf-8', errors='replace')
+        return body
+        
+    finally:
+        conn.close()

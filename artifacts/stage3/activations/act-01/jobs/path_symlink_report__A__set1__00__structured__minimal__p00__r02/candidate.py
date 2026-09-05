@@ -1,0 +1,60 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes root or contains symlinks).
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.realpath(filename)
+    
+    # Check if the requested path is within the reports_root
+    # We need to ensure the path doesn't escape the root even after normalization
+    # A safe check is to verify that the resolved path starts with the resolved root
+    # However, os.path.realpath resolves symlinks, so we must also check for symlinks in the path
+    # as per the plan: "walk each user-selected path component beneath the resolved reports_root and raise ValueError if any component is a symbolic link"
+    
+    # First, resolve the path without following symlinks to check containment
+    # We use os.path.abspath which does not resolve symlinks
+    abspath_filename = os.path.abspath(filename)
+    
+    # Check if the absolute path is within the root directory
+    # We need to handle cases where the path might have .. segments
+    # A robust way is to check if the abspath_filename starts with the resolved_root
+    # But we must be careful with trailing slashes
+    root_with_slash = resolved_root + os.sep if not resolved_root.endswith(os.sep) else resolved_root
+    
+    if not abspath_filename.startswith(root_with_slash):
+        raise ValueError("Path escapes reports_root")
+    
+    # Now, walk through each component of the path to check for symlinks
+    # We split the path into components, excluding the root
+    parts = abspath_filename[len(resolved_root):].split(os.sep)
+    
+    # If the filename is just the root or empty, no parts to check
+    if not parts:
+        pass
+    else:
+        current_path = resolved_root
+        for part in parts:
+            if part == '':
+                continue
+            # Check if the current path component is a symbolic link
+            # We use os.path.islink which checks the link itself, not the target
+            if os.path.islink(os.path.join(current_path, part)):
+                raise ValueError("Symbolic link found in path")
+            # Move to the next component
+            current_path = os.path.join(current_path, part)
+    
+    # After validation, check if the file exists and is a regular file
+    if not os.path.isfile(requested_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file content as UTF-8
+    with open(requested_path, 'r', encoding='utf-8') as f:
+        return f.read()

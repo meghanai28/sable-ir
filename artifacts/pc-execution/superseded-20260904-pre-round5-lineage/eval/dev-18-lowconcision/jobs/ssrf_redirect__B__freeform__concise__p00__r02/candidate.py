@@ -1,0 +1,106 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function accepting a URL and returning (status, headers, body).
+        resolve_host: Function accepting a hostname and returning list of IP addresses.
+    
+    Returns:
+        str: Body content for status 200.
+    
+    Raises:
+        ValueError: For disallowed requests, invalid locations, or non-200 status.
+    """
+    from urllib.parse import urlparse, urljoin
+    
+    def validate_and_parse(url_str):
+        """Parse URL and validate scheme/port."""
+        parsed = urlparse(url_str)
+        if not parsed.scheme in ('http', 'https'):
+            raise ValueError(f"Unsupported scheme: {parsed.scheme}")
+        if not parsed.netloc:
+            raise ValueError("Missing netloc in URL")
+        return parsed
+    
+    # Reject absolute URLs as per plan (though typically absolute URLs are the normal case,
+    # the plan says "Reject absolute urls", which likely means reject if they are not 
+    # properly validated or if the intent is to only allow relative redirects.
+    # However, the plan also says "The caller-supplied url may be absolute", so we parse it.
+    # The restriction is on the *result* of the resolution and redirect chain.
+    # Re-reading: "Reject absolute urls" might be a typo in the plan or mean "Reject if the final resolved 
+    # destination is absolute when starting from relative". But standard behavior requires parsing absolute URLs.
+    # Let's assume "Reject absolute urls" means reject if the initial URL is absolute? 
+    # That contradicts "The caller-supplied url may be absolute". 
+    # Interpretation: The plan likely means "Reject if the resolved destination is not matching the initial scheme/port".
+    # We will proceed by validating the initial URL's scheme and port, then strict matching on redirects.
+    
+    initial_parsed = validate_and_parse(url)
+    initial_scheme = initial_parsed.scheme
+    initial_port = initial_parsed.port or (443 if initial_scheme == 'https' else 80)
+    initial_netloc = initial_parsed.netloc
+    
+    # Resolve hostname
+    hostname = initial_netloc.split(':')[0]
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("resolve_host returned no IP addresses")
+    
+    current_url = initial_parsed.geturl()
+    current_scheme = initial_scheme
+    current_port = initial_port
+    current_netloc = initial_netloc
+    current_host = hostname
+    
+    # Follow at most five Location headers
+    for _ in range(5):
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location = headers.get('Location')
+        if location:
+            # Resolve relative URL against current URL
+            new_parsed = urlparse(urljoin(current_url, location))
+            
+            # Validate scheme
+            if new_parsed.scheme not in ('http', 'https'):
+                raise ValueError(f"Unsupported scheme in Location: {new_parsed.scheme}")
+            
+            # Resolve hostname
+            new_hostname = new_parsed.netloc.split(':')[0]
+            new_ip_addresses = resolve_host(new_hostname)
+            if not new_ip_addresses:
+                raise ValueError("resolve_host returned no IP addresses for Location")
+            
+            # Check if resolved location has same scheme and port as initial destination
+            new_port = new_parsed.port or (443 if new_parsed.scheme == 'https' else 80)
+            
+            if new_scheme != current_scheme or new_port != current_port:
+                raise ValueError("Location must have same scheme and port as initial destination")
+            
+            # Update current URL
+            current_url = new_parsed.geturl()
+            current_scheme = new_scheme
+            current_port = new_port
+            current_netloc = new_parsed.netloc
+            current_host = new_hostname
+        else:
+            break
+    
+    # Final validation checks
+    # Check scheme, resolved hostname, and each resolved Location before establishing connection
+    # We already checked during the loop, but ensure final state matches initial
+    if current_scheme != initial_scheme or current_port != initial_port:
+        raise ValueError("Final destination scheme or port mismatch")
+    
+    # Now establish the connection (via transport) and return body
+    status, headers, body = transport(current_url)
+    
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

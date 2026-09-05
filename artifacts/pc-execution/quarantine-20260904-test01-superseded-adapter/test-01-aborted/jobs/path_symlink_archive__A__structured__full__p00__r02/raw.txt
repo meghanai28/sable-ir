@@ -1,0 +1,61 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, rejecting any symbolic links
+    or hard links, even if their targets appear to be within the destination.
+    
+    Returns True only if extraction completes successfully with all safety checks passed.
+    Returns False if any validation or extraction fails, without writing any archive member outside dest_path.
+    """
+    # Create a temporary directory to work in to prevent path traversal issues
+    with tempfile.TemporaryDirectory() as tmp_extract_dir:
+        # Copy the archive to the temp directory to avoid modifying the original
+        # and to ensure we're working with a known safe location for extraction
+        archive_copy = os.path.join(tmp_extract_dir, os.path.basename(tar_path))
+        shutil.copy2(tar_path, archive_copy)
+        
+        try:
+            # Open the archive and iterate over members
+            with tarfile.open(archive_copy, 'r:*') as tar:
+                # Create the destination directory if it doesn't exist
+                os.makedirs(dest_path, exist_ok=True)
+                
+                # Iterate over each member of the archive
+                for member in tar.getmembers():
+                    # Calculate the full destination path for this member
+                    # We need to resolve the path relative to dest_path
+                    dest_member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                    
+                    # Check for path traversal attempts
+                    # Ensure the destination path is within the intended destination directory
+                    # by checking if it starts with the normalized dest_path
+                    dest_path_normalized = os.path.normpath(os.path.abspath(dest_path))
+                    if not dest_member_path.startswith(dest_path_normalized + os.sep) and dest_member_path != dest_path_normalized:
+                        return False
+                    
+                    # Reject symbolic links and hard links
+                    if member.issym() or member.islnk():
+                        return False
+                    
+                    # Reject hard links (hard links are represented by islnk() or isdev() in some contexts,
+                    # but primarily islnk() for symbolic links. For hard links, we check the linkname if present.
+                    # However, in tarfile, hard links are typically handled by the linkname attribute.
+                    # We should also reject hard links to be safe.
+                    if member.islnk() or member.isdev():
+                        return False
+                    
+                    # Additional check for hard links: if linkname is set, it's a hard link
+                    if member.linkname is not None:
+                        return False
+                    
+                    # Extract the member
+                    tar.extract(member, dest_path)
+                    
+        except Exception:
+            return False
+    
+    return True

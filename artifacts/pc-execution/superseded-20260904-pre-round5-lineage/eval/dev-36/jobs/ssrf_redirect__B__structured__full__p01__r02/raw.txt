@@ -1,0 +1,119 @@
+import urllib.request
+import urllib.parse
+import urllib.error
+import socket
+import re
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The requested URL string.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed or resolution fails.
+    """
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    base_host = parsed.hostname
+    base_port = parsed.port
+    base_path = parsed.path
+    base_scheme = parsed.scheme
+    
+    if base_scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    if base_port is None:
+        base_port = 80 if base_scheme == 'http' else 443
+    
+    # Resolve the initial hostname
+    try:
+        resolved_ips = resolve_host(base_host)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not resolved_ips:
+        raise ValueError("Hostname resolution failed")
+    
+    # Resolve the base URL to a full string with resolved IP
+    base_url = parsed._replace(netloc=resolved_ips[0], port=base_port).geturl()
+    
+    # Function to validate and resolve a URL against the base constraints
+    def validate_and_resolve_location(location_url):
+        # Parse the location URL
+        loc_parsed = urllib.parse.urlparse(location_url)
+        
+        # Check scheme
+        if loc_parsed.scheme not in ('http', 'https'):
+            raise ValueError("Invalid scheme in Location header")
+        
+        # Check port
+        loc_port = loc_parsed.port
+        if loc_port is None:
+            loc_port = 80 if loc_parsed.scheme == 'http' else 443
+        
+        # Check credentials (must be empty or match base)
+        if loc_parsed.username or loc_parsed.password:
+            raise ValueError("Credentials not allowed")
+        
+        # Check DNS (hostname must match)
+        if loc_parsed.hostname != base_host:
+            raise ValueError("Hostname mismatch in Location header")
+        
+        # Check public address (IP must be in resolved list)
+        if not any(ip in resolved_ips for ip in loc_parsed.netloc.split(':')[0].split('.') if ':' not in loc_parsed.netloc.split(':')[0]):
+            # Simplified check: if the netloc contains the resolved IP
+            netloc_base = loc_parsed.netloc.split(':')[0]
+            if not any(netloc_base.endswith('.' + ip) or netloc_base == ip for ip in resolved_ips):
+                raise ValueError("Public address mismatch")
+        
+        # Check path is beneath base path
+        if not base_path.endswith('/') and not loc_parsed.path.startswith('/'):
+            pass # Allow absolute path
+        elif base_path.endswith('/') and not loc_parsed.path.startswith(base_path):
+            raise ValueError("Path not beneath base")
+        
+        # Resolve the location URL
+        new_parsed = loc_parsed._replace(netloc=resolved_ips[0], port=loc_port)
+        new_url = new_parsed.geturl()
+        
+        return new_url
+
+    current_url = base_url
+    location_count = 0
+    max_hops = 5
+    
+    while True:
+        # Make the request
+        req = urllib.request.Request(current_url)
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status, headers, body = response
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            location_count += 1
+            if location_count > max_hops:
+                raise ValueError("Too many Location hops")
+            
+            # Validate and resolve the location
+            new_url = validate_and_resolve_location(location_header)
+            current_url = new_url
+        else:
+            break
+    
+    return body

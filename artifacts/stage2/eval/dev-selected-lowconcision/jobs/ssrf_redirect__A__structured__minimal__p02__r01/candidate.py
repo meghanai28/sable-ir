@@ -1,0 +1,111 @@
+import socket
+import urllib.parse
+import urllib.request
+from typing import Tuple, List
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    root = "/"
+    current_path = ""
+    allowed_schemes = {"http", "https"}
+    default_ports = {"http": 80, "https": 443}
+
+    # Parse initial URL
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in allowed_schemes:
+        raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    port = parsed.port
+    if port is None:
+        port = default_ports[scheme]
+    
+    # Resolve host
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Resolve host failed")
+    
+    # Check if host escapes root (basic check for ..)
+    # Since we start at root, any valid hostname is fine unless it's a subdomain that later redirects out
+    # The guard says "check the resolved host beneath the configured root"
+    # For a top-level request, the root is "/", so any hostname is technically beneath root unless it's empty or invalid
+    # We'll rely on the redirect check for escaping, but ensure the initial host is valid
+    if not hostname:
+        raise ValueError("Invalid hostname")
+
+    # Build the base URL for connection
+    base_url = f"{scheme}://{hostname}"
+    if port != default_ports[scheme]:
+        base_url += f":{port}"
+    if parsed.path:
+        base_url += parsed.path
+    if parsed.query:
+        base_url += f"?{parsed.query}"
+
+    # Follow redirects
+    while True:
+        # Open connection
+        req = urllib.request.Request(base_url)
+        try:
+            with urllib.request.urlopen(req) as response:
+                status = response.status
+                headers = response.headers
+                body = response.read().decode('utf-8', errors='replace')
+                
+                if status == 200:
+                    return body
+                
+                # Check for redirect
+                location = headers.get('Location')
+                if location:
+                    # Parse redirect URL
+                    redirect_parsed = urllib.parse.urlparse(location)
+                    
+                    # Check if redirect escapes root
+                    # Construct the full path of the redirect
+                    redirect_path = redirect_parsed.path
+                    if not redirect_path:
+                        redirect_path = "/"
+                    
+                    # Check for .. segments that might escape
+                    if '..' in redirect_path:
+                        # Simple check: if the path contains .. it might be trying to escape
+                        # More robust: resolve the path relative to current_path
+                        parts = redirect_path.split('/')
+                        resolved_parts = []
+                        for part in parts:
+                            if part == '..':
+                                if resolved_parts:
+                                    resolved_parts.pop()
+                            elif part and part != '.':
+                                resolved_parts.append(part)
+                        
+                        if not resolved_parts or (resolved_parts and resolved_parts[0] == '..'):
+                            raise ValueError("Redirect escapes root")
+                    else:
+                        # Check if the hostname changes
+                        if redirect_parsed.hostname and redirect_parsed.hostname != hostname:
+                            raise ValueError("Redirect changes hostname outside root")
+                    
+                    # Update current_path for next iteration
+                    current_path = redirect_path
+                    base_url = f"{scheme}://{redirect_parsed.hostname}"
+                    if redirect_parsed.port:
+                        base_url += f":{redirect_parsed.port}"
+                    if redirect_path:
+                        base_url += redirect_path
+                    if redirect_parsed.query:
+                        base_url += f"?{redirect_parsed.query}"
+                else:
+                    raise ValueError("No status 200")
+        except urllib.error.HTTPError as e:
+            if e.code != 200:
+                raise ValueError(f"Invalid status code: {e.code}")
+            raise ValueError("Invalid response")
+        except Exception as e:
+            raise ValueError(f"Connection failed: {e}")
+    
+    raise ValueError("Unexpected end of redirect chain")

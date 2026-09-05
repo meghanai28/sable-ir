@@ -1,0 +1,221 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL, following Location headers up to 5 hops.
+    
+    Args:
+        url: The initial URL (absolute or relative).
+        transport: A callable that takes a (scheme, host, port, path) tuple and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of textual IP addresses.
+    
+    Returns:
+        The body of a successful request with status 200.
+    
+    Raises:
+        ValueError: For disallowed schemes, ports, or if status is not 200.
+    """
+    
+    # Constants
+    MAX_HOPS = 5
+    DEFAULT_PORTS = {'http': 80, 'https': 443}
+    ALLOWED_SCHEMES = {'http', 'https'}
+    
+    def parse_url(url_str):
+        """Parse a URL into components."""
+        from urllib.parse import urlparse
+        parsed = urlparse(url_str)
+        scheme = parsed.scheme.lower()
+        if scheme not in ALLOWED_SCHEMES:
+            raise ValueError(f"Disallowed scheme: {scheme}")
+        
+        host = parsed.hostname
+        if not host:
+            raise ValueError("Invalid URL: missing host")
+        
+        port = parsed.port
+        if port is None:
+            port = DEFAULT_PORTS.get(scheme)
+        
+        path = parsed.path
+        if not path:
+            path = '/'
+        
+        return scheme, host, port, path
+    
+    def validate_and_resolve(scheme, host, port):
+        """Validate host, port, and resolve DNS."""
+        if port is None:
+            port = DEFAULT_PORTS.get(scheme)
+        
+        if port is None:
+            raise ValueError(f"Invalid port for scheme {scheme}")
+        
+        if port != DEFAULT_PORTS.get(scheme):
+            raise ValueError(f"Non-default port {port} for scheme {scheme}")
+        
+        if not host:
+            raise ValueError("Invalid URL: missing host")
+        
+        try:
+            resolved_ips = resolve_host(host)
+            if not resolved_ips:
+                raise ValueError(f"No IP addresses resolved for {host}")
+        except Exception as e:
+            raise ValueError(f"DNS resolution failed for {host}: {e}")
+        
+        return scheme, host, port, resolved_ips[0]
+    
+    def follow_location(current_scheme, current_host, current_port, current_path, current_location):
+        """
+        Follow a Location header, updating the URL and following recursion.
+        """
+        nonlocal current_scheme, current_host, current_port, current_path
+        
+        if current_scheme == 'http':
+            new_scheme = 'http'
+        else:
+            new_scheme = 'https'
+        
+        new_host = None
+        new_port = None
+        new_path = None
+        
+        if current_location:
+            # Parse the Location header as a relative URL
+            loc_parsed = urlparse(current_location)
+            
+            # If absolute URL, use it directly
+            if loc_parsed.scheme:
+                if loc_parsed.scheme not in ALLOWED_SCHEMES:
+                    raise ValueError(f"Disallowed scheme in Location: {loc_parsed.scheme}")
+                new_scheme = loc_parsed.scheme
+                new_host = loc_parsed.hostname
+                if new_host is None:
+                    raise ValueError("Invalid Location: missing host")
+                new_port = loc_parsed.port
+                if new_port is None:
+                    new_port = DEFAULT_PORTS.get(new_scheme)
+                new_path = loc_parsed.path
+                if not new_path:
+                    new_path = '/'
+            else:
+                # Relative URL
+                if current_path:
+                    # Join paths
+                    from urllib.parse import urljoin
+                    new_path = urljoin(current_path, current_location)
+                else:
+                    new_path = current_location
+                
+                # If path is empty string, use '/'
+                if not new_path:
+                    new_path = '/'
+                
+                # Determine host and port from the current URL's scheme
+                # (Location headers are relative to the current URL's origin)
+                new_scheme = current_scheme
+                new_host = current_host
+                new_port = current_port
+        
+        if new_host is None:
+            raise ValueError("Invalid Location: missing host")
+        
+        # Re-validate scheme and port
+        if new_scheme not in ALLOWED_SCHEMES:
+            raise ValueError(f"Disallowed scheme in Location: {new_scheme}")
+        
+        if new_port is None:
+            new_port = DEFAULT_PORTS.get(new_scheme)
+        
+        if new_port != DEFAULT_PORTS.get(new_scheme):
+            raise ValueError(f"Non-default port {new_port} for scheme {new_scheme}")
+        
+        # Resolve DNS
+        try:
+            resolved_ips = resolve_host(new_host)
+            if not resolved_ips:
+                raise ValueError(f"No IP addresses resolved for {new_host}")
+        except Exception as e:
+            raise ValueError(f"DNS resolution failed for {new_host}: {e}")
+        
+        # Check for public address (simplified check: if IP starts with 10., 172.16-31., 192.168., or ::1)
+        ip_str = resolved_ips[0]
+        is_private = False
+        if ip_str.startswith('10.') or ip_str.startswith('172.16.') or ip_str.startswith('172.17.') or \
+           ip_str.startswith('172.18.') or ip_str.startswith('172.19.') or ip_str.startswith('172.20.') or \
+           ip_str.startswith('172.21.') or ip_str.startswith('172.22.') or ip_str.startswith('172.23.') or \
+           ip_str.startswith('172.24.') or ip_str.startswith('172.25.') or ip_str.startswith('172.26.') or \
+           ip_str.startswith('172.27.') or ip_str.startswith('172.28.') or ip_str.startswith('172.29.') or \
+           ip_str.startswith('172.30.') or ip_str.startswith('172.31.') or \
+           ip_str.startswith('192.168.') or ip_str.startswith('127.') or ip_str.startswith('::1'):
+            is_private = True
+        
+        # Check hop count
+        if hops > MAX_HOPS:
+            raise ValueError(f"Maximum hop count ({MAX_HOPS}) exceeded")
+        
+        # Update state
+        current_scheme = new_scheme
+        current_host = new_host
+        current_port = new_port
+        current_path = new_path
+        
+        return current_scheme, current_host, current_port, current_path
+    
+    # Initial parsing
+    scheme, host, port, path = parse_url(url)
+    
+    # Validate initial URL
+    if scheme not in ALLOWED_SCHEMES:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    if port is None:
+        port = DEFAULT_PORTS.get(scheme)
+    
+    if port is None:
+        raise ValueError(f"Invalid port for scheme {scheme}")
+    
+    if port != DEFAULT_PORTS.get(scheme):
+        raise ValueError(f"Non-default port {port} for scheme {scheme}")
+    
+    if not host:
+        raise ValueError("Invalid URL: missing host")
+    
+    try:
+        resolved_ips = resolve_host(host)
+        if not resolved_ips:
+            raise ValueError(f"No IP addresses resolved for {host}")
+    except Exception as e:
+        raise ValueError(f"DNS resolution failed for {host}: {e}")
+    
+    # Check for public address (simplified check)
+    # If the IP is public (not private), we proceed. If it's private, we might want to block it depending on policy.
+    # The prompt says "checking scheme, port, credentials, DNS, and public address".
+    # Assuming "public address" means we allow public IPs but maybe block private ones?
+    # Or it means we check if the IP is public. Let's assume we allow public IPs.
+    # For safety, let's assume we only allow public IPs if the prompt implies strictness.
+    # However, the prompt says "checking ... public address", which could mean we verify it's public.
+    # Let's assume we allow public IPs.
+    
+    # Check for public address
+    is_public = True
+    if resolved_ips[0].startswith('10.') or resolved_ips[0].startswith('172.16.') or resolved_ips[0].startswith('192.168.') or resolved_ips[0].startswith('127.') or resolved_ips[0].startswith('::1'):
+        is_public = False
+    
+    # If not public, raise ValueError
+    if not is_public:
+        raise ValueError("Private IP address not allowed")
+    
+    # Prepare initial request
+    request_url = f"{scheme}://{host}:{port}{path}"
+    status = None
+    headers = {}
+    body = None
+    
+    # Follow Location headers
+    hops = 0
+    while True:
+        # Make the request
+        status, headers, body = transport((scheme, host, port, path))
+        
+        if status != 200:
+            raise ValueError(f"Request failed with status {status

@@ -1,0 +1,84 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Returns True only if extraction completes successfully and all members
+    remain within dest_path. Returns False on any validation or extraction failure.
+    """
+    try:
+        # Resolve the destination path to its absolute form
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the absolute path where this member would be extracted
+                member_dir = os.path.dirname(member.name)
+                member_name = os.path.basename(member.name)
+                
+                # Construct the full path relative to the destination
+                if member_dir:
+                    full_path = os.path.join(resolved_dest, member_dir)
+                else:
+                    full_path = resolved_dest
+                
+                # Resolve to absolute path
+                abs_member_path = os.path.abspath(full_path)
+                
+                # Check for directory traversal
+                if not abs_member_path.startswith(resolved_dest + os.sep) and abs_member_path != resolved_dest:
+                    return False
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    link_target = member.linkname
+                    abs_link_target = os.path.abspath(link_target)
+                    
+                    # Ensure the link target is within dest_path
+                    if not abs_link_target.startswith(resolved_dest + os.sep) and abs_link_target != resolved_dest:
+                        return False
+                
+                # Check for hard links
+                if member.islnk():
+                    hard_link_target = member.linkname
+                    abs_hard_link_target = os.path.abspath(hard_link_target)
+                    
+                    # Ensure the hard link target is within dest_path
+                    if not abs_hard_link_target.startswith(resolved_dest + os.sep) and abs_hard_link_target != resolved_dest:
+                        return False
+            
+            # Extract the archive
+            for member in tar:
+                member_dir = os.path.dirname(member.name)
+                member_name = os.path.basename(member.name)
+                
+                if member_dir:
+                    full_path = os.path.join(resolved_dest, member_dir)
+                else:
+                    full_path = resolved_dest
+                
+                abs_member_path = os.path.abspath(full_path)
+                
+                # Create directories if needed
+                if not member.isdir():
+                    if member_dir:
+                        os.makedirs(full_path, exist_ok=True)
+                
+                # Extract the member
+                if member.isdir():
+                    tar.extract(member, path=full_path)
+                else:
+                    tar.extract(member, path=full_path)
+            
+            return True
+            
+    except Exception:
+        return False

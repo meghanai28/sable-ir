@@ -1,0 +1,135 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import sys
+
+def resolve_host(hostname):
+    """Resolve hostname to IP addresses.
+    
+    This is a placeholder implementation. In a real scenario, this would
+    perform DNS resolution and return a list of IP addresses.
+    For the purpose of this implementation, we will raise a ValueError
+    if the hostname cannot be resolved, as per the plan's requirement
+    to raise ValueError if resolution fails.
+    """
+    try:
+        # Attempt to resolve the hostname
+        ip_addresses = socket.getaddrinfo(hostname, None)
+        if not ip_addresses:
+            raise ValueError(f"Could not resolve hostname: {hostname}")
+        return [ip[4][0] for ip in ip_addresses]
+    except socket.gaierror as e:
+        raise ValueError(f"DNS resolution failed: {e}")
+
+def check_scheme(url):
+    """Check if the URL scheme is allowed (http or https)."""
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    return scheme
+
+def check_path_containment(url, root):
+    """Check if the resolved path is contained within the root.
+    
+    This function ensures that the request does not escape the configured root.
+    """
+    parsed_url = urllib.parse.urlparse(url)
+    path = parsed_url.path
+    
+    # Normalize paths to handle .. segments
+    # Split path by '/', remove empty strings, and filter out '..'
+    normalized_path = [p for p in path.split('/') if p and p != '..']
+    
+    # If the path starts with '/', we need to ensure it's within the root
+    if path.startswith('/'):
+        normalized_path.insert(0, '')
+    
+    # Construct the full path
+    full_path = '/'.join(normalized_path)
+    
+    # Check if the path is within the root
+    if not full_path.startswith(root):
+        raise ValueError(f"Path escapes root: {full_path} does not start with {root}")
+
+def fetch_text(url, transport, resolve_host):
+    """Fetch text from a URL.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns a (status, headers, body) tuple.
+        resolve_host: A function that resolves a hostname to IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, the hostname cannot be resolved,
+                   the path escapes the root, or the status is not 200.
+    """
+    # Resolve the hostname
+    hostname = urllib.parse.urlparse(url).hostname
+    if not hostname:
+        raise ValueError("Invalid URL")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except ValueError:
+        raise ValueError("Hostname resolution failed")
+    
+    # Check the scheme
+    try:
+        check_scheme(url)
+    except ValueError:
+        raise ValueError("Disallowed scheme")
+    
+    # Check path containment
+    # We need to know the root to check containment. Since it's not provided,
+    # we assume the root is the directory of the URL's path.
+    parsed_url = urllib.parse.urlparse(url)
+    root = parsed_url.path
+    
+    # Check if the path is within the root
+    try:
+        check_path_containment(url, root)
+    except ValueError:
+        raise ValueError("Path escapes root")
+    
+    # Open the connection
+    try:
+        # Use urllib.request to open the URL
+        request = urllib.request.Request(url)
+        response = urllib.request.urlopen(request)
+        
+        # Read the response body
+        body = response.read().decode('utf-8')
+        
+        # Check the status code
+        status = response.status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+    
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP error occurred: {e.code}")
+    except urllib.error.URLError as e:
+        raise ValueError(f"URL error occurred: {e.reason}")
+    except Exception as e:
+        raise ValueError(f"Unexpected error: {e}")
+
+def main():
+    # Example usage
+    url = "http://example.com/path"
+    transport = lambda url: (200, {}, b"Hello, World!")
+    resolve_host = resolve_host
+    
+    try:
+        result = fetch_text(url, transport, resolve_host)
+        print(result)
+    except ValueError as e:
+        print(f"ValueError: {e}")
+
+if __name__ == "__main__":
+    main()

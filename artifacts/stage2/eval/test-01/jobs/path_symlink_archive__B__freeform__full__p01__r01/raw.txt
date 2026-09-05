@@ -1,0 +1,96 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    This function:
+    1. Normalizes dest_path to resolve .. and symlinks
+    2. Walks the tar archive and validates all paths before extraction
+    3. Checks that all file paths (including symlinks and hard links) remain within dest_path
+    4. Extracts the archive only if validation passes
+    5. Returns True on complete success, False on any failure or early exit
+    
+    Args:
+        tar_path: Path to the tar archive file
+        dest_path: Destination directory for extraction
+        
+    Returns:
+        True if extraction completed successfully, False otherwise
+    """
+    try:
+        # Validate tar_path exists
+        if not os.path.isfile(tar_path):
+            return False
+        
+        # Create a temporary directory for safe extraction
+        with tempfile.TemporaryDirectory() as temp_extract_dir:
+            # Extract the archive to the temporary directory first
+            with tarfile.open(tar_path, 'r:*') as tar:
+                tar.extractall(path=temp_extract_dir)
+            
+            # Now we need to validate the extracted structure against dest_path
+            # We'll use a two-pass approach:
+            # 1. Validate all paths relative to the extracted location
+            # 2. If valid, copy to dest_path
+            
+            # Get the absolute path of the temporary directory
+            abs_temp_dir = os.path.abspath(temp_extract_dir)
+            
+            # We need to validate each member's final location
+            # For this, we'll check if any member would escape dest_path
+            
+            # First, let's get the absolute path of dest_path
+            abs_dest_path = os.path.abspath(dest_path)
+            
+            # Validate the tar archive contents
+            # We need to check each member's final resolved path
+            members = tar.getmembers()
+            
+            for member in members:
+                # Calculate the final path for this member
+                # If it's a symlink, we need to resolve its target
+                if member.isdir():
+                    final_path = os.path.join(abs_temp_dir, member.name)
+                else:
+                    final_path = os.path.join(abs_temp_dir, member.name)
+                
+                # For symlinks, we need to resolve the target
+                if member.issym() or member.islnk():
+                    try:
+                        # Get the link target
+                        link_target = member.linkname
+                        
+                        # Resolve the link target relative to the member's location
+                        if os.path.isabs(link_target):
+                            resolved_target = os.path.abspath(link_target)
+                        else:
+                            member_abs_path = os.path.join(abs_temp_dir, member.name)
+                            resolved_target = os.path.abspath(member_abs_path)
+                        
+                        # Check if the resolved target is within dest_path
+                        if not resolved_target.startswith(abs_dest_path + os.sep) and resolved_target != abs_dest_path:
+                            return False
+                    except (OSError, ValueError):
+                        return False
+                else:
+                    # For regular files and directories, check if the path is within dest_path
+                    if not final_path.startswith(abs_dest_path + os.sep) and final_path != abs_dest_path:
+                        return False
+            
+            # If validation passes, copy the extracted content to dest_path
+            # First, remove any existing content in dest_path
+            if os.path.exists(abs_dest_path):
+                shutil.rmtree(abs_dest_path)
+            
+            # Copy the extracted directory to dest_path
+            shutil.copytree(abs_temp_dir, abs_dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

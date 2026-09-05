@@ -1,0 +1,63 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate scheme
+    if not url.startswith("http://") and not url.startswith("https://"):
+        raise ValueError("Only http and https schemes are allowed")
+    
+    # Extract scheme and host
+    scheme = url[:8]  # "http://" or "https://"
+    rest = url[8:]
+    
+    # Check for embedded :// in the host part (e.g., http://host://port)
+    if "://" in rest:
+        raise ValueError("Host contains embedded protocol")
+    
+    # Split host and path
+    if rest.startswith("/"):
+        host = rest[1:]
+        path = ""
+    else:
+        host = rest
+        path = "/"
+    
+    # Resolve host
+    try:
+        ips = resolve_host(host)
+    except Exception:
+        raise ValueError("Failed to resolve host")
+    
+    # Check for multiple IP addresses
+    if len(ips) != 1:
+        raise ValueError("Multiple IP addresses returned")
+    
+    ip = ips[0]
+    
+    # Determine port based on scheme
+    default_port = 80 if scheme == "http://" else 443
+    
+    # Check if path is absolute (starts with /) and validate for .. segments
+    if path.startswith("/"):
+        # Check for .. segments
+        parts = path.split("/")
+        for part in parts:
+            if part == "..":
+                raise ValueError("Path contains .. segments")
+    else:
+        # If no leading slash, treat as relative path, prepend slash
+        path = "/" + path
+        # Check for .. segments
+        parts = path.split("/")
+        for part in parts:
+            if part == "..":
+                raise ValueError("Path contains .. segments")
+    
+    # Construct the full URL for transport
+    full_url = f"{scheme}{host}{path}"
+    
+    # Call transport
+    status, headers, body = transport(full_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Redirect or error response")
+    
+    return body

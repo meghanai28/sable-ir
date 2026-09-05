@@ -1,0 +1,144 @@
+import socket
+from urllib.parse import urlparse, urljoin, parse_qs
+from typing import Tuple, List
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation to prevent open redirect vulnerabilities.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if host resolution fails,
+                    if the Location header redirects to a different origin, or if status is not 200.
+    """
+    # Parse the initial URL
+    parsed_url = urlparse(url)
+    scheme = parsed_url.scheme
+    host = parsed_url.hostname
+    port = parsed_url.port
+    credentials = parsed_url.username or parsed_url.password
+    public_address = None  # Will be set after resolution
+    dns_name = host
+    current_url = url
+    hop_count = 0
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Resolve host and get public address
+    try:
+        resolved_ips = resolve_host(host)
+        if not resolved_ips:
+            raise ValueError("Host resolution failed.")
+        
+        # Use the first resolved IP as the public address for comparison
+        public_address = resolved_ips[0]
+    except Exception:
+        raise ValueError("Host cannot be resolved.")
+    
+    def validate_and_redirect(location_header: str) -> bool:
+        """
+        Check if the Location header is safe to follow.
+        Returns True if safe, raises ValueError if unsafe.
+        """
+        nonlocal current_url, public_address, dns_name, hop_count
+        
+        if not location_header:
+            return True
+            
+        # Parse the Location header
+        redirect_url = location_header
+        if not redirect_url.startswith(('http://', 'https://')):
+            # Treat as relative path
+            redirect_url = urljoin(current_url, redirect_url)
+            
+        parsed_redirect = urlparse(redirect_url)
+        
+        # Extract components from redirect URL
+        redirect_scheme = parsed_redirect.scheme
+        redirect_host = parsed_redirect.hostname
+        redirect_port = parsed_redirect.port
+        redirect_credentials = parsed_redirect.username or parsed_redirect.password
+        redirect_dns_name = redirect_host
+        redirect_public_address = None
+        
+        # Resolve the redirect host if it's different from the current one
+        # Note: The spec says "Resolve the destination's Location header", implying we check the new host
+        # But we must also resolve it to check the public address
+        if redirect_host != host:
+            try:
+                redirect_resolved_ips = resolve_host(redirect_host)
+                if not redirect_resolved_ips:
+                    raise ValueError("Redirect host resolution failed.")
+                redirect_public_address = redirect_resolved_ips[0]
+            except Exception:
+                raise ValueError("Redirect host cannot be resolved.")
+        else:
+            # If same host, use the already resolved public address
+            redirect_public_address = public_address
+        
+        # Check scheme
+        if redirect_scheme != scheme:
+            raise ValueError("Scheme mismatch in redirect.")
+        
+        # Check port
+        if redirect_port != port:
+            raise ValueError("Port mismatch in redirect.")
+        
+        # Check credentials
+        if redirect_credentials != credentials:
+            raise ValueError("Credentials mismatch in redirect.")
+        
+        # Check DNS name (hostname)
+        if redirect_dns_name != dns_name:
+            raise ValueError("DNS name mismatch in redirect.")
+        
+        # Check public address (IP)
+        if redirect_public_address != public_address:
+            raise ValueError("Public address mismatch in redirect.")
+        
+        # Update current URL and hop count
+        current_url = redirect_url
+        dns_name = redirect_dns_name
+        public_address = redirect_public_address
+        hop_count += 1
+        
+        # Limit hops
+        if hop_count > 5:
+            raise ValueError("Too many redirects (max 5).")
+        
+        return True
+    
+    # Process Location headers if present
+    headers = transport(url)
+    status = headers[0]
+    
+    # Check for redirects
+    while 'location' in headers.get('set-cookie', '') or 'location' in headers.get('set-cookie', ''):
+        # Note: The spec says "Resolve the destination's Location header". 
+        # Typically this is in the response headers.
+        # We need to check if 'location' is in headers.
+        # The spec says "Resolve the destination's Location header against the current URL"
+        # This implies we look for a 'location' header in the response.
+        pass
+    
+    # Actually, let's re-read: "Resolve the destination's Location header against the current URL"
+    # This means if the response has a 'location' header, we validate it.
+    if 'location' in headers:
+        location_header = headers['location']
+        if not validate_and_redirect(location_header):
+            raise ValueError("Unsafe redirect.")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Status code must be 200.")
+    
+    return headers[2]

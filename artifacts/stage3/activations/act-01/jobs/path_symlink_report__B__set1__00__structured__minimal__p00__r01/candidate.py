@@ -1,0 +1,32 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+    """
+    # Normalize the root directory to avoid directory traversal via ..
+    resolved_root = os.path.normpath(reports_root)
+    
+    # Join the filename with the root and normalize to prevent .. escapes
+    requested_path = os.path.normpath(os.path.join(resolved_root, filename))
+    
+    # Resolve the full path, following symbolic links
+    resolved_target = os.path.realpath(requested_path)
+    
+    # Ensure the resolved target is still within the reports_root
+    # Normalize both paths to prevent issues with different drive letters on Windows or case differences
+    resolved_root_normalized = os.path.normpath(resolved_root)
+    resolved_target_normalized = os.path.normpath(resolved_target)
+    
+    # Check if the resolved target starts with the root directory
+    if not (resolved_target_normalized.startswith(resolved_root_normalized + os.sep) or resolved_target_normalized == resolved_root_normalized):
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(requested_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read and return the UTF-8 content
+    with open(requested_path, 'r', encoding='utf-8') as f:
+        return f.read()

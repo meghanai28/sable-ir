@@ -1,0 +1,68 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, ensuring no files are written outside dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation or extraction fails.
+    """
+    try:
+        # Resolve and normalize paths
+        tar_path_resolved = os.path.realpath(tar_path)
+        dest_path_resolved = os.path.realpath(dest_path)
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path_resolved):
+            return False
+            
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path_resolved, exist_ok=True)
+        
+        # Get the root of the destination (the directory itself, not including the path)
+        dest_root = os.path.dirname(dest_path_resolved)
+        
+        # Open the tar file
+        with tarfile.open(tar_path_resolved, 'r:*') as tar:
+            # Get all members of the tar file
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Get the member's name without the directory path
+                member_name = os.path.basename(member.name)
+                
+                # Calculate the potential destination path
+                potential_dest = os.path.join(dest_path_resolved, member_name)
+                
+                # Resolve the potential destination
+                potential_dest_resolved = os.path.realpath(potential_dest)
+                
+                # Check if the resolved destination is within the dest root
+                if not potential_dest_resolved.startswith(dest_root + os.sep) and potential_dest_resolved != dest_root:
+                    return False
+            
+            # Extract the archive
+            for member in members:
+                member_dir = os.path.dirname(member.name)
+                member_name = os.path.basename(member.name)
+                
+                # Create directories if needed
+                if member_dir:
+                    dir_path = os.path.join(dest_path_resolved, member_dir)
+                    os.makedirs(dir_path, exist_ok=True)
+                
+                # Extract the member
+                tar.extract(member, dest_path_resolved)
+                
+    except Exception:
+        return False
+    
+    return True

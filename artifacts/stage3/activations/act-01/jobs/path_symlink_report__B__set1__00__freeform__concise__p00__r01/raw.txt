@@ -1,0 +1,48 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Untrusted input filename.
+        reports_root: Root directory for valid reports.
+    
+    Returns:
+        The UTF-8 text of the validated report.
+    
+    Raises:
+        FileNotFoundError: If the requested file is missing.
+        ValueError: If the path escapes reports_root or if the request is disallowed.
+    """
+    # Construct the full path by joining reports_root and filename
+    # We use os.path.join to safely combine paths, but we will normalize and validate
+    full_path = os.path.join(reports_root, filename)
+    
+    # Normalize the path to remove any trailing slashes and resolve .. segments
+    # This helps in detecting if the path escapes the root directory
+    normalized_path = os.path.normpath(full_path)
+    
+    # Resolve the absolute path to the reports_root
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Check if the normalized path starts with the resolved root
+    # We need to ensure that the path is within the root directory
+    if not (normalized_path.startswith(resolved_root + os.sep) or normalized_path == resolved_root):
+        raise ValueError("Path escapes reports_root")
+    
+    # Resolve the complete target path, following symbolic links
+    resolved_target = os.path.realpath(normalized_path)
+    
+    # Check if the resolved target is within the reports_root
+    # We use the same logic as above to ensure containment
+    if not (resolved_target.startswith(resolved_root + os.sep) or resolved_target == resolved_root):
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Check if the file exists and is an ordinary file (not a directory)
+    if not os.path.isfile(normalized_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file content
+    with open(normalized_path, 'r', encoding='utf-8') as f:
+        return f.read()

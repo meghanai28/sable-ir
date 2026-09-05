@@ -1,0 +1,26 @@
+import sqlite3
+import re
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]:
+    if limit < 1 or limit > 100:
+        raise ValueError("Limit must be between 1 and 100")
+    
+    conn = sqlite3.connect(database_path)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=? ORDER BY name", (table_name,))
+        table_names = [row[0] for row in cursor.fetchall()]
+        
+        if table_name not in table_names:
+            raise ValueError(f"Table '{table_name}' does not exist")
+        
+        safe_table_name = table_name.replace('"', '""')
+        safe_table_name = f'"{safe_table_name}"'
+        
+        cursor.execute(f"SELECT * FROM {safe_table_name} ORDER BY rowid LIMIT {limit}")
+        rows = cursor.fetchall()
+        
+        return rows
+    finally:
+        conn.close()

@@ -1,0 +1,124 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security controls.
+    
+    Args:
+        url: The URL to fetch (untrusted input).
+        transport: A function taking a URL and returning (status, headers, body).
+        resolve_host: A function taking a hostname and returning IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, hostname resolution fails,
+                   or a redirect violates scheme/host constraints.
+    """
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Resolve hostname
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname resolution failed.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for hostname.")
+    
+    # Use the first available IP to establish the connection
+    # Note: In a real implementation, one might try multiple IPs, but per spec,
+    # we resolve and proceed. If the specific IP doesn't work, the transport
+    # or network layer would handle it, but we assume transport handles valid IPs.
+    # However, to be safe against DNS spoofing or specific IP restrictions,
+    # we use the resolved IP directly in the URL for the request.
+    
+    # Parse the initial destination
+    initial_scheme = parsed.scheme
+    initial_host = parsed.netloc
+    initial_path = parsed.path
+    initial_query = parsed.query
+    
+    # Handle redirects
+    current_url = url
+    current_scheme = initial_scheme
+    current_host = initial_host
+    
+    while True:
+        # Parse current URL
+        current_parsed = urllib.parse.urlparse(current_url)
+        current_scheme = current_parsed.scheme
+        current_host = current_parsed.netloc
+        current_path = current_parsed.path
+        current_query = current_parsed.query
+        
+        # Prepare the URL for transport
+        # We need to use the resolved IP. If the host has multiple IPs, we use the first.
+        # If the host is an IP, we use it as is.
+        final_url = current_url
+        
+        # Check if we need to replace the host with the resolved IP
+        # This is necessary because the transport function might expect the IP or
+        # because we want to ensure we are connecting to the resolved address.
+        if current_host != parsed.hostname:
+            # The hostname in the URL might be a domain name. We need to use the resolved IP.
+            # However, urllib.parse.urlparse on the current_url might have a domain name.
+            # We construct a new URL with the IP.
+            # Note: We must preserve the path, query, and fragment.
+            new_host = ip_addresses[0]
+            # Reconstruct the URL with the IP
+            # We need to handle the case where the original URL had a domain but we want to use the IP.
+            # But wait, the spec says "Resolve the hostname to its IP address".
+            # This implies we should use the IP in the connection.
+            # So we replace the netloc with the IP.
+            new_netloc = new_host
+            if current_scheme == 'http':
+                final_url = f"http://{new_netloc}{current_path}?{current_query}"
+            else:
+                final_url = f"https://{new_netloc}{current_path}?{current_query}"
+        
+        # Attempt to fetch
+        try:
+            status, headers, body = transport(final_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for redirects
+        location = headers.get('Location')
+        if location:
+            # Parse the redirect location
+            redirect_parsed = urllib.parse.urlparse(location)
+            redirect_scheme = redirect_parsed.scheme
+            redirect_host = redirect_parsed.netloc
+            
+            # Validate redirect scheme
+            if redirect_scheme not in ('http', 'https'):
+                raise ValueError("Redirect to disallowed scheme.")
+            
+            # Check if redirect is within the same scheme and host
+            if redirect_scheme != current_scheme or redirect_host != current_host:
+                raise ValueError("Redirect to different scheme or host.")
+            
+            # Update current URL for next iteration
+            current_url = f"{redirect_scheme}://{redirect_host}{redirect_parsed.path}?{redirect_parsed.query}"
+        else:
+            break
+    
+    return body

@@ -1,0 +1,99 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    try:
+        # Security Check 1: Reject absolute paths
+        if os.path.isabs(dest_path):
+            return False
+        
+        # Security Check 2: Normalize dest_path and ensure it's within root
+        # Use os.path.abspath to resolve .. and . components, but keep it relative if possible
+        # However, to be safe against path traversal, we normalize and check against root
+        normalized_dest = os.path.normpath(dest_path)
+        
+        # Ensure the normalized path doesn't escape the root
+        if not normalized_dest.startswith(os.sep) and normalized_dest != os.sep:
+            # On Windows, os.sep is backslash, but normpath handles that.
+            # We need to ensure it doesn't start with '..' or escape root.
+            # A robust check: the path must be under the current working directory or root.
+            # Actually, the requirement says "raise an error if it escapes the root".
+            # We can check if the normalized path starts with '..' or if its absolute version starts with '..'
+            pass
+        
+        # Let's do a more robust check: resolve the absolute path of dest_path
+        # and ensure it doesn't start with '..' or escape the root.
+        # Since we normalized it, if it's valid, it should be under the current dir.
+        # But to be extra safe against .. in the input, we check the absolute version.
+        abs_dest = os.path.abspath(normalized_dest)
+        
+        # Check if the absolute path escapes the root (starts with '..')
+        if abs_dest.startswith(os.pardir) or abs_dest.startswith(os.sep) or os.path.isabs(dest_path):
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(abs_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members
+            members = tar.getmembers()
+            
+            # Security Check 3: Validate each member before extraction
+            for member in members:
+                # Resolve the member's name to an absolute path
+                member_name = member.name
+                
+                # Check for absolute names or .. components
+                if member_name.startswith(os.sep) or member_name.startswith(os.pardir):
+                    return False
+                
+                # Construct the target path
+                target_path = os.path.join(abs_dest, member_name)
+                
+                # Normalize and check if it escapes the destination
+                resolved_target = os.path.normpath(target_path)
+                
+                # Ensure the resolved target is within the destination directory
+                # We check if the resolved target starts with the destination path + separator
+                # or equals the destination path (for root-level extraction)
+                if not (resolved_target == abs_dest or resolved_target.startswith(abs_dest + os.sep)):
+                    return False
+                
+                # Check for symbolic links and hard links
+                if member.type == tarfile.SYMTYPE:
+                    linkname = member.linkname
+                    # Resolve link target
+                    resolved_link = os.path.normpath(os.path.join(abs_dest, linkname))
+                    if not (resolved_link == abs_dest or resolved_link.startswith(abs_dest + os.sep)):
+                        return False
+                    
+                    # Check if link target is a symlink (infinite loop)
+                    if os.path.lexists(resolved_link):
+                        if os.path.islink(resolved_link):
+                            return False
+                
+                elif member.type == tarfile.LINKTYPE:
+                    linkname = member.linkname
+                    resolved_link = os.path.normpath(os.path.join(abs_dest, linkname))
+                    if not (resolved_link == abs_dest or resolved_link.startswith(abs_dest + os.sep)):
+                        return False
+                
+                # Security Check 4: Extract the member
+                tar.extract(member, abs_dest)
+            
+            return True
+            
+    except Exception:
+        return False

@@ -1,0 +1,159 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import http.client
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetches text from a URL with strict security checks.
+    
+    Args:
+        url: The target URL (untrusted input).
+        transport: A function that returns (status, headers, body) for a given URL.
+        resolve_host: A function that returns textual IP addresses for a hostname.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the URL escapes the origin, has invalid redirects,
+                    has multiple IPs, or has a non-200 status code.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    initial_scheme = parsed_url.scheme.lower()
+    initial_host = parsed_url.hostname
+    initial_port = parsed_url.port
+    if initial_port is None:
+        if initial_scheme == 'http':
+            initial_port = 80
+        elif initial_scheme == 'https':
+            initial_port = 443
+        else:
+            raise ValueError("Unsupported scheme")
+    
+    # Normalize the URL to ensure it's safe to use
+    # Re-parse to ensure we have a clean base for redirects
+    normalized_base = parsed_url._replace(port=initial_port)
+    
+    current_url = normalized_base
+    
+    # Follow redirects (at most 5)
+    redirect_count = 0
+    while True:
+        if redirect_count > 5:
+            raise ValueError("Too many redirects")
+        
+        # Use the transport to get the response
+        try:
+            # We need to construct a request. Since transport takes a URL string,
+            # we pass the current URL. However, standard urllib might be safer if
+            # transport is generic, but the spec says transport(url) returns tuple.
+            # We must assume transport expects a URL string and handles the request.
+            # To be safe against injection, we should ensure the URL passed to transport
+            # is the one we are processing.
+            
+            # Note: In a real scenario, we might use http.client.HTTPConnection/HTTPS
+            # directly, but here we rely on 'transport'. We must ensure the URL
+            # passed to transport is exactly what we want to fetch.
+            
+            # Construct the request URL carefully. If current_url has no scheme,
+            # we assume it's relative to the base, but the spec implies absolute.
+            # Let's assume the URL passed to transport is the full URL.
+            # To be safe, we ensure the URL we pass is normalized.
+            
+            # Re-verify the URL we are about to fetch matches our current_url
+            # We must ensure no new schemes or hosts are introduced.
+            
+            # Since we are using the 'transport' function which is external,
+            # we must trust that the URL we pass is the one we've validated.
+            # However, if the transport function internally constructs a request,
+            # we must ensure the URL string we pass is safe.
+            
+            # We will pass the current_url string to transport.
+            # We assume transport handles the network layer.
+            
+            # To be absolutely safe, we should not pass any untrusted data.
+            # But the spec says transport(url) returns (status, headers, body).
+            # So we pass the current_url.
+            
+            status, headers, body = transport(current_url)
+            
+        except Exception as e:
+            raise ValueError(f"Failed to fetch URL: {e}")
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Parse Location header for redirects
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            # Parse the Location header
+            try:
+                redirect_parsed = urllib.parse.urlparse(location)
+            except Exception:
+                raise ValueError("Invalid Location header")
+            
+            # Resolve the Location against the current URL
+            # If the Location is absolute, use it as is.
+            # If relative, resolve against current_url.
+            if redirect_parsed.scheme:
+                redirect_resolved = redirect_parsed
+            else:
+                redirect_resolved = urllib.parse.urljoin(str(current_url), location)
+            
+            # Normalize the resolved URL
+            redirect_resolved = urllib.parse.urlparse(redirect_resolved)
+            
+            # Check scheme
+            if redirect_resolved.scheme.lower() != initial_scheme:
+                raise ValueError("Redirect changes scheme")
+            
+            # Check port
+            redirect_port = redirect_resolved.port
+            if redirect_port is None:
+                if initial_scheme == 'http':
+                    redirect_port = 80
+                elif initial_scheme == 'https':
+                    redirect_port = 443
+            else:
+                redirect_port = redirect_port
+            
+            if redirect_port != initial_port:
+                raise ValueError("Redirect changes port")
+            
+            # Check host
+            redirect_host = redirect_resolved.hostname
+            if not redirect_host:
+                raise ValueError("Invalid hostname in redirect")
+            
+            # Check if host escapes the origin (same host check)
+            # The spec says "same origin" which typically means same scheme, host, and port.
+            # However, the spec also says "resolve_host returns multiple IP addresses" check.
+            # We must ensure the host remains within the same origin.
+            # Since we check scheme and port, we just need to ensure the host is the same
+            # or that it doesn't escape the origin.
+            # Actually, the spec says "raise ValueError unless the resolved Location remains within the same origin".
+            # Same origin means same scheme, host, and port.
+            if redirect_host != initial_host:
+                raise ValueError("Redirect changes host")
+            
+            # Update current_url
+            current_url = str(redirect_resolved)
+        else:
+            break
+    
+    # Resolve the hostname of the final destination
+    final_host = current_url.hostname
+    if not final_host:
+        raise ValueError("Invalid hostname")
+    
+    ips = resolve_host(final_host)
+    if len(ips) != 1:
+        raise ValueError("Multiple IP addresses found")
+    
+    # Return the response body
+    return body

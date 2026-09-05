@@ -1,0 +1,50 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolver.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The response body as a string if status is 200.
+    
+    Raises:
+        ValueError: If the hostname resolution fails or returns non-textual IP addresses.
+    """
+    # Extract hostname from URL
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve hostname and validate
+    ip_addresses = resolve_host(hostname)
+    
+    if not ip_addresses:
+        raise ValueError("Hostname resolution failed")
+    
+    # Determine port
+    default_port = 80
+    if parsed.scheme == "https":
+        default_port = 443
+    
+    # Build request URL with default port if not specified
+    request_url = f"{parsed.scheme}://{hostname}"
+    if parsed.port is None:
+        request_url = f"{parsed.scheme}://{hostname}:{default_port}"
+    else:
+        request_url = f"{parsed.scheme}://{hostname}:{parsed.port}"
+    
+    # Make the request
+    status, headers, body = transport(request_url)
+    
+    # Validate status code
+    if status != 200:
+        raise ValueError("Request failed: status code is not 200")
+    
+    # Return body as string
+    return body

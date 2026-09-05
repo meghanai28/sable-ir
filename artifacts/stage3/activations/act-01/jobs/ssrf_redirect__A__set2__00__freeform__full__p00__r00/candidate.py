@@ -1,0 +1,40 @@
+import socket
+import urllib.parse
+from typing import Tuple, List
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate URL scheme
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Resolve hostname to IP addresses
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+        if not ip_addresses:
+            raise ValueError(f"Could not resolve hostname: {hostname}")
+    except Exception as e:
+        raise ValueError(f"Resolution failed: {e}")
+    
+    # Determine default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Call transport to get response
+    status, headers, body = transport(url)
+    
+    # Validate status code is exactly 200
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Return the body as text
+    return body.decode('utf-8') if isinstance(body, bytes) else body
+
+# Note: The actual TCP connection logic described in the plan ("opening and reading an HTTP/HTTPS connection on the default port") is simulated by the `transport` function as per the request structure.
+# The `transport` function is assumed to be provided by the caller and handles the actual network I/O.
+# This module implements the validation, resolution, and status checking logic as specified in the plan.

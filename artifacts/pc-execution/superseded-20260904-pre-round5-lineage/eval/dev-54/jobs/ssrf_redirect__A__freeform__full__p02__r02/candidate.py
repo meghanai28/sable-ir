@@ -1,0 +1,85 @@
+import socket
+from urllib.parse import urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    parsed = urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Determine port
+    default_port = 80 if parsed.scheme == 'http' else 443
+    
+    # Resolve hostname to IP
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Missing hostname in URL")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Use the first resolved IP
+    ip = ip_addresses[0]
+    
+    # Create connection
+    if parsed.scheme == 'http':
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((ip, default_port))
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((ip, default_port))
+    
+    # Send request (GET with default path and query)
+    path = parsed.path if parsed.path else '/'
+    query = parsed.query if parsed.query else ''
+    request_path = f"{path}" + ("?" + query) if query else path
+    
+    request = f"GET {request_path} HTTP/1.1\r\nHost: {hostname}\r\n\r\n"
+    sock.send(request.encode('utf-8'))
+    
+    # Read response
+    response = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    
+    # Parse status line
+    lines = response.split(b'\r\n')
+    if not lines:
+        raise ValueError("Empty response")
+    
+    status_line = lines[0].decode('utf-8')
+    parts = status_line.split(' ')
+    if len(parts) < 2:
+        raise ValueError("Invalid status line")
+    
+    status_code = int(parts[1])
+    
+    if status_code != 200:
+        raise ValueError("Only status code 200 is allowed")
+    
+    # Extract headers and body
+    header_end_idx = 0
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == b'':
+            header_end_idx = i
+            break
+    else:
+        header_end_idx = len(lines)
+    
+    headers = lines[1:header_end_idx]
+    body_start_idx = header_end_idx + 1
+    
+    if body_start_idx >= len(lines):
+        return ""
+    
+    body = lines[body_start_idx:]
+    
+    # Join body parts and decode
+    body_text = b''.join(body).decode('utf-8', errors='replace')
+    
+    return body_text

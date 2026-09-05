@@ -1,0 +1,152 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The initial URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if DNS lookup fails,
+                   if redirects are invalid, or if status is not 200.
+    """
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed_url.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve initial hostname
+    if parsed_url.hostname is None:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        ip_addresses = resolve_host(parsed_url.hostname)
+    except Exception:
+        raise ValueError(f"DNS lookup failed for {parsed_url.hostname}")
+    
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for {parsed_url.hostname}")
+    
+    current_url = url
+    max_redirects = 5
+    redirects = 0
+    
+    while True:
+        # Resolve current URL hostname
+        if parsed_url.hostname is None:
+            raise ValueError("Invalid URL: missing hostname")
+        
+        try:
+            current_ips = resolve_host(parsed_url.hostname)
+        except Exception:
+            raise ValueError(f"DNS lookup failed for {parsed_url.hostname}")
+        
+        if not current_ips:
+            raise ValueError(f"No IP addresses found for {parsed_url.hostname}")
+        
+        # Determine port
+        port = parsed_url.port
+        if port is None:
+            if parsed_url.scheme == 'http':
+                port = 80
+            else:
+                port = 443
+        
+        # Create connection and fetch
+        try:
+            # Use the resolved IP for connection to prevent DNS rebinding
+            conn = socket.create_connection((current_ips[0], port), timeout=10)
+            if parsed_url.scheme == 'https':
+                context = ssl.create_default_context()
+                conn = ssl.wrap_socket(conn, context=context, server_hostname=parsed_url.hostname)
+            
+            request = urllib.request.Request(current_url)
+            response = urllib.request.urlopen(request, context=None, timeout=10)
+            
+            # Parse response
+            status = response.status
+            headers = dict(response.headers)
+            body = response.read().decode('utf-8', errors='replace')
+            
+            # Check status code
+            if status != 200:
+                raise ValueError(f"Invalid status code: {status}")
+            
+            return body
+            
+        except urllib.error.HTTPError as e:
+            status = e.code
+            headers = dict(e.headers)
+            body = e.read().decode('utf-8', errors='replace')
+            
+            if status != 200:
+                raise ValueError(f"Invalid status code: {status}")
+            
+            return body
+            
+        except urllib.error.URLError as e:
+            raise ValueError(f"URL error: {e.reason}")
+        
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        # Handle redirects
+        if 'location' in headers:
+            location = headers['location']
+            
+            # Resolve redirect location
+            try:
+                redirect_url = urllib.parse.urljoin(current_url, location)
+            except Exception:
+                raise ValueError("Invalid redirect URL")
+            
+            # Parse redirect URL
+            redirect_parsed = urllib.parse.urlparse(redirect_url)
+            
+            # Check scheme and port match
+            if redirect_parsed.scheme != parsed_url.scheme:
+                raise ValueError("Redirect scheme mismatch")
+            
+            if redirect_parsed.port is None:
+                if redirect_parsed.scheme == 'http':
+                    redirect_port = 80
+                else:
+                    redirect_port = 443
+            else:
+                redirect_port = redirect_parsed.port
+            
+            if port != redirect_port:
+                raise ValueError("Redirect port mismatch")
+            
+            # Check DNS resolution
+            try:
+                redirect_ips = resolve_host(redirect_parsed.hostname)
+            except Exception:
+                raise ValueError(f"DNS lookup failed for redirect hostname")
+            
+            if not redirect_ips:
+                raise ValueError(f"No IP addresses found for redirect hostname")
+            
+            # Increment redirect count
+            redirects += 1
+            if redirects > max_redirects:
+                raise ValueError(f"Too many redirects: {redirects}")
+            
+            # Update current URL and parsed URL
+            current_url = redirect_url
+            parsed_url = redirect_parsed
+        else:
+            break
+    
+    return body

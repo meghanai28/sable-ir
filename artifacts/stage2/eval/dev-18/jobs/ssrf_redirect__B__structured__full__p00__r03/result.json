@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__B__structured__full__p00__r03",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__B__structured__full__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nimport urllib.request\nimport urllib.error\n\ndef fetch_text(url: str, transport, resolve_host) -> str:\n    # Validate scheme and port\n    parsed = urllib.parse.urlparse(url)\n    scheme = parsed.scheme.lower()\n    port = parsed.port\n\n    # Check scheme\n    if scheme not in ('http', 'https'):\n        raise ValueError(\"Disallowed scheme\")\n\n    # Check port\n    if scheme == 'http' and port != 80:\n        raise ValueError(\"Disallowed port\")\n    if scheme == 'https' and port != 443:\n        raise ValueError(\"Disallowed port\")\n\n    # Resolve hostname and check resolution\n    hostname = parsed.hostname\n    if not hostname:\n        raise ValueError(\"Invalid URL\")\n    \n    try:\n        ip_addresses = resolve_host(hostname)\n    except Exception:\n        raise ValueError(\"Hostname does not resolve\")\n    \n    if not ip_addresses:\n        raise ValueError(\"Hostname does not resolve to any IP\")\n\n    # Prepare initial request\n    req = urllib.request.Request(url)\n    req.get_method = lambda: 'GET'\n\n    # Follow redirects with hop counting\n    current_url = url\n    hops = 0\n    max_hops = 5\n\n    while True:\n        # Transport the current URL\n        try:\n            response = transport(current_url)\n        except Exception as e:\n            raise ValueError(f\"Request failed: {e}\")\n\n        status, headers, body = response\n\n        # Check status code\n        if status != 200:\n            raise ValueError(\"Unexpected status code\")\n\n        # Check for redirect\n        location = headers.get('Location')\n        if location:\n            hops += 1\n            if hops > max_hops:\n                raise ValueError(\"Redirect limit exceeded\")\n\n            # Parse redirect location\n            redirect_parsed = urllib.parse.urlparse(location)\n            \n            # Validate redirect scheme and port\n            if redirect_parsed.scheme.lower() != scheme:\n                raise ValueError(\"Redirect scheme mismatch\")\n            \n            redirect_port = redirect_parsed.port\n            if scheme == 'http' and redirect_port != 80:\n                raise ValueError(\"Redirect port mismatch\")\n            if scheme == 'https' and redirect_port != 443:\n                raise ValueError(\"Redirect port mismatch\")\n\n            # Check for javascript: or data:\n            if redirect_parsed.scheme.lower() in ('javascript:', 'data:'):\n                raise ValueError(\"Disallowed redirect scheme\")\n\n            # Resolve new hostname\n            new_hostname = redirect_parsed.hostname\n            if not new_hostname:\n                raise ValueError(\"Invalid redirect URL\")\n            \n            try:\n                new_ips = resolve_host(new_hostname)\n            except Exception:\n                raise ValueError(\"Redirect hostname does not resolve\")\n            \n            if not new_ips:\n                raise ValueError(\"Redirect hostname does not resolve to any IP\")\n\n            # Update current URL\n            current_url = redirect_parsed.geturl()\n            continue\n\n        return body.decode('utf-8') if isinstance(body, bytes) else str(body)\n\n    raise ValueError(\"Unexpected end of redirect chain\")",
+    "prompt_tokens": 315,
+    "output_tokens": 669,
+    "finish_reason": "stop",
+    "latency_seconds": 28.203,
+    "seed": 567422045
+  },
+  "prompt_sha256": "62da93f0a9c4aee849a9eb35ece09cf7cd875559c1b1d3d5908b49c3839e25d5",
+  "candidate_path": "jobs/ssrf_redirect__B__structured__full__p00__r03/candidate.py",
+  "candidate_sha256": "dbfcc4837124284541acefa7cdca241411a336aabce0ed59653208887f17b59b",
+  "extraction": "raw_text",
+  "error": null
+}

@@ -1,0 +1,84 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        ValueError: If the resolved path escapes reports_root or contains symlinks.
+        FileNotFoundError: If the file does not exist or is not a regular file.
+    """
+    # Resolve the reports_root to an absolute path to ensure consistent handling
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to prevent directory traversal
+    # We use os.path.normpath to handle .. and . segments
+    normalized_filename = os.path.normpath(filename)
+    
+    # Construct the full path
+    full_path = os.path.join(resolved_root, normalized_filename)
+    
+    # Resolve the full path to handle any symbolic links in the path components
+    # This is crucial for the validation step before opening the file
+    resolved_full_path = os.path.realpath(full_path)
+    
+    # Validate that the resolved path is within the reports_root
+    # We need to ensure that the resolved path starts with the resolved_root
+    # Use os.path.commonpath to check if the paths are within the same directory tree
+    try:
+        common_path = os.path.commonpath([resolved_root, resolved_full_path])
+        if common_path != resolved_root:
+            raise ValueError("The requested path escapes the reports_root.")
+    except ValueError:
+        # This can happen if the paths are on different drives (Windows) or other issues
+        raise ValueError("The requested path escapes the reports_root.")
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # Check for symbolic links in the path components
+    # We split the path into components and check each one
+    path_components = os.path.split(resolved_full_path)
+    # The last element is the filename, the rest are directory components
+    
+    # We need to check the path components from the root down to the file
+    # But we must be careful not to check the filename itself if it's a symlink
+    # The plan says "walk each user-selected path component beneath the resolved reports_root"
+    # This implies we check the directory structure leading to the file
+    
+    # Let's reconstruct the path from the root and check each directory component
+    current_path = resolved_root
+    # We need to split the resolved_full_path into components, excluding the filename
+    # os.path.split splits into (dir, base), so we can iterate until we hit the filename
+    parts = []
+    while current_path != resolved_full_path:
+        parts.append(current_path)
+        current_path, _ = os.path.split(current_path)
+    
+    # Now parts contains the directory components from root to the parent of the filename
+    # We need to check each of these for symbolic links
+    for component in parts:
+        if os.path.islink(component):
+            raise ValueError("A symbolic link was found in the path components.")
+    
+    # Also check the final directory (parent of the filename)
+    final_dir = os.path.dirname(resolved_full_path)
+    if final_dir != resolved_root and os.path.islink(final_dir):
+        raise ValueError("A symbolic link was found in the path components.")
+    
+    # Check if the final directory exists and is a directory
+    if not os.path.isdir(final_dir):
+        raise FileNotFoundError(f"The directory {final_dir} does not exist.")
+    
+    # Check if the filename exists and is a regular file
+    if not os.path.isfile(resolved_full_path):
+        raise FileNotFoundError(f"The file {resolved_full_path} does not exist or is not a regular file.")
+    
+    # Read the file content as UTF-8
+    with open(resolved_full_path, 'r', encoding='utf-8') as f:
+        return f.read()

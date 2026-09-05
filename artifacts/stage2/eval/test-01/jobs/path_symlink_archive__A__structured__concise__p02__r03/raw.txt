@@ -1,0 +1,75 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def _is_within_root(path: str, root: str) -> bool:
+    """Check if path is within root directory."""
+    try:
+        real_path = os.path.realpath(path)
+        real_root = os.path.realpath(root)
+        return real_path.startswith(os.path.join(real_root, os.path.sep)) or real_path == real_root
+    except (ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Returns True if extraction completes successfully, False otherwise.
+    No files are written outside dest_path on failure.
+    """
+    # Normalize dest_path to an absolute path
+    dest_path = os.path.normpath(os.path.abspath(dest_path))
+    
+    # Validate dest_path does not escape the root (though it's the root itself)
+    # We ensure dest_path is valid and accessible
+    if not os.path.isdir(dest_path):
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members to validate before extraction
+            members = tar.getnames()
+            
+            for member in members:
+                # Resolve the member's target path relative to dest_path
+                # We need to check if the member's name or any link target escapes dest_path
+                
+                # Determine the directory path for the member
+                dir_path = os.path.dirname(member)
+                if dir_path == '':
+                    dir_path = '.'
+                else:
+                    dir_path = os.path.normpath(dir_path)
+                
+                # Resolve the member's target path
+                member_path = os.path.normpath(os.path.join(dest_path, dir_path, member.split(os.path.sep)[-1]))
+                
+                # Check if the member path escapes the destination root
+                if not _is_within_root(member_path, dest_path):
+                    return False
+                
+                # Handle symbolic links and hard links
+                if member.islnk() or member.isxlnk():
+                    # Symbolic link target
+                    link_target = member.linkname
+                    resolved_link_target = os.path.normpath(os.path.join(dest_path, link_target))
+                    if not _is_within_root(resolved_link_target, dest_path):
+                        return False
+                elif member.isdev() or member.isblk() or member.ischr():
+                    # Skip device, block, and character special files
+                    continue
+                elif member.isdir():
+                    # Directory - check if the directory itself escapes
+                    if not _is_within_root(os.path.join(dest_path, dir_path), dest_path):
+                        return False
+                # Regular files and other types are handled by the path check above
+                
+            # Perform extraction
+            tar.extractall(dest_path)
+            return True
+            
+    except (tarfile.TarError, OSError, IOError):
+        return False

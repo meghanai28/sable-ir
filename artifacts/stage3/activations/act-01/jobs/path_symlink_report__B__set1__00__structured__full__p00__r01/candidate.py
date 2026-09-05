@@ -1,0 +1,43 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file to read.
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the report.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the requested path escapes reports_root or is disallowed.
+    """
+    # Construct the full path by joining reports_root and filename
+    # This handles the case where filename might be absolute or relative
+    full_path = os.path.join(reports_root, filename)
+    
+    # Normalize the path to remove any redundant separators or current directory references
+    normalized_path = os.path.normpath(full_path)
+    
+    # Resolve the path to its absolute form and follow symbolic links
+    resolved_path = os.path.realpath(normalized_path)
+    
+    # Resolve the root directory to its absolute form and follow symbolic links
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Check if the resolved path is within the resolved root
+    # This ensures that even if the filename contains '..' or points to a symlink outside,
+    # the actual file location is within the intended directory
+    if not resolved_path.startswith(resolved_root + os.sep) and resolved_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read the file content
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,93 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolver.
+    
+    Args:
+        url: The URL to fetch (untrusted input).
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, status is not 200, or if redirect following is attempted.
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Extract hostname
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    # Remove port if present for resolution, but keep it for connection if needed
+    # The plan says "Resolve the hostname to its IP address(es) before creating the connection"
+    # We will use the resolved IP for the socket connection to avoid DNS leakage issues
+    if ':' in hostname:
+        hostname, port = hostname.rsplit(':', 1)
+    else:
+        port = None
+    
+    # Resolve hostname
+    try:
+        ip_addresses = resolve_host(hostname)
+        if not ip_addresses:
+            raise ValueError(f"No IP addresses found for hostname: {hostname}")
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    # Use the first IP address for the connection
+    resolved_ip = ip_addresses[0]
+    
+    # Build the full URL with resolved IP to ensure we connect to the resolved address
+    # We must preserve the port if specified in the original URL
+    if port:
+        full_url = f"http://{resolved_ip}:{port}{parsed.path}"
+    else:
+        full_url = f"http://{resolved_ip}{parsed.path}"
+    
+    # Parse the full URL again to get the path and query
+    # Note: The transport function likely handles the URL, but we must ensure we are connecting to the resolved IP
+    # However, the plan says "transport(url) returns...", implying we pass the URL to transport.
+    # But the dangerous operation is "opening and reading an HTTP connection".
+    # To comply with "Resolve the hostname... before creating the connection", we should construct the URL with the resolved IP.
+    # The transport function is provided by the caller. We assume it respects the URL passed to it.
+    # We will pass the URL with the resolved IP to the transport function.
+    
+    # Re-parse the constructed URL to ensure we have the correct path and query
+    parsed_full = urllib.parse.urlparse(full_url)
+    
+    # Check for query strings
+    query_string = parsed_full.query
+    
+    # Build the request URL for the transport
+    # We need to ensure the transport function receives a URL that points to the resolved IP
+    # The plan says "follow the HTTP response only if status is 200 and never follow a redirect"
+    # This implies we should not use urllib.request.urlopen which automatically follows redirects.
+    # We must manually call the transport function.
+    
+    # Construct the URL for the transport call
+    # We use the resolved IP in the URL passed to transport
+    final_url = f"http://{resolved_ip}{parsed_full.path}"
+    if query_string:
+        final_url += f"?{query_string}"
+    
+    # Call the transport function
+    status, headers, body = transport(final_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Return the body
+    return body

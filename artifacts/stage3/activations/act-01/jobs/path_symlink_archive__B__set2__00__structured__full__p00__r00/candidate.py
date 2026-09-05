@@ -1,0 +1,89 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        No files are written outside dest_path on failure.
+    """
+    try:
+        # Resolve the absolute paths
+        resolved_tar_path = os.path.abspath(tar_path)
+        resolved_dest_path = os.path.abspath(dest_path)
+        
+        # Validate tar_path exists
+        if not os.path.isfile(resolved_tar_path):
+            return False
+            
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(resolved_dest_path):
+            return False
+            
+        # Create dest_path if it doesn't exist (but don't extract yet)
+        os.makedirs(resolved_dest_path, exist_ok=True)
+        
+        # Normalize dest_path to remove any .. or . components
+        normalized_dest = os.path.normpath(resolved_dest_path)
+        
+        # Open the tar file
+        with tarfile.open(resolved_tar_path, 'r:*') as tar:
+            # Get all members in the archive
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Skip directories (only extract files or handle dirs carefully)
+                # Actually, we should extract directories too but validate their contents
+                if member.isdir():
+                    continue
+                    
+                # Calculate the member's path relative to dest_path
+                member_path = os.path.join(normalized_dest, member.name)
+                
+                # Normalize the member path
+                normalized_member_path = os.path.normpath(member_path)
+                
+                # Check for escape attempts
+                # The normalized_member_path must start with normalized_dest
+                # and not have any .. that escapes it
+                if not normalized_member_path.startswith(normalized_dest + os.sep) and normalized_member_path != normalized_dest:
+                    return False
+                    
+                # Check for absolute paths in member name
+                if member.name.startswith('/'):
+                    return False
+                    
+                # Check symbolic links
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    
+                    # If link target is absolute, normalize it
+                    if os.path.isabs(link_target):
+                        normalized_link_target = os.path.normpath(link_target)
+                    else:
+                        # Join with dest_path and normalize
+                        normalized_link_target = os.path.normpath(os.path.join(normalized_dest, link_target))
+                    
+                    # Check if the link target escapes dest_path
+                    if not normalized_link_target.startswith(normalized_dest + os.sep) and normalized_link_target != normalized_dest:
+                        return False
+                        
+            # Now perform the extraction with error handling
+            try:
+                tar.extractall(path=normalized_dest)
+                return True
+            except Exception:
+                return False
+                
+    except Exception:
+        return False

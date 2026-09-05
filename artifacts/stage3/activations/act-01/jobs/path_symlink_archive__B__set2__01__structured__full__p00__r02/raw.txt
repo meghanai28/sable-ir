@@ -1,0 +1,46 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Validates that the extraction does not escape the destination directory.
+    Returns True on complete success, False on any validation or extraction failure.
+    """
+    try:
+        # Resolve and normalize the destination path
+        dest_path = os.path.realpath(dest_path)
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Calculate the target path for this member
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the target path to resolve . and ..
+                # We use realpath but need to be careful not to follow symlinks that might be in the archive
+                # However, for safety against path traversal, we check the normalized path against the dest
+                normalized_target = os.path.normpath(target_path)
+                
+                # Ensure the normalized path is within the destination directory
+                # We check if the normalized path starts with the destination path followed by a separator
+                # or is exactly the destination path.
+                if not (normalized_target == dest_path or normalized_target.startswith(dest_path + os.sep)):
+                    raise ValueError(f"Member {member.name} would escape the destination directory {dest_path}")
+                
+                # Additional check: ensure no .. components were used in the normalized path relative to dest
+                # The above check handles most cases, but let's be explicit about the path structure
+                # We can also check if the member name itself contains ..
+                if '..' in member.name.split(os.sep):
+                    raise ValueError(f"Member {member.name} contains path traversal sequences")
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

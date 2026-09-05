@@ -1,0 +1,81 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, host, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    path = parsed.path
+    
+    # Validate scheme: only HTTP or HTTPS allowed
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP or HTTPS schemes are allowed")
+    
+    # Determine the port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Check if the URL explicitly specifies a port
+    port = None
+    if parsed.port is not None:
+        port = parsed.port
+    
+    # Validate port: must be the default port for the scheme
+    if port is not None and port != default_port:
+        raise ValueError(f"Only default ports are allowed for {scheme} (expected {default_port}, got {port})")
+    
+    # Resolve the host to get IP addresses
+    if not host:
+        raise ValueError("URL must contain a host")
+    
+    ip_addresses = resolve_host(host)
+    
+    if not ip_addresses:
+        raise ValueError(f"Could not resolve host: {host}")
+    
+    # Select the first resolved IP address for connection
+    resolved_host = ip_addresses[0]
+    
+    # Create a request object
+    req = urllib.request.Request(url)
+    
+    # Set the URL to the absolute URL with the resolved host to ensure we connect to the right host
+    # We need to construct the absolute URL manually to bypass any embedded host issues if any
+    if scheme == 'http':
+        base_url = f"http://{resolved_host}"
+    else:
+        base_url = f"https://{resolved_host}"
+    
+    # Reconstruct the full URL with the resolved host and the path
+    if path:
+        full_url = f"{base_url}{path}"
+    else:
+        full_url = base_url
+    
+    # Update the request URL
+    req = urllib.request.Request(full_url)
+    
+    # Open the connection
+    try:
+        with urllib.request.urlopen(req) as response:
+            # Check status code
+            status = response.status
+            
+            if status != 200:
+                raise ValueError(f"Status code {status} is not 200")
+            
+            # Read and return the body
+            body = response.read().decode('utf-8')
+            return body
+            
+    except urllib.error.HTTPError as e:
+        if e.code != 200:
+            raise ValueError(f"Status code {e.code} is not 200")
+        raise ValueError("Unexpected HTTP error")
+    except urllib.error.URLError as e:
+        raise ValueError(f"Network error: {e.reason}")
+    except Exception as e:
+        raise ValueError(f"Error: {str(e)}")

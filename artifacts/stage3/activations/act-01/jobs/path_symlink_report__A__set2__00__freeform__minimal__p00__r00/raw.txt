@@ -1,0 +1,49 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The requested file name (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the validated report.
+    
+    Raises:
+        FileNotFoundError: If the requested file is missing.
+        ValueError: If the request escapes reports_root or involves a symlink.
+    """
+    # Resolve the absolute path for the root directory
+    root_dir = os.path.abspath(reports_root)
+    
+    # Construct the candidate path by joining root and filename
+    candidate_path = os.path.join(root_dir, filename)
+    
+    # Resolve the canonical path to detect symlinks and resolve ..
+    # os.path.realpath() resolves symlinks and converts to absolute
+    canonical_path = os.path.realpath(candidate_path)
+    
+    # Check if the resolved path is within the reports_root directory
+    # We use os.path.commonpath to ensure the path is strictly within the root
+    try:
+        common_path = os.path.commonpath([root_dir, canonical_path])
+        if common_path != root_dir:
+            raise ValueError("Path escapes reports_root")
+    except ValueError:
+        # ValueError from commonpath indicates the paths are on different drives (Windows)
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the resolved path is a symbolic link
+    if os.path.islink(candidate_path):
+        raise ValueError("Symlinks are not allowed")
+    
+    # Check if the resolved path exists and is a regular file
+    if not os.path.isfile(canonical_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read and return the UTF-8 content
+    with open(canonical_path, 'r', encoding='utf-8') as f:
+        return f.read()

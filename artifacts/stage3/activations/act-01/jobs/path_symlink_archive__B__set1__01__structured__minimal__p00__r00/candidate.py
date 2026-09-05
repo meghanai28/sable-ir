@@ -1,0 +1,80 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with safety checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve and normalize paths to prevent directory traversal
+        resolved_tar = os.path.realpath(tar_path)
+        resolved_dest = os.path.realpath(dest_path)
+        
+        # Ensure the destination directory exists
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(resolved_tar, 'r:*') as tar:
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Resolve the member's name relative to the destination
+                member_path = os.path.join(resolved_dest, member.name)
+                
+                # Normalize the member path to resolve .. and .
+                normalized_member = os.path.normpath(member_path)
+                
+                # Check for directory traversal
+                if not normalized_member.startswith(resolved_dest + os.sep) and normalized_member != resolved_dest:
+                    return False
+                
+                # Handle symbolic links
+                if member.issym() or member.islnk():
+                    link_target = member.linkname if member.issym() else member.linkname
+                    
+                    # Resolve the link target
+                    resolved_link_target = os.path.normpath(os.path.join(resolved_dest, link_target))
+                    
+                    # Check for directory traversal in link target
+                    if not resolved_link_target.startswith(resolved_dest + os.sep) and resolved_link_target != resolved_dest:
+                        return False
+                    
+                    # Create the directory structure if needed
+                    if member.isdir():
+                        os.makedirs(normalized_member, exist_ok=True)
+                    elif member.isfile():
+                        # Ensure parent directories exist
+                        parent_dir = os.path.dirname(normalized_member)
+                        if parent_dir:
+                            os.makedirs(parent_dir, exist_ok=True)
+                        
+                        # Extract the file
+                        tar.extract(member, member_dir=resolved_dest)
+                        
+                        # Handle symbolic links
+                        if member.issym():
+                            os.symlink(link_target, normalized_member)
+                        elif member.islnk():
+                            os.symlink(link_target, normalized_member)
+                elif member.isdir():
+                    # Create directory
+                    os.makedirs(normalized_member, exist_ok=True)
+                else:
+                    # Extract regular file
+                    if member.isfile():
+                        parent_dir = os.path.dirname(normalized_member)
+                        if parent_dir:
+                            os.makedirs(parent_dir, exist_ok=True)
+                        tar.extract(member, member_dir=resolved_dest)
+    
+    except Exception:
+        return False
+    
+    return True

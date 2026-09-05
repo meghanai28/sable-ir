@@ -1,0 +1,57 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with security checks to prevent path traversal.
+    
+    Returns True on complete success, False on any validation or extraction failure.
+    """
+    try:
+        # Normalize and resolve the destination path
+        dest_path = os.path.normpath(dest_path)
+        
+        # Resolve the tar file path to ensure it exists and is a file
+        tar_file = os.path.abspath(tar_path)
+        if not os.path.isfile(tar_file):
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Check all members before extraction
+            for member in tar.getmembers():
+                # Calculate the target path for this member
+                target_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Security check: Ensure the target is within dest_path
+                # We must check if the target starts with dest_path or is equal to it
+                # Also handle the case where dest_path is a directory
+                if not (target_path == dest_path or target_path.startswith(dest_path + os.sep)):
+                    return False
+                
+                # Additional check for symbolic links that might be absolute or point outside
+                if member.issym() or member.islnk():
+                    # For symlinks, we need to check the target
+                    if member.linkname:
+                        # If the link name is absolute, resolve it
+                        if member.linkname.startswith('/'):
+                            link_target = os.path.normpath(os.path.join(dest_path, member.linkname))
+                            if not (link_target == dest_path or link_target.startswith(dest_path + os.sep)):
+                                return False
+                        else:
+                            # For relative link names, we check the resolved path
+                            link_target = os.path.normpath(os.path.join(dest_path, member.linkname))
+                            if not (link_target == dest_path or link_target.startswith(dest_path + os.sep)):
+                                return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+        
+        return True
+    
+    except Exception:
+        return False

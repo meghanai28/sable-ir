@@ -1,0 +1,52 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Returns:
+        bool: True if extraction completes successfully with all members inside dest_path,
+              False if any validation or extraction fails.
+    """
+    try:
+        # Normalize and resolve the destination path
+        dest_path = os.path.normpath(dest_path)
+        dest_dir = os.path.dirname(dest_path)
+        
+        # Validate that dest_path does not escape the intended root
+        # We check if the normalized path starts with the directory part
+        if not dest_path.startswith(dest_dir) or dest_path == dest_dir:
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Skip directories to avoid creating them, only extract files
+                if member.isdir():
+                    continue
+                
+                # Get the absolute path of the member's name
+                member_name = member.name
+                
+                # Check if the member name is absolute or contains ..
+                if os.path.isabs(member_name):
+                    return False
+                
+                # Resolve the member's path relative to dest_path
+                # and check for .. traversal
+                member_resolved = os.path.normpath(os.path.join(dest_path, member_name))
+                
+                # Ensure the resolved path is within dest_path
+                if not member_resolved.startswith(dest_path) or member_resolved == dest_path:
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

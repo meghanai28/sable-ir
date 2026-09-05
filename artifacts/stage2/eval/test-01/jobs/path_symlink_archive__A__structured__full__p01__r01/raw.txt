@@ -1,0 +1,90 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve . and .. components."""
+    return os.path.normpath(path)
+
+def _is_safe_relative_to(base: str, target: str) -> bool:
+    """Check if target is safely within base by resolving both to absolute paths."""
+    base = os.path.abspath(base)
+    target = os.path.abspath(target)
+    return target.startswith(base)
+
+def _get_tar_member_path(member: tarfile.TarFileMember) -> str:
+    """Get the absolute path for a member relative to dest_path."""
+    dest_path = os.path.abspath(dest_path)
+    # Use the member's arcname, which is the path within the archive
+    member_path = os.path.join(dest_path, member.name)
+    # Normalize to remove .. or . components that might be in the archive
+    return os.path.normpath(member_path)
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with safety checks.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction succeeds completely, False otherwise.
+    """
+    try:
+        # Normalize and validate paths immediately
+        tar_path = _normalize_path(tar_path)
+        dest_path = _normalize_path(dest_path)
+        
+        # Ensure dest_path is absolute
+        if not os.path.isabs(dest_path):
+            return False
+        
+        # Create dest_path if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Safety checks for each member
+            for member in members:
+                # Check for symbolic links or hard links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Resolve the member's path relative to dest_path
+                member_path = _get_tar_member_path(member)
+                
+                # Check if the member path escapes the destination
+                if not _is_safe_relative_to(dest_path, member_path):
+                    return False
+                
+                # If it's a directory, we need to ensure it's within dest_path
+                # The above check handles this, but let's be explicit
+                if member.isdir():
+                    # Ensure the directory path is normalized and safe
+                    normalized_dir = os.path.normpath(member_path)
+                    if not normalized_dir.startswith(dest_path):
+                        return False
+            
+            # If all checks pass, proceed with extraction
+            # We extract directly to the destination path
+            for member in members:
+                if member.isdir():
+                    # Create directories
+                    member_path = _get_tar_member_path(member)
+                    os.makedirs(member_path, exist_ok=True)
+                else:
+                    # Extract regular files
+                    member_path = _get_tar_member_path(member)
+                    member_path = os.path.normpath(member_path)
+                    os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                    member.extract(tar, member_path)
+            
+            return True
+            
+    except Exception:
+        return False

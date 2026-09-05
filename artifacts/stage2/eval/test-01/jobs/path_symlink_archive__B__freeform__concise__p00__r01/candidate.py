@@ -1,0 +1,140 @@
+import os
+import tarfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve . and .. without resolving symlinks."""
+    return os.path.normpath(path)
+
+def _is_within_dest(normalized_dest: str, member_path: str) -> bool:
+    """Check if member_path is within normalized_dest."""
+    if not member_path.startswith(normalized_dest + os.sep):
+        return False
+    # Handle the case where member_path equals dest_path exactly (e.g., root tarball)
+    if member_path == normalized_dest:
+        return True
+    return True
+
+def _check_member_safety(tar_path: str, dest_path: str, member: tarfile.TarFileMember) -> bool:
+    """
+    Check if a tar member is safe to extract.
+    This function checks:
+    1. The member's name itself does not escape dest_path.
+    2. If the member is a symlink, its target does not escape dest_path.
+    3. If the member is a hardlink, the target does not escape dest_path.
+    """
+    # Normalize the member's name relative to dest_path
+    member_name = member.name
+    dest_path_normalized = _normalize_path(dest_path)
+    
+    # Check if the member name escapes the destination
+    if not member_name.startswith(dest_path_normalized + os.sep):
+        if member_name == dest_path_normalized:
+            # This is safe only if the tarball is exactly named dest_path, which is rare but possible
+            pass
+        else:
+            return False
+    
+    # Check for symlinks
+    if member.issym():
+        link_target = member.linkname
+        # Resolve the symlink target relative to the member's location
+        # If the member is a directory, the link target is relative to that directory
+        # If the member is a file, the link target is relative to the file's location
+        # We need to resolve the symlink target to check if it escapes
+        try:
+            # Construct the full path to the symlink target
+            if member.isdir():
+                link_path = os.path.join(dest_path_normalized, member_name, link_target)
+            else:
+                link_path = os.path.join(dest_path_normalized, member_name, link_target)
+            
+            # Normalize the path to resolve . and ..
+            resolved_link = os.path.normpath(link_path)
+            
+            # Check if the resolved link escapes the destination
+            if not resolved_link.startswith(dest_path_normalized + os.sep):
+                if resolved_link == dest_path_normalized:
+                    pass
+                else:
+                    return False
+        except (OSError, ValueError):
+            return False
+    
+    # Check for hardlinks
+    if member.ishardlink():
+        link_target = member.linkname
+        # Resolve the hardlink target
+        if member.isdir():
+            link_path = os.path.join(dest_path_normalized, member_name, link_target)
+        else:
+            link_path = os.path.join(dest_path_normalized, member_name, link_target)
+        
+        resolved_link = os.path.normpath(link_path)
+        
+        # Check if the resolved link escapes the destination
+        if not resolved_link.startswith(dest_path_normalized + os.sep):
+            if resolved_link == dest_path_normalized:
+                pass
+            else:
+                return False
+    
+    return True
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory path.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize the destination path
+        normalized_dest = _normalize_path(dest_path)
+        
+        # Check if the destination escapes the root
+        if not normalized_dest.startswith(os.sep) and normalized_dest != '.':
+            # This is a relative path, check if it escapes
+            if '..' in normalized_dest.split(os.sep):
+                # This might be a path like "/..", which is not allowed
+                pass
+        
+        # Check if the destination escapes the root
+        if normalized_dest.startswith(os.sep) or normalized_dest == '.':
+            pass
+        else:
+            # Check if the destination contains .. that would escape
+            if normalized_dest.startswith('..') or normalized_dest.startswith('/..'):
+                return False
+        
+        # Ensure the destination is within the root
+        if not normalized_dest.startswith(os.sep) and not normalized_dest == '.':
+            # If it's a relative path, we need to ensure it doesn't escape
+            # We'll do this during extraction, but we can do a quick check here
+            pass
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(normalized_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Extract each member
+            for member in tar.getmembers():
+                # Check if the member is safe
+                if not _check_member_safety(tar_path, normalized_dest, member):
+                    return False
+                
+                # Extract the member
+                try:
+                    tar.extract(member, dest_path)
+                except (tarfile.TarError, OSError):
+                    return False
+            
+            return True
+    
+    except (OSError, tarfile.TarError, ValueError):
+        return False

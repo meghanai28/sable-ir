@@ -1,0 +1,244 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import http.client
+import ssl
+from typing import Tuple, List, Optional
+
+def _get_default_port(scheme: str) -> int:
+    if scheme == 'http':
+        return 80
+    elif scheme == 'https':
+        return 443
+    return -1
+
+def _resolve_hostname(hostname: str) -> List[str]:
+    try:
+        ip_addresses = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        return [info[4][0] for info in ip_addresses]
+    except socket.gaierror:
+        raise ValueError(f"Cannot resolve hostname: {hostname}")
+
+def _parse_url(url: str) -> Tuple[str, str, str, int, bool]:
+    """Parse URL into scheme, netloc, path, port, and is_absolute."""
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    path = parsed.path
+    port = parsed.port
+    is_absolute = parsed.scheme in ('http', 'https')
+    
+    if not is_absolute:
+        raise ValueError(f"Only absolute URLs are allowed: {url}")
+    
+    if not port:
+        port = _get_default_port(scheme)
+    
+    # Handle IPv6 in netloc
+    if '[' in netloc:
+        # Extract address and port if present
+        bracket_end = netloc.find(']')
+        if bracket_end != -1:
+            netloc = netloc[:bracket_end]
+            # Port comes after ]:
+            if ':' in netloc:
+                netloc, port = netloc.rsplit(':', 1)
+                port = int(port)
+            else:
+                port = _get_default_port(scheme)
+        else:
+            port = _get_default_port(scheme)
+    
+    return scheme, netloc, path, port, is_absolute
+
+def _is_public_address(ip: str) -> bool:
+    """Check if an IP address is public (not localhost or private ranges)."""
+    parts = ip.split('.')
+    if len(parts) != 4:
+        return False
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return False
+    
+    # Check for localhost
+    if any(p == '127' or p == '0' for p in nums):
+        return False
+    
+    # Check for private ranges
+    if nums[0] in [10, 172, 192]:
+        if nums[0] == 10:
+            return False
+        if nums[0] == 192 and nums[1] == 168:
+            return False
+        if nums[0] == 172 and 16 <= nums[1] <= 31:
+            return False
+        if nums[0] == 192 and nums[1] == 168:
+            return False
+    if nums[0] == 127:
+        return False
+    if nums[0] == 0:
+        return False
+    if nums[0] == 224 or nums[0] == 225 or nums[0] == 226 or nums[0] == 227 or nums[0] == 228 or nums[0] == 239:
+        return False
+    if nums[0] == 240:
+        return False
+    if nums[0] == 100 or nums[0] == 101:
+        return False
+    if nums[0] == 169:
+        return False
+    
+    return True
+
+def _resolve_location(location: str, current_url: str) -> Tuple[str, str, str, int, bool]:
+    """Resolve a Location header against the current URL."""
+    parsed_current = urllib.parse.urlparse(current_url)
+    parsed_location = urllib.parse.urlparse(location)
+    
+    # If absolute URL, use it directly
+    if parsed_location.scheme:
+        return _parse_url(location)
+    
+    # Relative URL
+    base = parsed_current.path
+    if not base.endswith('/'):
+        base += '/'
+    
+    full_path = urllib.parse.urljoin(base, location)
+    parsed_full = urllib.parse.urlparse(full_path)
+    
+    return _parse_url(full_path)
+
+def _validate_scheme(scheme: str) -> bool:
+    return scheme in ('http', 'https')
+
+def _validate_port(scheme: str, port: int) -> bool:
+    default = _get_default_port(scheme)
+    if port != default:
+        return False
+    return True
+
+def _validate_dns(ip_list: List[str], scheme: str) -> bool:
+    # Check if all IPs are public
+    for ip in ip_list:
+        if not _is_public_address(ip):
+            return False
+    return True
+
+def _validate_credentials(scheme: str, netloc: str) -> bool:
+    # Allow credentials but ensure they are not being used to bypass validation
+    # For simplicity, we just check that credentials are present if they exist
+    # and that the host part is valid
+    if '@' in netloc:
+        user_pass, host = netloc.rsplit('@', 1)
+        if not host:
+            return False
+        # Ensure host is resolvable later
+        return True
+    return True
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL following redirects.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed.
+    """
+    # Parse initial URL
+    scheme, netloc, path, port, is_absolute = _parse_url(url)
+    
+    # Validate scheme
+    if not _validate_scheme(scheme):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Validate port
+    if not _validate_port(scheme, port):
+        raise ValueError(f"Port {port} not allowed for scheme {scheme}")
+    
+    # Validate DNS resolution
+    ip_addresses = resolve_host(netloc)
+    if not _validate_dns(ip_addresses, scheme):
+        raise ValueError(f"DNS resolution failed or invalid addresses for {netloc}")
+    
+    # Validate credentials
+    if not _validate_credentials(scheme, netloc):
+        raise ValueError(f"Invalid credentials in URL for {netloc}")
+    
+    # Prepare request URL
+    request_url = f"{scheme}://{netloc}:{port}{path}"
+    
+    # Fetch with transport
+    status, headers, body = transport(request_url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body
+
+def _follow_redirects(url: str, transport, resolve_host, max_hops: int = 5) -> str:
+    """
+    Internal function to follow redirects.
+    """
+    current_url = url
+    hops = 0
+    
+    while hops < max_hops:
+        # Parse current URL
+        scheme, netloc, path, port, is_absolute = _parse_url(current_url)
+        
+        # Validate scheme
+        if not _validate_scheme(scheme):
+            raise ValueError(f"Disallowed scheme: {scheme}")
+        
+        # Validate port
+        if not _validate_port(scheme, port):
+            raise ValueError(f"Port {port} not allowed for scheme {scheme}")
+        
+        # Validate DNS
+        ip_addresses = resolve_host(netloc)
+        if not _validate_dns(ip_addresses, scheme):
+            raise ValueError(f"DNS resolution failed or invalid addresses for {netloc}")
+        
+        # Validate credentials
+        if not _validate_credentials(scheme, netloc):
+            raise ValueError(f"Invalid credentials in URL for {netloc}")
+        
+        # Prepare request URL
+        request_url = f"{scheme}://{netloc}:{port}{path}"
+        
+        # Fetch with transport
+        status, headers, body = transport(request_url)
+        
+        # Check status
+        if status == 200:
+            return body
+        
+        # Check for redirect
+        if 'Location' in headers:
+            location = headers['Location']
+            current_url = location
+            hops += 1
+        else:
+            raise ValueError(f"No redirect but status not 200: {status}")
+    
+    raise ValueError(f"Too many redirects: {max_hops}")
+
+# Note: The implementation above includes a fetch_text function that follows the plan.
+# However, the plan mentions following Location headers at most five hops.
+# The fetch_text function in the plan description does not explicitly mention following redirects,
+# but the plan says "follow Location headers at most five hops".
+# Therefore, I will implement fetch_text to follow redirects.
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL following redirects.

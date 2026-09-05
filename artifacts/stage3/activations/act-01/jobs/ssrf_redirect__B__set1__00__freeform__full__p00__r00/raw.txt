@@ -1,0 +1,81 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, host, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    path = parsed.path
+    
+    # Validate scheme: only allow http or https
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the port based on the scheme
+    if scheme == 'http':
+        port = 80
+    else:
+        port = 443
+    
+    # Resolve the hostname to IP addresses
+    try:
+        ip_addresses = resolve_host(host)
+    except Exception:
+        raise ValueError("Host resolution failed.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP address obtained for host.")
+    
+    # Select the first resolved IP address for the connection
+    # Note: The plan implies using the resolved IP, and the dangerous operation is opening the network connection.
+    # We use the first IP found.
+    target_ip = ip_addresses[0]
+    
+    # Construct the full URL with the resolved IP to ensure we connect to the network
+    # We must not build an HTTP request string by concatenating user-supplied values in a way that could be used for injection.
+    # Since we are using the standard library's urllib.request which handles the connection, we construct the URL properly.
+    # However, to strictly adhere to "Do not build an HTTP request string by concatenating user-supplied values",
+    # we rely on the parsed components. The URL itself is the input. The dangerous part is the network call.
+    # We will use urllib.request to open the URL. The URL is user-supplied, but urllib.request handles the scheme/host/path parsing internally.
+    # We are not manually constructing a raw HTTP request string (like "GET /path HTTP/1.1\r\n...").
+    
+    # We need to ensure the URL is valid and use the resolved IP if necessary for the connection.
+    # Actually, the prompt says "Resolve the hostname to its textual IP addresses".
+    # If we use urllib.request, it will resolve the hostname itself. To satisfy the requirement of using the supplied resolve_host function,
+    # we might need to construct a URL that uses the resolved IP, or simply use the resolved IP in the connection.
+    # But urllib.request uses the host from the URL. If we replace the host in the URL with the resolved IP, we are modifying user input.
+    # However, the requirement "Resolve the hostname... and raise ValueError if no IP address is obtained" suggests we must use the result of resolve_host.
+    # The safest way to prevent DNS rebinding or other issues is to use the resolved IP in the connection.
+    # Since urllib.request.open() takes a full URL, we can construct a new URL with the resolved IP.
+    # But wait, if the URL is relative, it might not have a host. The plan says "Treat url as untrusted input whose scheme, host, and path are untrusted."
+    # If the URL is relative (no scheme), the initial check for scheme fails (not http/https), so it raises ValueError.
+    # So we can assume the URL has a scheme.
+    # If the host in the URL is different from the resolved host (e.g. CNAME), we should use the resolved IP.
+    # We will construct a URL using the resolved IP.
+    
+    # Reconstruct the URL with the resolved IP to ensure we connect to the resolved address.
+    # We replace the original host with the resolved IP.
+    new_host = target_ip
+    new_url = parsed._replace(netloc=new_host, scheme=scheme).geturl()
+    
+    # Use urllib.request to open the URL. This will perform the network connection.
+    # We do not manually build an HTTP request string.
+    try:
+        response = urllib.request.urlopen(new_url)
+        status_code = response.status
+        body = response.read().decode('utf-8')
+        
+        # Check status code: must be exactly 200
+        if status_code != 200:
+            raise ValueError(f"HTTP status code is not 200: {status_code}")
+        
+        return body
+    except urllib.error.HTTPError as e:
+        # HTTPError is raised for non-2xx status codes
+        raise ValueError(f"HTTP error occurred: {e.code}")
+    except Exception as e:
+        # Other network errors or connection errors
+        raise ValueError(f"Network error: {str(e)}")

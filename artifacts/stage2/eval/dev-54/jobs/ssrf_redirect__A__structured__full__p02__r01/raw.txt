@@ -1,0 +1,102 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security guards.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable(url) -> (status, headers, body) tuple.
+        resolve_host: A callable(hostname) -> list of IP addresses.
+    
+    Returns:
+        The body of the response as a string if status is 200.
+    
+    Raises:
+        ValueError: If the URL is invalid, scheme is not http/https,
+                    or the resolved host has no IP address.
+    """
+    # GUARD: Check scheme
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError("Only HTTP and HTTPS URLs are allowed.")
+    
+    # Extract scheme, netloc, and path
+    scheme = url.split("://")[0]
+    # Parse the URL to get the netloc (hostname) and path
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    hostname = parsed.netloc
+    path = parsed.path
+    
+    # GUARD: Check if path is outside root (must start with /)
+    # The requirement says "raise ValueError if it is outside the root /"
+    # This implies the path must be absolute (start with /)
+    if not path.startswith("/"):
+        raise ValueError("URL path must start with /")
+    
+    # GUARD: Resolve host and check for IP
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP address found for the host.")
+    
+    # ORDER: Resolve and check the destination before following any redirect
+    # The plan states: "resolve and check the destination before following any redirect"
+    # and "accept only a status of 200".
+    # However, the input function `transport` typically handles redirects if called once,
+    # or we might need to follow redirects. The plan says "resolve and check... before following any redirect".
+    # This implies we should make the request, check status 200, and then return body.
+    # If there were redirects, we would need to loop, but the plan says "ORDER: ... before following any redirect".
+    # This suggests a single request check. But typically fetch functions follow redirects.
+    # Let's assume the transport function returns the final status after redirects if we call it,
+    # or we handle redirects ourselves. Given the strictness ("raise ValueError for every other status"),
+    # we should likely follow redirects until we get a 200 or fail.
+    # However, the plan says "resolve and check the destination before following any redirect".
+    # This is slightly ambiguous. It could mean "check the initial destination" or "check every destination in a redirect chain".
+    # Given "raise ValueError for a disallowed request" and "accept only a status of 200",
+    # and the fact that `transport` is provided as a black box, we will assume `transport`
+    # performs the network request. We will follow redirects until we get a 200 or hit an error.
+    
+    # We need to handle redirects. The plan says "before following any redirect", which might mean
+    # we must validate the *initial* host. But if there's a redirect, we need to validate the *new* host too.
+    # Let's implement redirect following.
+    
+    current_url = url
+    while True:
+        status, headers, body = transport(current_url)
+        
+        # ORDER: accept only a status of 200
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # If we are here, status is 200.
+        # Check if there are redirects (Location header)
+        location_header = headers.get("Location")
+        if location_header:
+            # Redirect detected. We need to resolve the new host and check it.
+            # But wait, the plan says "raise ValueError if it is outside the root /".
+            # We should check the new path too.
+            new_parsed = urlparse(location_header)
+            new_path = new_parsed.path
+            if not new_path.startswith("/"):
+                raise ValueError("Redirected URL path must start with /")
+            
+            new_hostname = new_parsed.netloc
+            # GUARD: Resolve the new host
+            new_ip_addresses = resolve_host(new_hostname)
+            if not new_ip_addresses:
+                raise ValueError("No IP address found for the redirected host.")
+            
+            # Update current_url for the next iteration
+            # Note: The plan says "resolve and check the destination before following any redirect".
+            # This implies we check the new destination before proceeding.
+            # We also need to ensure the scheme is valid (though usually redirects keep scheme).
+            # But we should be safe.
+            if not (location_header.startswith("http://") or location_header.startswith("https://")):
+                raise ValueError("Redirect URL must be HTTP or HTTPS.")
+            
+            current_url = location_header
+        else:
+            # No redirect, status is 200. Return body.
+            # GUARD: return the body for status 200
+            return body
+    
+    # If we reach here without returning, something went wrong (should be caught by ValueError above)
+    raise ValueError("Unexpected flow")

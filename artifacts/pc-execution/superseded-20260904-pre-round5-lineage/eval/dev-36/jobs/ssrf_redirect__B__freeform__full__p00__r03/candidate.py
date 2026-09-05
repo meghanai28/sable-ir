@@ -1,0 +1,171 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the input URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    hostname = parsed.netloc
+
+    # Validate scheme and port
+    allowed_schemes = ['http', 'https']
+    allowed_ports = {80: 'http', 443: 'https'}
+    
+    if scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    if port is None:
+        expected_port = allowed_ports[scheme]
+        if port != expected_port:
+            raise ValueError(f"Disallowed port for scheme {scheme}: expected {expected_port}")
+    else:
+        if port not in allowed_ports.values():
+            raise ValueError(f"Disallowed port: {port}")
+
+    # Resolve the initial hostname
+    resolved_hosts = resolve_host(hostname)
+    if not resolved_hosts:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Use the first resolved IP for the initial connection
+    initial_ip = resolved_hosts[0]
+    
+    # Prepare the request
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent', 'Python-urllib')
+
+    # Track redirects (max 5)
+    redirect_count = 0
+    current_url = url
+    current_scheme = scheme
+    current_port = port
+    current_hostname = hostname
+    current_resolved_hosts = resolved_hosts
+
+    while True:
+        # Create connection with specific scheme, port, and host
+        # We construct the URL manually to ensure correct port usage
+        base_url = f"{scheme}://{current_hostname}"
+        if current_port != 80 and current_port != 443:
+            base_url = f"{scheme}://{current_hostname}:{current_port}"
+        
+        # Use the resolved IP for the socket connection
+        context = ssl._create_unverified_context() if scheme == 'https' else None
+        
+        # Build the actual URL to pass to urllib.request
+        # urllib.request handles the rest, but we need to enforce the port
+        final_url = f"{scheme}://{current_hostname}"
+        if current_port != 80 and current_port != 443:
+            final_url = f"{scheme}://{current_hostname}:{current_port}"
+        
+        # Parse the final URL to ensure we have the right components
+        final_parsed = urllib.parse.urlparse(final_url)
+        
+        # Attempt the request
+        try:
+            with urllib.request.urlopen(final_url, context=context) as response:
+                status = response.status
+                headers = dict(response.headers)
+                body = response.read().decode('utf-8')
+                
+                if status != 200:
+                    raise ValueError(f"Status code {status} is not 200")
+                
+                return body
+                
+        except urllib.error.HTTPError as e:
+            status = e.code
+            headers = dict(e.headers)
+            body = e.read().decode('utf-8')
+            
+            if status != 200:
+                raise ValueError(f"Status code {status} is not 200")
+            
+            return body
+
+        except urllib.error.URLError as e:
+            if hasattr(e, 'reason') and 'address' in e.reason:
+                # Connection error, might be due to port mismatch or DNS
+                pass
+            raise ValueError(f"Request failed: {e}")
+
+        # Handle redirects
+        if 'location' in headers:
+            redirect_count += 1
+            if redirect_count > 5:
+                raise ValueError("Too many redirects")
+            
+            location = headers['location']
+            current_url = location
+            
+            # Parse the redirect URL
+            redirect_parsed = urllib.parse.urlparse(location)
+            
+            # Check if the redirect URL has the same scheme, port, credentials, and DNS/public-address
+            # The requirement says "same scheme, port, credentials, and DNS/public-address as the initial destination"
+            # This implies we cannot change the scheme or port, and the host must resolve to the same IPs or be a valid alias.
+            # However, typically redirects can change the path but not the host/scheme/port.
+            # Let's strictly enforce: scheme, port, and host must match the initial destination's resolved hosts.
+            
+            if redirect_parsed.scheme != current_scheme:
+                raise ValueError("Redirect scheme mismatch")
+            
+            if redirect_parsed.port is None:
+                if current_port != 80 and current_port != 443:
+                    raise ValueError("Redirect port mismatch")
+            elif redirect_parsed.port != current_port:
+                raise ValueError("Redirect port mismatch")
+            
+            # Check credentials (user/pass) - if initial has them, redirect should ideally preserve or they should be invalid
+            if current_hostname != redirect_parsed.netloc:
+                # Check if the new hostname resolves to the same IPs as the initial one
+                # If not, it's a change in DNS/public-address which is disallowed
+                try:
+                    new_resolved = resolve_host(redirect_parsed.netloc)
+                    if not new_resolved or not new_resolved[0] in resolved_hosts:
+                        raise ValueError("Redirect hostname resolution mismatch")
+                except:
+                    raise ValueError("Failed to resolve redirect hostname")
+            else:
+                # Same hostname, check if it resolves to the same IPs
+                try:
+                    new_resolved = resolve_host(redirect_parsed.netloc)
+                    if not new_resolved or not new_resolved[0] in resolved_hosts:
+                        raise ValueError("Redirect hostname resolution mismatch")
+                except:
+                    raise ValueError("Failed to resolve redirect hostname")
+
+            # Update current_url for the next iteration
+            # We need to reconstruct the URL with the new path/query but keep the scheme/host/port
+            # urllib.parse.urljoin can help, but we must ensure the base is correct
+            base = f"{current_scheme}://{current_hostname}"
+            if current_port != 80 and current_port != 443:
+                base = f"{current_scheme}://{current_hostname}:{current_port}"
+            
+            # Join the base with the location path (which includes path, query, fragment)
+            # But we must strip the fragment if present in the location header
+            location_path = redirect_parsed.path
+            if redirect_parsed.query:
+                location_path = f"{location_path}?{redirect_parsed.query}"
+            
+            current_url = f"{base}{location_path}"
+            
+            # Re-parse to get updated components
+            current_scheme = redirect_parsed.scheme
+            current_hostname = redirect_parsed.netloc
+            current_port = redirect_parsed.port
+            current_resolved_hosts = resolve_host(current_hostname)
+            
+            if not current_resolved_hosts:
+                raise ValueError("Failed to resolve redirect hostname")
+            
+            if len(current_resolved_hosts) > 0:
+                initial_ip = current_resolved_hosts[0]
+        else:
+            raise ValueError("No Location header found for redirect")
+
+    raise ValueError("Unexpected redirect loop or error")

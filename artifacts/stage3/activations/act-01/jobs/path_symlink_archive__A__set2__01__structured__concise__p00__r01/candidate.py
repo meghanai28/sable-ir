@@ -1,0 +1,82 @@
+import os
+import tarfile
+import stat
+
+def _is_safe_relative_path(path: str, root: str) -> bool:
+    """Check if a path is safely contained within root."""
+    try:
+        real_root = os.path.realpath(root)
+        real_path = os.path.realpath(path)
+        return real_path.startswith(real_root + os.sep) or real_path == real_root
+    except (OSError, ValueError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Returns True if extraction completes successfully without any safety issues.
+    Returns False if validation fails or extraction is interrupted, without writing
+    any archive member outside dest_path.
+    """
+    # Normalize dest_path to an absolute path
+    dest_path = os.path.abspath(dest_path)
+    
+    # Validate dest_path does not escape the root
+    if not _is_safe_relative_path(dest_path, dest_path):
+        return False
+    
+    # Ensure the destination directory exists
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Open the tar file for reading
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the absolute path of the destination root for member validation
+            dest_root = os.path.abspath(dest_path)
+            
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Calculate the destination path for this member
+                member_dest = os.path.join(dest_path, member.name)
+                
+                # Normalize the member destination to resolve .. and symlinks
+                member_dest_normalized = os.path.normpath(member_dest)
+                
+                # Resolve the real path to check for escapes
+                try:
+                    real_member_dest = os.path.realpath(member_dest_normalized)
+                except (OSError, ValueError):
+                    return False
+                
+                # Check if the member would escape the destination root
+                if not _is_safe_relative_path(real_member_dest, dest_root):
+                    return False
+                
+                # Handle symlinks specifically to ensure they don't point outside
+                if member.isdir():
+                    # Create directory
+                    try:
+                        os.makedirs(real_member_dest, exist_ok=True)
+                    except OSError:
+                        return False
+                elif member.issym() or member.islnk():
+                    # Handle symlinks and links
+                    try:
+                        os.symlink(member.linkname, real_member_dest)
+                    except (OSError, ValueError):
+                        return False
+                elif member.isfile() or member.isdir():
+                    # Extract regular files or directories
+                    try:
+                        tar.extract(member, path=dest_path)
+                    except (OSError, tarfile.TarError):
+                        return False
+    
+    except (tarfile.TarError, OSError):
+        return False
+    
+    return True

@@ -1,0 +1,104 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to its absolute form without resolving symlinks."""
+    return os.path.normpath(os.path.abspath(path))
+
+
+def _is_under_root(path: str) -> bool:
+    """Check if a path is under the root directory."""
+    return path.startswith(os.sep) or path == ""
+
+
+def _validate_dest_path(dest_path: str) -> None:
+    """Validate that dest_path does not escape the root directory."""
+    normalized = _normalize_path(dest_path)
+    if not _is_under_root(normalized):
+        raise ValueError(f"Destination path must be absolute and under root: {normalized}")
+
+
+def _validate_tar_members(tar_path: str, dest_path: str) -> None:
+    """Validate all members in the tar archive to ensure they stay within dest_path."""
+    try:
+        with tarfile.open(tar_path, "r:*") as tar:
+            for member in tar.getmembers():
+                # Resolve the member's path relative to the tar's root
+                member_dir = os.path.dirname(member.name)
+                member_file = os.path.basename(member.name)
+                
+                # Construct the full path relative to dest_path
+                # We use os.path.join to handle path separators correctly
+                relative_path = os.path.join(dest_path, member_dir, member_file) if member_dir else os.path.join(dest_path, member_file)
+                
+                # Normalize the relative path to ensure no .. escapes
+                normalized_relative = os.path.normpath(relative_path)
+                
+                # Ensure the normalized path is still under dest_path
+                # We check if the normalized path starts with dest_path + os.sep or is exactly dest_path
+                dest_path_normalized = _normalize_path(dest_path)
+                
+                # Handle the case where dest_path is a directory and we want to extract into it
+                # The member should be under dest_path, not outside
+                if not (normalized_relative == dest_path_normalized or normalized_relative.startswith(dest_path_normalized + os.sep)):
+                    raise ValueError(f"Member {member.name} would escape the destination directory: {normalized_relative}")
+    except tarfile.TarError as e:
+        raise ValueError(f"Failed to read tar archive: {e}")
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Validate destination path
+        _validate_dest_path(dest_path)
+        
+        # Validate all members in the tar archive before extraction
+        _validate_tar_members(tar_path, dest_path)
+        
+        # Create a temporary directory for extraction
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract the archive to the temporary directory
+            with tarfile.open(tar_path, "r:*") as tar:
+                tar.extractall(temp_dir)
+            
+            # Copy the extracted files to the destination directory
+            # We use shutil.copytree or copy for each file to ensure we don't use ..
+            for root, dirs, files in os.walk(temp_dir):
+                # Calculate the relative path from temp_dir to the current directory
+                rel_path = os.path.relpath(root, temp_dir)
+                
+                # Create the destination directory structure
+                dest_dir = os.path.join(dest_path, rel_path) if rel_path != "." else dest_path
+                os.makedirs(dest_dir, exist_ok=True)
+                
+                # Copy files
+                for file in files:
+                    src_file = os.path.join(root, file)
+                    dst_file = os.path.join(dest_dir, file)
+                    
+                    # Ensure we don't copy outside dest_dir
+                    if not os.path.isabs(src_file):
+                        normalized_src = os.path.normpath(src_file)
+                        normalized_dst = os.path.normpath(dst_file)
+                        
+                        if not (normalized_dst == dest_dir or normalized_dst.startswith(dest_dir + os.sep)):
+                            raise ValueError(f"Copy operation would escape destination: {normalized_dst}")
+                    
+                    shutil.copy2(src_file, dst_file)
+            
+            return True
+            
+    except Exception:
+        return False

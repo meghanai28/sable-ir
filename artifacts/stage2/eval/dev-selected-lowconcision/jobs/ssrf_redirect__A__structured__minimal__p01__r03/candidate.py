@@ -1,0 +1,63 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security checks.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response as a string if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, resolution fails, or status is not 200.
+    """
+    # Parse the URL to get scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = parsed.netloc
+    path = parsed.path
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Resolve hostname
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname resolution failed.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for the hostname.")
+    
+    # Check port
+    if parsed.port:
+        if parsed.port != default_port:
+            raise ValueError("Only default ports (80 for HTTP, 443 for HTTPS) are allowed.")
+    
+    # Build the full URL for transport
+    full_url = parsed._replace(port=default_port).geturl()
+    
+    # Perform transport
+    try:
+        status, headers, body = transport(full_url)
+    except Exception as e:
+        raise ValueError(f"Transport failed: {e}")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Return body as string
+    return body if isinstance(body, str) else body.decode('utf-8') if isinstance(body, bytes) else str(body)

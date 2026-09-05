@@ -1,0 +1,193 @@
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL with strict validation.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the scheme/port is invalid, hostname resolution fails,
+                   or the URL escapes the server's root domain.
+    """
+    import socket
+    import urllib.parse
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    path = parsed.path
+    netloc = parsed.netloc
+    
+    # Guard: Check scheme and port
+    allowed_schemes = {'http', 'https'}
+    if scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    default_port = {'http': 80, 'https': 443}
+    port = parsed.port
+    if port is None:
+        port = default_port[scheme]
+    
+    if port != default_port[scheme]:
+        raise ValueError(f"Port {port} not allowed for scheme {scheme}")
+    
+    # Guard: Resolve hostname
+    hostname = netloc.split(':')[0]
+    if not hostname:
+        raise ValueError("Invalid hostname")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not ips:
+        raise ValueError("No IP addresses returned")
+    
+    if len(ips) != 1:
+        raise ValueError(f"Expected exactly one IP address, got {len(ips)}")
+    
+    public_ip = ips[0]
+    
+    # Guard: Resolve and normalize URL, check for escapes
+    # We need to ensure the path doesn't escape the server's root domain
+    # This is a simplified check based on the plan's requirement to "resolve and normalize"
+    # and "raise ValueError if it escapes the server's root domain".
+    # Since we don't have the server's root domain explicitly, we assume the root is '/'
+    # and check for path traversal attempts like '..' that would go above root.
+    # However, a more robust check involves the actual domain structure.
+    # Given the constraints, we perform a basic traversal check on the path.
+    
+    # Normalize path to remove redundant slashes and handle ..
+    # urllib.parse.urlunparse helps, but we need to check for escapes relative to the host.
+    # A common escape is accessing a parent directory.
+    
+    # Let's construct a clean path and check for .. segments that go beyond root
+    # Note: The plan says "raise ValueError if it escapes the server's root domain".
+    # Without knowing the server's root, we assume the root is the current host.
+    # We check if the path contains '..' that would navigate above the root.
+    
+    # Reconstruct the base URL with the resolved IP to check for escapes
+    base_url = f"{scheme}://{public_ip}{path}"
+    
+    # Check for path traversal
+    if '..' in path:
+        # Check if the '..' is at the start or allows escaping the root
+        # If the path starts with .. or has .. before any non-.. segments that could escape
+        # A simple heuristic: if the path starts with .. or contains .. such that
+        # removing segments results in an empty or root-less path
+        if path.startswith('..') or path.startswith('/..'):
+            raise ValueError("URL escapes server root domain")
+        # Check for .. in the middle that might escape if we consider the host as root
+        # This is complex without a known root. We'll rely on the fact that
+        # standard URL parsing handles .., but we must ensure we don't go above root.
+        # For this implementation, we assume the root is '/' and check for
+        # attempts to go above it.
+        pass # Standard parsing handles most cases, but we add a check for obvious escapes
+    
+    # Additional check: ensure the path doesn't start with .. which would escape root
+    if path.startswith('..') or path.startswith('/..'):
+        raise ValueError("URL escapes server root domain")
+    
+    # Also check for .. in the path that could be interpreted as escaping
+    # by normalizing and seeing if we go above root
+    # We'll use a simple check: if the path has .. segments that would remove the host
+    # This is a simplified version of the guard.
+    
+    # Let's implement a more robust check by simulating the path resolution
+    # We'll ensure the path doesn't contain sequences that would escape the host
+    # by checking if the path starts with .. or if .. is at the beginning of the path
+    # or if the path is just ..
+    
+    # Actually, the most critical check is if the path starts with .. or /..
+    # which would make the URL resolve to the host's parent or empty.
+    if path.startswith('..') or path.startswith('/..'):
+        raise ValueError("URL escapes server root domain")
+    
+    # Now follow redirects
+    current_url = url
+    redirect_count = 0
+    max_redirects = 5
+    
+    while redirect_count < max_redirects:
+        # Check if current_url is a redirect
+        if current_url.startswith('http://') or current_url.startswith('https://'):
+            pass
+        else:
+            # Handle relative URLs if necessary, but the plan implies absolute
+            # We'll assume absolute URLs as per typical fetch_text usage
+            pass
+        
+        # Resolve the current URL to check for escapes again
+        # We need to re-parse and check the path
+        parsed_current = urllib.parse.urlparse(current_url)
+        path_current = parsed_current.path
+        
+        if path_current.startswith('..') or path_current.startswith('/..'):
+            raise ValueError("URL escapes server root domain")
+        
+        # Make the request
+        try:
+            status, headers, body = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        if status == 302 or status == 301:
+            # Handle redirect
+            location = headers.get('Location', '')
+            if not location:
+                raise ValueError("Missing Location header in redirect")
+            
+            # Parse the location
+            parsed_location = urllib.parse.urlparse(location)
+            
+            # Check if the location is absolute
+            if parsed_location.scheme:
+                # Check for escapes in the new URL
+                path_loc = parsed_location.path
+                if path_loc.startswith('..') or path_loc.startswith('/..'):
+                    raise ValueError("Redirect escapes server root domain")
+                
+                # Update current_url
+                current_url = f"{parsed_location.scheme}://{parsed_location.netloc}{parsed_location.path}"
+                redirect_count += 1
+            else:
+                # Relative redirect
+                # Combine with the current URL's path
+                # If the current URL has a path, append to it, otherwise use the location
+                if parsed_current.path:
+                    # Ensure the location is relative to the current path
+                    # If the location starts with /, it's absolute
+                    if not path_loc.startswith('/'):
+                        # Append to the current path
+                        # Remove leading / if present in current path to avoid double slashes
+                        if current_url.endswith('/'):
+                            current_url += path_loc
+                        else:
+                            current_url += '/' + path_loc
+                    else:
+                        current_url = path_loc
+                else:
+                    current_url = location
+                
+                # Check for escapes in the new URL
+                path_loc = parsed_location.path
+                if path_loc.startswith('..') or path_loc.startswith('/..'):
+                    raise ValueError("Redirect escapes server root domain")
+                
+                redirect_count += 1
+        else:
+            # Check status code
+            if status != 200:
+                raise ValueError(f"Unexpected status code: {status}")
+            else:
+                return body.decode('utf-8') if isinstance(body, bytes) else body
+
+# Note: The above implementation includes a simplified escape check.
+# A production system would need a more robust domain escape check based on the actual server configuration.
+# The implementation follows the plan's order: check scheme/port, resolve hostname, resolve/normalize URL, follow redirects.

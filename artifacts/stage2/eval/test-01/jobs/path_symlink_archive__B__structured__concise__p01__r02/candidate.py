@@ -1,0 +1,67 @@
+import os
+import tarfile
+import shutil
+import stat
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    try:
+        # Resolve and normalize the destination path
+        dest_path = os.path.realpath(os.path.normpath(dest_path))
+        
+        # Validate that tar_path exists
+        if not os.path.exists(tar_path):
+            return False
+            
+        if not os.path.isfile(tar_path):
+            return False
+            
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getnames():
+                # Resolve the target path relative to dest_path
+                target_path = os.path.join(dest_path, member)
+                
+                # Normalize the target path to check for escape attempts
+                # We must use realpath on the target path to resolve .. and symlinks
+                # However, we cannot resolve symlinks in the archive members themselves
+                # without potentially following dangerous links, so we use normpath first
+                # and then check if the result escapes the dest_path
+                
+                # Normalize the member path
+                normalized_member = os.path.normpath(member)
+                
+                # Construct the full path
+                full_path = os.path.join(dest_path, normalized_member)
+                
+                # Normalize the full path to resolve .. segments
+                # This is safe because we are only resolving the path structure, not following symlinks
+                # yet. We will check against the dest_path.
+                normalized_full_path = os.path.normpath(full_path)
+                
+                # Check if the normalized path escapes the destination
+                if not normalized_full_path.startswith(dest_path + os.sep) and normalized_full_path != dest_path:
+                    # This check handles cases where .. is used in the path
+                    # We also need to ensure we don't have a path like dest_path itself if it's not a directory
+                    # But since we normalize, dest_path should be the base
+                    return False
+            
+            # If all members are safe, proceed with extraction
+            # Extract all members to the destination directory
+            tar.extractall(dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

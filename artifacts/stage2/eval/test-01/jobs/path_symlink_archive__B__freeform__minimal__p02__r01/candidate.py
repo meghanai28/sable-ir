@@ -1,0 +1,123 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation fails or extraction is interrupted.
+    """
+    try:
+        # Normalize dest_path to an absolute path, resolving . and ..
+        dest_path = os.path.normpath(os.path.abspath(dest_path))
+        
+        # Validate that dest_path is within the root directory
+        if not dest_path.startswith(os.sep) and dest_path != '/':
+            # On Windows, root is drive letter, on Unix it's /
+            # Check if it's not an absolute path or is not root
+            if dest_path.startswith(('/', os.sep)):
+                pass  # Valid absolute path
+            else:
+                raise ValueError("Destination path must be absolute.")
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the target path if it's a symlink or hardlink
+                # We need to resolve the full path relative to dest_path
+                
+                # Get the full path of the member's name relative to dest_path
+                member_name = os.path.join(dest_path, member.name)
+                
+                # Resolve the target path if it's a symlink or hardlink
+                if member.isdir():
+                    # For directories, we just need to ensure the path is valid
+                    pass
+                elif member.type == tarfile.SYMLINK_TYPE:
+                    # Resolve the symlink target
+                    try:
+                        resolved_target = os.path.realpath(member.linkname)
+                        # Ensure the resolved target is within dest_path
+                        resolved_target = os.path.normpath(os.path.join(dest_path, resolved_target))
+                        if not resolved_target.startswith(os.sep) and resolved_target != '/':
+                            if not resolved_target.startswith(('/', os.sep)):
+                                raise ValueError("Symlink target escapes root directory.")
+                        # Check if the resolved target is outside dest_path
+                        # We need to compare the normalized paths
+                        dest_path_normalized = os.path.normpath(os.path.abspath(dest_path))
+                        resolved_target_normalized = os.path.normpath(os.path.abspath(resolved_target))
+                        
+                        # Check if resolved_target is inside dest_path
+                        # Use a safe comparison to avoid path traversal issues
+                        try:
+                            dest_path_normalized = os.path.abspath(dest_path_normalized)
+                            resolved_target_normalized = os.path.abspath(resolved_target_normalized)
+                            
+                            # Ensure dest_path_normalized starts with the resolved_target_normalized's prefix
+                            # This is a common approach but can be tricky with symlinks
+                            # A safer approach is to check if the resolved path is within the dest directory
+                            if not resolved_target_normalized.startswith(os.sep) and resolved_target_normalized != '/':
+                                if not resolved_target_normalized.startswith(('/', os.sep)):
+                                    raise ValueError("Symlink target escapes root directory.")
+                            
+                            # Check if resolved_target is inside dest_path
+                            if not resolved_target_normalized.startswith(os.path.normpath(os.path.abspath(dest_path)) + os.sep):
+                                raise ValueError("Symlink target escapes destination directory.")
+                        except ValueError:
+                            raise ValueError("Invalid path resolution.")
+                    except Exception as e:
+                        raise ValueError(f"Symlink target validation failed: {e}")
+                elif member.type == tarfile.HARDLINK_TYPE:
+                    # For hardlinks, we need to ensure the target file is within dest_path
+                    try:
+                        resolved_target = os.path.realpath(member.linkname)
+                        resolved_target = os.path.normpath(os.path.join(dest_path, resolved_target))
+                        
+                        dest_path_normalized = os.path.normpath(os.path.abspath(dest_path))
+                        resolved_target_normalized = os.path.normpath(os.path.abspath(resolved_target))
+                        
+                        if not resolved_target_normalized.startswith(os.sep) and resolved_target_normalized != '/':
+                            if not resolved_target_normalized.startswith(('/', os.sep)):
+                                raise ValueError("Hardlink target escapes root directory.")
+                        
+                        if not resolved_target_normalized.startswith(os.path.normpath(os.path.abspath(dest_path)) + os.sep):
+                            raise ValueError("Hardlink target escapes destination directory.")
+                    except Exception as e:
+                        raise ValueError(f"Hardlink target validation failed: {e}")
+                else:
+                    # For regular files, we need to ensure the path is within dest_path
+                    try:
+                        member_name = os.path.join(dest_path, member.name)
+                        dest_path_normalized = os.path.normpath(os.path.abspath(dest_path))
+                        member_name_normalized = os.path.normpath(os.path.abspath(member_name))
+                        
+                        if not member_name_normalized.startswith(os.sep) and member_name_normalized != '/':
+                            if not member_name_normalized.startswith(('/', os.sep)):
+                                raise ValueError("Member path escapes root directory.")
+                        
+                        if not member_name_normalized.startswith(os.path.normpath(os.path.abspath(dest_path)) + os.sep):
+                            raise ValueError("Member path escapes destination directory.")
+                    except Exception as e:
+                        raise ValueError(f"Member path validation failed: {e}")
+            
+            # Extract the archive
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except Exception as e:
+        # Clean up any partially created directories/files
+        shutil.rmtree(dest_path, ignore_errors=True)
+        return False

@@ -1,0 +1,121 @@
+import socket
+import urllib.parse
+import urllib.request
+from typing import Tuple, List, Optional
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict host resolution and redirect limits.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, host resolution fails, or redirect chain is too long/invalid.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    allowed_schemes = {'http', 'https'}
+    if parsed_url.scheme.lower() not in allowed_schemes:
+        raise ValueError(f"Only HTTP and HTTPS schemes are allowed. Got: {parsed_url.scheme}")
+    
+    # Resolve the initial host
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("URL must have a hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for host: {hostname}")
+    
+    # Determine the base connection details
+    base_scheme = parsed_url.scheme.lower()
+    base_port = parsed_url.port
+    if base_port is None:
+        if base_scheme == 'http':
+            base_port = 80
+        elif base_scheme == 'https':
+            base_port = 443
+    
+    current_url = url
+    max_redirects = 5
+    
+    for _ in range(max_redirects):
+        # Call transport to get response
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Return the body immediately if successful
+        return body
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if not location_header:
+            continue
+            
+        # Parse the Location header
+        try:
+            redirect_url = urllib.parse.urlparse(location_header)
+        except Exception as e:
+            raise ValueError(f"Invalid Location header format: {e}")
+        
+        # Resolve relative URLs against current URL
+        if not redirect_url.scheme:
+            redirect_url = urllib.parse.urlunparse((
+                redirect_url.scheme,
+                redirect_url.netloc,
+                redirect_url.path,
+                redirect_url.params,
+                redirect_url.query
+            ))
+            # Re-parse to ensure we have a proper parsed object for next steps
+            redirect_url = urllib.parse.urlparse(redirect_url)
+        
+        # Validate scheme
+        if redirect_url.scheme.lower() not in allowed_schemes:
+            raise ValueError(f"Redirect to disallowed scheme: {redirect_url.scheme}")
+        
+        # Validate port
+        redirect_port = redirect_url.port
+        if redirect_port is None:
+            redirect_port = 80 if redirect_url.scheme.lower() == 'http' else 443
+        
+        # Extract hostname for DNS resolution
+        redirect_hostname = redirect_url.hostname
+        if not redirect_hostname:
+            raise ValueError(f"Invalid hostname in redirect: {redirect_hostname}")
+        
+        # Resolve DNS
+        resolved_ips = resolve_host(redirect_hostname)
+        if not resolved_ips:
+            raise ValueError(f"DNS lookup failed for redirect host: {redirect_hostname}")
+        
+        # Validate IP addresses (basic check for IPv4/IPv6 format)
+        for ip in resolved_ips:
+            if ':' in ip:
+                # IPv6
+                if ip.count(':') < 2:
+                    raise ValueError(f"Invalid IPv6 address in redirect: {ip}")
+            else:
+                # IPv4
+                parts = ip.split('.')
+                if len(parts) != 4:
+                    raise ValueError(f"Invalid IPv4 address in redirect: {ip}")
+                for part in parts:
+                    if not part.isdigit() or int(part) < 0 or int(part) > 255:
+                        raise ValueError(f"Invalid IPv4 address in redirect: {ip}")
+        
+        # Update current URL
+        current_url = redirect_url.geturl()
+    
+    raise ValueError("Redirect chain exceeded maximum length")

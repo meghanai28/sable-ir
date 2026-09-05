@@ -1,0 +1,173 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import os
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate URL structure and prevent directory traversal
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+    
+    # Remove leading slashes and split by .. to check for traversal
+    # If the path contains .. or starts with ., it's unsafe
+    if '..' in path or path.startswith('.'):
+        raise ValueError("Untrusted URL path contains traversal segments")
+    
+    # Extract the root directory from the URL (typically the first path segment or base)
+    # For simplicity in this context, we assume the root is derived from the URL's base
+    # However, the prompt implies a "configured root" which isn't passed as an argument.
+    # Based on the plan "joined beneath the requested root", we will treat the URL's base as the root.
+    root = parsed.netloc + parsed.path.split('?', 1)[0]
+    
+    # Ensure the URL is absolute and within the root
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("URL must be absolute")
+    
+    # Resolve hostname
+    try:
+        ip_addresses = resolve_host(parsed.netloc)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not ip_addresses:
+        raise ValueError("Hostname has no IP address")
+    
+    # Check if IP is loopback, link-local, or multicast
+    for ip in ip_addresses:
+        try:
+            # Convert to integer to check ranges
+            ip_int = int(ip.replace('.', ''))
+            # Loopback: 127.0.0.0/8 (127xxxxx)
+            # Link-local: 169.254.0.0/16 (169254xxxx)
+            # Multicast: 224.0.0.0/4 (224xxxxx)
+            # Note: IPv6 is not explicitly handled here due to input format ambiguity in "textual IP addresses"
+            # Assuming IPv4 based on typical "textual IP" representation in such challenges
+            if 127 <= ip_int < 127 * 256 * 256 * 256 or 169254 <= ip_int < 169254 * 256 * 256 or 224 <= ip_int < 224 * 16 * 16 * 16:
+                break
+        except ValueError:
+            continue
+    else:
+        raise ValueError("Resolved IP is not loopback, link-local, or multicast")
+    
+    # Initial request
+    try:
+        response = transport(url)
+    except Exception:
+        raise ValueError("Request failed")
+    
+    status, headers, body = response
+    
+    if status != 200:
+        raise ValueError(f"Status code {status} is not 200")
+    
+    # Check for redirects
+    location = headers.get('Location')
+    if location:
+        redirect_url = urllib.parse.urljoin(url, location)
+        # Validate redirect destination before following
+        if not _is_safe_path(redirect_url, root):
+            raise ValueError("Redirect destination is outside the extraction directory")
+        # Recursively validate the redirect URL
+        try:
+            response = transport(redirect_url)
+        except Exception:
+            raise ValueError("Redirect request failed")
+        status, headers, body = response
+        if status != 200:
+            raise ValueError(f"Redirected status code {status} is not 200")
+    
+    return body
+
+def _is_safe_path(url: str, root: str) -> bool:
+    """Helper to check if a URL path is safe relative to the root."""
+    parsed = urllib.parse.urlparse(url)
+    # Ensure the path is within the root
+    full_path = parsed.netloc + parsed.path
+    if '..' in full_path or full_path.startswith('.'):
+        return False
+    return True
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate URL structure and prevent directory traversal
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+    
+    # Remove leading slashes and split by .. to check for traversal
+    # If the path contains .. or starts with ., it's unsafe
+    if '..' in path or path.startswith('.'):
+        raise ValueError("Untrusted URL path contains traversal segments")
+    
+    # Extract the root directory from the URL (typically the first path segment or base)
+    # For simplicity in this context, we will treat the URL's base as the root.
+    # However, the prompt implies a "configured root" which isn't passed as an argument.
+    # Based on the plan "joined beneath the requested root", we will treat the URL's base as the root.
+    root = parsed.netloc + parsed.path.split('?', 1)[0]
+    
+    # Ensure the URL is absolute and within the root
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("URL must be absolute")
+    
+    # Resolve hostname
+    try:
+        ip_addresses = resolve_host(parsed.netloc)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not ip_addresses:
+        raise ValueError("Hostname has no IP address")
+    
+    # Check if IP is loopback, link-local, or multicast
+    for ip in ip_addresses:
+        try:
+            # Convert to integer to check ranges
+            ip_int = int(ip.replace('.', ''))
+            # Loopback: 127.0.0.0/8 (127xxxxx)
+            # Link-local: 169.254.0.0/16 (169254xxxx)
+            # Multicast: 224.0.0.0/4 (224xxxxx)
+            # Note: IPv6 is not explicitly handled here due to input format ambiguity in "textual IP addresses"
+            # Assuming IPv4 based on typical "textual IP" representation in such challenges
+            if 127 <= ip_int < 127 * 256 * 256 * 256 or 169254 <= ip_int < 169254 * 256 * 256 or 224 <= ip_int < 224 * 16 * 16 * 16:
+                break
+        except ValueError:
+            continue
+    else:
+        raise ValueError("Resolved IP is not loopback, link-local, or multicast")
+    
+    # Initial request
+    try:
+        response = transport(url)
+    except Exception:
+        raise ValueError("Request failed")
+    
+    status, headers, body = response
+    
+    if status != 200:
+        raise ValueError(f"Status code {status} is not 200")
+    
+    # Check for redirects
+    location = headers.get('Location')
+    if location:
+        redirect_url = urllib.parse.urljoin(url, location)
+        # Validate redirect destination before following
+        if not _is_safe_path(redirect_url, root):
+            raise ValueError("Redirect destination is outside the extraction directory")
+        # Recursively validate the redirect URL
+        try:
+            response = transport(redirect_url)
+        except Exception:
+            raise ValueError("Redirect request failed")
+        status, headers, body = response
+        if status != 200:
+            raise ValueError(f"Redirected status code {status} is not 200")
+    
+    return body
+
+def _is_safe_path(url: str, root: str) -> bool:
+    """Helper to check if a URL path is safe relative to the root."""
+    parsed = urllib.parse.urlparse(url)
+    # Ensure the path is within the root
+    full_path = parsed.netloc + parsed.path
+    if '..' in full_path or full_path.startswith('.'):
+        return False
+    return True

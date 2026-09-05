@@ -1,0 +1,55 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with safety checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Create dest_path if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members and validate them before extraction
+            members = tar.getmembers()
+            
+            for member in members:
+                # Skip directories, only process regular files
+                if member.isdir():
+                    continue
+                    
+                # Check for symlinks and hardlinks
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Calculate the target path
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Resolve the target path to check for path traversal
+                resolved_path = os.path.normpath(os.path.abspath(target_path))
+                
+                # Ensure the resolved path is within dest_path
+                if not resolved_path.startswith(os.path.normpath(os.path.abspath(dest_path)) + os.sep):
+                    return False
+                
+                # Extract the file
+                tar.extract(member, dest_path)
+    
+    except Exception:
+        return False
+    
+    return True

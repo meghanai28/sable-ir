@@ -1,0 +1,71 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security checks.
+    
+    Returns:
+        bool: True if extraction completes successfully, False otherwise.
+    """
+    # Resolve the root directory for validation
+    dest_path = os.path.realpath(dest_path)
+    
+    # Create the destination directory if it doesn't exist
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Security check: reject absolute paths or paths with ..
+                member_name = member.name
+                
+                # Check for absolute paths
+                if os.path.isabs(member_name):
+                    return False
+                
+                # Check for .. in the path
+                if '..' in member_name.split(os.sep):
+                    return False
+                
+                # Resolve the target path relative to dest_path
+                target_path = os.path.join(dest_path, member_name)
+                resolved_target = os.path.realpath(target_path)
+                
+                # Ensure the resolved target is within dest_path
+                if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:
+                    return False
+                
+                # Additional check: if the member is a symlink, ensure its target is safe
+                if member.issym() or member.islnk():
+                    # For symlinks, we need to be careful about the link target
+                    # The plan says: "a symbolic-link or hard-link whose declared target points inside dest_path must be rejected"
+                    # However, we can't know the target until we try to create it or check the archive metadata
+                    # tarfile.getmembers() does provide the linkname for symlinks
+                    if member.linkname:
+                        # Resolve the link target
+                        link_target = os.path.normpath(os.path.join(dest_path, member.name, member.linkname))
+                        resolved_link_target = os.path.realpath(link_target)
+                        
+                        # Check if the resolved link target escapes dest_path
+                        if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+                            return False
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    os.makedirs(target_path, exist_ok=True)
+                else:
+                    # Create the directory if it's a file
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    # Extract the file
+                    tar.extract(member, dest_path)
+    
+    except Exception:
+        return False
+    
+    return True

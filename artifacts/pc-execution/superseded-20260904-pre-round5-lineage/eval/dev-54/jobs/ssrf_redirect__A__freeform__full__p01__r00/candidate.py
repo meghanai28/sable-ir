@@ -1,0 +1,72 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL using the provided transport and resolution functions.
+    
+    Args:
+        url: The URL to fetch (can be absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the URL scheme is not HTTP or HTTPS, or if the resolved IP is loopback or link-local.
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    from urllib.parse import urlparse
+    
+    parsed_url = urlparse(url)
+    
+    # Validate scheme
+    if parsed_url.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS URLs are allowed.")
+    
+    # Extract hostname and port
+    hostname = parsed_url.netloc
+    port = parsed_url.port
+    
+    # If no port specified, use default port for the scheme
+    if port is None:
+        if parsed_url.scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Construct the full URL with default port if needed for transport
+    # (though transport might handle it, we need the correct host:port)
+    if port == 80 and parsed_url.scheme == 'http':
+        # Remove :80 from netloc if present
+        if ':' in hostname:
+            hostname = hostname.rsplit(':', 1)[0]
+    if port == 443 and parsed_url.scheme == 'https':
+        # Remove :443 from netloc if present
+        if ':' in hostname:
+            hostname = hostname.rsplit(':', 1)[0]
+    
+    # Resolve hostname to IP addresses
+    ip_addresses = resolve_host(hostname)
+    
+    # Check for loopback or link-local IPs
+    for ip in ip_addresses:
+        # IPv4 loopback: 127.0.0.0/8
+        if ip.startswith('127.'):
+            raise ValueError("Loopback address detected.")
+        # IPv4 link-local: 169.254.0.0/16
+        if ip.startswith('169.254.'):
+            raise ValueError("Link-local address detected.")
+        # IPv6 loopback: ::1
+        if ip == '::1':
+            raise ValueError("Loopback address detected.")
+        # IPv6 link-local: fe80::/10
+        if ip.startswith('fe80:'):
+            raise ValueError("Link-local address detected.")
+    
+    # Make the request
+    status, headers, body = transport(f"http://{hostname}:{port}{parsed_url.path}" if port == 80 else f"https://{hostname}:{port}{parsed_url.path}")
+    
+    # Return body only if status is 200
+    if status == 200:
+        return body
+    else:
+        raise ValueError(f"Unexpected status code: {status}")

@@ -1,0 +1,185 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving symlinks and removing . and .. components."""
+    return os.path.normpath(os.path.abspath(path))
+
+def _is_within_base(target: str, base: str) -> bool:
+    """Check if target is within base directory."""
+    try:
+        return target.startswith(os.path.normpath(base) + os.sep) or target == os.path.normpath(base)
+    except (ValueError, TypeError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Returns:
+        True if extraction completed successfully without writing outside dest_path.
+        False if validation or extraction fails.
+    """
+    # Normalize and validate dest_path immediately
+    normalized_dest = _normalize_path(dest_path)
+    
+    # Check if dest_path escapes root or is unsafe
+    if not normalized_dest.startswith(os.sep) and normalized_dest != ".":
+        # If it doesn't start with / (on Unix) or drive letter (on Windows), it might be relative
+        # But we already normalized it to absolute. If it's just "." or ".." it's handled.
+        # The main check is whether it's the root or an absolute path that is safe.
+        pass
+    
+    # Ensure dest_path is absolute and normalized
+    if not os.path.isabs(normalized_dest):
+        normalized_dest = os.path.abspath(normalized_dest)
+    
+    # Final check: must not escape root
+    if not normalized_dest.startswith(os.sep) and normalized_dest != ".":
+        # This case is tricky on Windows vs Unix, but since we use abspath,
+        # on Unix abspath(".") is ".", on Windows abspath(".") is ".".
+        # We need to ensure it's not just "." or ".." which might be considered unsafe if not handled.
+        # However, the requirement says "raise an error if it escapes the root directory".
+        # If normalized_dest is ".", it's not escaping root.
+        pass
+    
+    # Re-evaluate: if dest_path is just ".", we should probably treat it as current dir, but for safety
+    # let's ensure it's a valid directory path.
+    if not os.path.exists(normalized_dest):
+        # Create the base directory if it doesn't exist, but we must be careful not to create it outside dest_path
+        # Actually, the plan says "raise an error if it escapes the root". If it's just ".", it's fine.
+        # But we need to make sure we don't accidentally create files outside.
+        pass
+    
+    # Let's re-implement the safety check more robustly
+    # If dest_path is ".", we treat it as current directory.
+    # If dest_path is absolute, we check if it starts with / (Unix) or drive letter (Windows).
+    # On Windows, os.path.normpath(".") becomes ".".
+    # We need to ensure that after normalization, the path is safe.
+    
+    # Check if dest_path is just "." or ".."
+    if normalized_dest == "." or normalized_dest == "..":
+        # This is technically safe if we extract to current dir, but let's be strict.
+        # The plan says "raise an error if it escapes the root".
+        # If it's ".", it's not escaping root.
+        pass
+    
+    # Now, let's ensure we don't create directories outside dest_path
+    # We will create the directory structure under dest_path as needed.
+    
+    # Validate tar_path exists and is a file
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member before extracting
+            for member in members:
+                # Resolve the member's name relative to dest_path
+                member_name = member.name
+                
+                # If member_name is empty, skip
+                if not member_name:
+                    continue
+                
+                # Compute the full path where this member would be extracted
+                # We need to handle the case where member_name contains ..
+                # We should resolve the path relative to dest_path
+                candidate_path = os.path.normpath(os.path.join(normalized_dest, member_name))
+                
+                # Check if candidate_path escapes dest_path
+                # We need to ensure candidate_path starts with normalized_dest + os.sep or equals normalized_dest
+                # But wait, if member_name is "subdir/../file", candidate_path might be inside dest_path
+                # We need to check if candidate_path is within normalized_dest
+                
+                # Normalize candidate_path again to be sure
+                normalized_candidate = os.path.normpath(candidate_path)
+                
+                # Check if it's within dest_path
+                if not (normalized_candidate.startswith(normalized_dest + os.sep) or normalized_candidate == normalized_dest):
+                    return False
+                
+                # Check if the member is a symlink
+                if member.issym():
+                    # Resolve the symlink target
+                    link_path = os.path.join(normalized_dest, member.name)
+                    # Resolve the target of the symlink
+                    try:
+                        resolved_link = os.path.realpath(link_path)
+                    except (OSError, ValueError):
+                        return False
+                    
+                    # Check if resolved_link is within dest_path
+                    if not (resolved_link.startswith(normalized_dest + os.sep) or resolved_link == normalized_dest):
+                        return False
+                    
+                    # Also check if the link target points outside dest_path even if the link itself is inside
+                    # We already checked resolved_link, but let's double check the link target relative to dest_path
+                    # The above check should suffice.
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    # Ensure the directory path exists and is within dest_path
+                    # We will create it later, but we need to ensure we don't create it outside
+                    pass
+                
+                # Check if the member is a file
+                if member.isfile():
+                    pass
+            
+            # If all members are valid, proceed with extraction
+            # Extract members one by one, validating each step
+            for member in members:
+                if not member.name:
+                    continue
+                
+                member_name = member.name
+                candidate_path = os.path.normpath(os.path.join(normalized_dest, member_name))
+                
+                # Re-check candidate_path is within dest_path
+                normalized_candidate = os.path.normpath(candidate_path)
+                if not (normalized_candidate.startswith(normalized_dest + os.sep) or normalized_candidate == normalized_dest):
+                    return False
+                
+                # Extract the member
+                try:
+                    tar.extract(member, path=normalized_dest)
+                except (tarfile.TarError, OSError):
+                    return False
+                
+                # After extraction, verify the file/directory is within dest_path
+                if member.isdir():
+                    # Check if the directory exists and is within dest_path
+                    if not os.path.isdir(normalized_candidate):
+                        return False
+                    if not (normalized_candidate.startswith(normalized_dest + os.sep) or normalized_candidate == normalized_dest):
+                        return False
+                elif member.isfile():
+                    if not os.path.isfile(normalized_candidate):
+                        return False
+                    if not (normalized_candidate.startswith(normalized_dest + os.sep) or normalized_candidate == normalized_dest):
+                        return False
+                elif member.issym():
+                    # Check if the symlink exists and is within dest_path
+                    if not os.path.islink(normalized_candidate):
+                        return False
+                    if not (normalized_candidate.startswith(normalized_dest + os.sep) or normalized_candidate == normalized_dest):
+                        return False
+                    
+                    # Check if the symlink target is within dest_path
+                    try:
+                        resolved_link = os.path.realpath(normalized_candidate)
+                        if not (resolved_link.startswith(normalized_dest + os.sep) or resolved_link == normalized_dest):
+                            return False
+                    except (OSError, ValueError):
+                        return False
+            
+            return True
+            
+    except (tarfile.TarError, OSError, ValueError):
+        return False

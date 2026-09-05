@@ -1,0 +1,154 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP/HTTPS, if the hostname cannot be resolved,
+                   or if redirect targets violate security constraints.
+    """
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    port = parsed.port
+    path = parsed.path
+    query = parsed.query
+    fragment = parsed.fragment
+    
+    # GUARD: Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # GUARD: Resolve hostname
+    if not host:
+        raise ValueError("No hostname in URL")
+    
+    ip_addresses = resolve_host(host)
+    if not ip_addresses:
+        raise ValueError(f"Could not resolve hostname: {host}")
+    
+    # Validate DNS resolution (basic check that we got IPs)
+    # The plan implies resolve_host returning textual IP addresses is sufficient for the guard,
+    # but we ensure we have at least one.
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # If no port is specified, use the default
+    if port is None:
+        port = default_port
+    else:
+        # Ensure the port matches the scheme's default if not explicitly overridden?
+        # The plan says "Accept HTTP or HTTPS on its default port", implying if it's not default,
+        # we might still proceed but the guard is specifically about disallowed schemes/ports.
+        # However, strict interpretation of "Accept ... on its default port" suggests we only accept
+        # if the port is the default one. Let's enforce that.
+        if port != default_port:
+            raise ValueError(f"Only default ports allowed for {scheme}")
+    
+    # Construct the base URL for redirect resolution
+    base_url = f"{scheme}://{host}:{port}{path}"
+    if query:
+        base_url += f"?{query}"
+    if fragment:
+        base_url += f"#{fragment}"
+    
+    # Store the initial public address (IP) for comparison
+    initial_ip = ip_addresses[0]
+    
+    # Build the request
+    req = urllib.request.Request(url)
+    
+    # Follow redirects (at most 5)
+    redirect_count = 0
+    current_url = url
+    
+    while redirect_count < 5:
+        try:
+            with urllib.request.urlopen(current_url) as response:
+                status = response.status
+                headers = response.headers
+                body = response.read()
+                
+                # EFFECT: Return body if status is 200
+                if status == 200:
+                    return body.decode('utf-8')
+                
+                # Handle redirects
+                if status in (301, 302, 303, 307, 308):
+                    location = headers.get('Location')
+                    if not location:
+                        raise ValueError("Redirect without Location header")
+                    
+                    # Resolve the redirect URL
+                    redirect_parsed = urllib.parse.urlparse(location)
+                    
+                    # Check scheme
+                    redirect_scheme = redirect_parsed.scheme.lower()
+                    if redirect_scheme not in ('http', 'https'):
+                        raise ValueError(f"Redirect to disallowed scheme: {redirect_scheme}")
+                    
+                    # Resolve hostname
+                    redirect_host = redirect_parsed.hostname
+                    if not redirect_host:
+                        raise ValueError("Redirect to invalid hostname")
+                    
+                    redirect_ips = resolve_host(redirect_host)
+                    if not redirect_ips:
+                        raise ValueError(f"Could not resolve redirect hostname: {redirect_host}")
+                    
+                    # Check if the redirect target has the same scheme, port, credentials, DNS, and public address
+                    if redirect_scheme != scheme:
+                        raise ValueError("Redirect scheme mismatch")
+                    
+                    if port != redirect_parsed.port:
+                        raise ValueError("Redirect port mismatch")
+                    
+                    # Check credentials (username:password)
+                    if redirect_parsed.username or redirect_parsed.password:
+                        raise ValueError("Redirect to URL with credentials")
+                    
+                    # Check DNS and public address (IP)
+                    if redirect_host != host:
+                        raise ValueError("Redirect hostname mismatch")
+                    
+                    if initial_ip not in redirect_ips:
+                        raise ValueError("Redirect IP address mismatch")
+                    
+                    # Reconstruct the full URL for the redirect
+                    new_path = redirect_parsed.path
+                    new_query = redirect_parsed.query
+                    new_fragment = redirect_parsed.fragment
+                    
+                    if not new_path:
+                        new_path = "/"
+                    
+                    redirect_url = f"{redirect_scheme}://{redirect_host}:{redirect_parsed.port}{new_path}"
+                    if new_query:
+                        redirect_url += f"?{new_query}"
+                    if new_fragment:
+                        redirect_url += f"#{new_fragment}"
+                    
+                    current_url = redirect_url
+                    redirect_count += 1
+                else:
+                    raise ValueError(f"Unexpected status code: {status}")
+                    
+        except urllib.error.HTTPError as e:
+            raise ValueError(f"HTTP Error: {e.code} {e.reason}")
+        except urllib.error.URLError as e:
+            raise ValueError(f"URL Error: {e.reason}")
+    
+    raise ValueError("Too many redirects")

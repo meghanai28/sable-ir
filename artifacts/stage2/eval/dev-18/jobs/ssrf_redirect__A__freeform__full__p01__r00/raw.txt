@@ -1,0 +1,114 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation.
+    
+    Args:
+        url: The URL to fetch (untrusted input).
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body text for a successful 200 response.
+    
+    Raises:
+        ValueError: If the URL scheme is invalid, host resolution fails,
+                   port mismatch, path validation fails, status is not 200,
+                   or redirect is invalid.
+    """
+    import socket
+    import urllib.parse
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only http and https schemes are allowed.")
+    
+    # Validate default port
+    if parsed.port:
+        raise ValueError("Only default ports for http and https are allowed.")
+    
+    # Determine the expected default port
+    expected_port = 80 if parsed.scheme == 'http' else 443
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL must contain a valid hostname.")
+    
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError("No IP addresses found for the hostname.")
+    
+    # Check if the resolved IP belongs to the default port
+    # We assume the transport handles the port logic, but per spec we check
+    # if the resolved host "belongs to" the default port. Since we are using
+    # the default port in the request, we must ensure the resolution
+    # didn't fail or that the IP is valid. The spec says "raise ValueError if the
+    # host's resolved IP does not belong to the default port".
+    # In a real network, if you connect to port 80, the IP you get is the one
+    # for that host. The constraint likely implies checking if the IP is valid
+    # and reachable on that port, or simply validating the IP format.
+    # However, the spec says "Check the resolved host against the requested scheme's
+    # default port". This is slightly ambiguous without a network stack.
+    # Interpreting as: ensure the IP is valid and we are using the correct port.
+    # Since we are constructing the request with the default port, we just need
+    # to ensure the IP is valid.
+    
+    # Check if the path remains beneath the scheme's default port.
+    # This implies checking if the path is valid and doesn't contain invalid
+    # characters that would bypass the port restriction or similar.
+    # The spec says "Resolve the target's host and path components beneath the
+    # requested scheme's default port, and raise ValueError unless the resolved
+    # path remains beneath that scheme's default port."
+    # This likely means the path should be valid and not include the scheme/host
+    # or other dangerous components.
+    
+    # Validate path
+    if not parsed.path:
+        raise ValueError("URL must contain a path.")
+    
+    # Check for query string
+    if parsed.query:
+        raise ValueError("Query strings are not allowed.")
+    
+    # Check for fragment
+    if parsed.fragment:
+        raise ValueError("URL fragments are not allowed.")
+    
+    # Make the request
+    status, headers, body = transport(url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError(f"Status code {status} is not 200.")
+    
+    # Check for redirects
+    location = headers.get('Location')
+    if location:
+        # Check if it's an absolute URL
+        if location.startswith(('http://', 'https://')):
+            # Parse the redirect URL
+            redirect_parsed = urllib.parse.urlparse(location)
+            # Check if it's javascript: or data:
+            if redirect_parsed.scheme in ('javascript', 'data'):
+                raise ValueError("Redirect to restricted scheme (javascript or data) is not allowed.")
+            # Check if it's a relative URL (starts with / or .)
+            if not redirect_parsed.scheme:
+                raise ValueError("Relative redirects are not allowed.")
+            # Check if the redirect URL has a different scheme
+            if redirect_parsed.scheme != parsed.scheme:
+                raise ValueError("Redirect to different scheme is not allowed.")
+            # Check if the redirect URL has a different host
+            if redirect_parsed.netloc != parsed.netloc:
+                raise ValueError("Redirect to different host is not allowed.")
+            # Check if the redirect URL has a different port
+            if redirect_parsed.port != expected_port:
+                raise ValueError("Redirect to different port is not allowed.")
+        else:
+            # Relative URL
+            raise ValueError("Relative redirects are not allowed.")
+    
+    # Return the body text
+    return body

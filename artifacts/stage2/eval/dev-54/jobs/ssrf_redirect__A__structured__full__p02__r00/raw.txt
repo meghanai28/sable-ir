@@ -1,0 +1,51 @@
+def fetch_text(url, transport, resolve_host):
+    import re
+    
+    def validate_and_resolve():
+        # Check scheme
+        if not url.startswith('http://') and not url.startswith('https://'):
+            raise ValueError("Only http:// and https:// are allowed")
+        
+        scheme = url.split('://')[0]
+        netloc = url.split('://')[1].split('/')[0]
+        
+        # Resolve host
+        ip_addresses = resolve_host(netloc)
+        if not ip_addresses:
+            raise ValueError("No IP address found for host")
+        
+        # Determine port
+        if scheme == 'http':
+            port = 80
+        else:
+            port = 443
+        
+        # Parse path
+        path = url.split('://')[1].split('/')[1]
+        
+        # Check if path is under root
+        if not path.startswith('/'):
+            raise ValueError("URL must start with /")
+        
+        return scheme, netloc, ip_addresses, port, path
+
+    try:
+        scheme, netloc, ip_addresses, port, path = validate_and_resolve()
+        
+        # Resolve host to IP
+        resolved_host = ip_addresses[0]
+        
+        # Construct full URL for transport
+        full_url = f"{scheme}://{netloc}:{port}{path}"
+        
+        # Make request
+        status, headers, body = transport(full_url)
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+    
+    except Exception as e:
+        raise ValueError(f"Invalid request: {e}")

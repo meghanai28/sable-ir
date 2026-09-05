@@ -1,0 +1,77 @@
+import os
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolution.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, host resolution fails, or port is invalid.
+    """
+    # Parse the URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the default port
+    default_port = None
+    if scheme == 'http':
+        default_port = 80
+    elif scheme == 'https':
+        default_port = 443
+    
+    # Check if the port is the default port
+    if port is not None and port != default_port:
+        raise ValueError("Only the default port is allowed.")
+    
+    # Resolve the hostname
+    hostname = parsed_url.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Host resolution failed.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for hostname.")
+    
+    # Select the first IP address (or could use all if needed)
+    resolved_ip = ip_addresses[0]
+    
+    # Construct the full URL for transport
+    # If port is not specified, use default; if specified, use it; if invalid, already raised
+    if port is None:
+        port_str = None
+    else:
+        port_str = str(port)
+    
+    full_url = f"{scheme}://{hostname}"
+    if port_str:
+        full_url += f":{port_str}"
+    
+    # Use the provided transport to fetch the data
+    status, headers, body = transport(full_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed.")
+    
+    return body

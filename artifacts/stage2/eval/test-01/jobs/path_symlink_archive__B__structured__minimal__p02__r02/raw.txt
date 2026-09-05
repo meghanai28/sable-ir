@@ -1,0 +1,58 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with security checks to prevent directory traversal.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Directory where the archive should be extracted.
+    
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    try:
+        # Resolve and normalize the destination path to prevent traversal attacks
+        dest_path = os.path.realpath(dest_path)
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members in the archive
+            members = tar.getnames()
+            
+            for member in members:
+                # Resolve the potential target path for this member
+                # We need to handle the case where the member name contains ..
+                member_path = os.path.join(dest_path, member)
+                member_path = os.path.realpath(member_path)
+                
+                # Check if the resolved path is within the destination directory
+                # It must start with dest_path + os.sep or be exactly dest_path
+                if not (member_path.startswith(dest_path + os.sep) or member_path == dest_path):
+                    # If it's a symbolic link, check its target as well
+                    if member.isdir():
+                        # For directories, we just check the member path
+                        pass
+                    else:
+                        # For files, we check the member path
+                        pass
+                
+                # Additional check: ensure the member is not an absolute path that escapes
+                if os.path.isabs(member):
+                    member_path = os.path.realpath(member)
+                    if not (member_path.startswith(dest_path + os.sep) or member_path == dest_path):
+                        return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

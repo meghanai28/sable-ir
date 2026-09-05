@@ -1,0 +1,145 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+
+def fetch_text(url: str, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation to prevent OS process injection.
+    
+    Args:
+        url: The target URL string (untrusted).
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of IP strings.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the URL is invalid, has a disallowed scheme/port,
+                    fails DNS resolution, or exceeds the hop limit.
+    """
+    # Parse the URL to extract components
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise ValueError("Invalid URL format")
+
+    # Validate scheme and port
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    if scheme not in ['http', 'https']:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+    else:
+        if scheme == 'http' and port != 80:
+            raise ValueError(f"Non-default port {port} not allowed for HTTP")
+        if scheme == 'https' and port != 443:
+            raise ValueError(f"Non-default port {port} not allowed for HTTPS")
+
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("No hostname in URL")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not ip_addresses:
+        raise ValueError("No IP address found for hostname")
+    
+    # Validate that at least one valid IP exists (basic check)
+    # Note: The plan says "raise ValueError unless it has an IP address whose scheme and port are HTTP or HTTPS on the default port".
+    # The scheme/port check was done above. The DNS check is here.
+    
+    # Define the current URL object for hop tracking
+    current_url = parsed
+    
+    # Limit to 5 hops
+    hop_count = 0
+    
+    while True:
+        # Make the request
+        try:
+            req = urllib.request.Request(current_url.url)
+            response = transport(current_url.url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status, headers, body = response
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            hop_count += 1
+            if hop_count > 5:
+                raise ValueError("Exceeded maximum hop limit of 5")
+            
+            # Parse the Location header
+            try:
+                parsed_location = urllib.parse.urlparse(location_header)
+            except Exception:
+                raise ValueError("Invalid Location header format")
+            
+            # Validate Location components against the current URL's constraints
+            # "scheme, port, credentials, DNS name, and public address are validated exactly as the initial destination"
+            
+            # Check scheme
+            if parsed_location.scheme.lower() not in ['http', 'https']:
+                raise ValueError(f"Disallowed scheme in Location: {parsed_location.scheme}")
+            
+            # Check port
+            loc_port = parsed_location.port
+            if loc_port is None:
+                if parsed_location.scheme == 'http':
+                    loc_port = 80
+                elif parsed_location.scheme == 'https':
+                    loc_port = 443
+            else:
+                if parsed_location.scheme == 'http' and loc_port != 80:
+                    raise ValueError(f"Non-default port {loc_port} in Location")
+                if parsed_location.scheme == 'https' and loc_port != 443:
+                    raise ValueError(f"Non-default port {loc_port} in Location")
+            
+            # Check credentials (basic validation that it doesn't look malicious, though strict equality is hard without knowing the 'initial' creds)
+            # The plan says "validated exactly as the initial destination". 
+            # If the initial destination had no credentials, the Location should ideally not introduce new ones or match the existing ones.
+            # For safety, if the initial URL has no credentials, the Location should not have them either.
+            if not current_url.username and not current_url.password:
+                if parsed_location.username or parsed_location.password:
+                    raise ValueError("Credentials introduced in Location without being in initial URL")
+            
+            # Check DNS name
+            if not parsed_location.hostname:
+                raise ValueError("No hostname in Location")
+            
+            # Resolve the new hostname
+            try:
+                new_ip_addresses = resolve_host(parsed_location.hostname)
+            except Exception:
+                raise ValueError("Failed to resolve Location hostname")
+            
+            if not new_ip_addresses:
+                raise ValueError("No IP address found for Location hostname")
+            
+            # Update current URL for next hop
+            current_url = parsed_location
+            
+        else:
+            # No Location header, we are done
+            break
+    
+    return body

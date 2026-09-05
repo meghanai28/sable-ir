@@ -1,0 +1,101 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Resolve hostname and validate
+    ip_addresses = resolve_host(url)
+    if not ip_addresses:
+        raise ValueError("resolve_host did not return textual IP addresses")
+    
+    # Parse the URL to determine scheme and port
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Determine the target hostname and port
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL format")
+    
+    # Set default port based on scheme
+    if scheme == 'http':
+        target_port = 80
+    elif scheme == 'https':
+        target_port = 443
+    else:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # If no port is specified, use the default; otherwise use the specified one
+    target_port = port if port else target_port
+    
+    # Construct the full URL for the transport call
+    # The transport function expects the original URL string
+    # We rely on the transport function to handle the connection details
+    
+    # Attempt to open the URL
+    try:
+        # Use urllib.request which handles the connection based on the scheme
+        # We need to ensure we are connecting to the resolved IP if necessary,
+        # but the transport function is the interface.
+        # However, the requirement says "Accept HTTP or HTTPS on its default port".
+        # The transport function signature is (url) -> (status, headers, body).
+        # We must construct the request to hit the resolved IP if the transport
+        # doesn't do DNS resolution itself. But typically, we pass the URL.
+        # Let's assume transport handles the connection. If strict IP resolution is needed
+        # before calling transport, we might need to construct a URL with the IP.
+        # Given the plan "resolve and check the hostname before creating the HTTP request",
+        # we should probably use the IP if the transport expects raw sockets or if we want to enforce
+        # that the connection goes to the resolved IP.
+        # However, without knowing the internal implementation of transport, we usually pass the URL.
+        # But to be safe and adhere to "resolve ... before creating the HTTP request",
+        # if the transport is a raw socket handler, we should use the IP.
+        # Let's assume transport takes the URL and handles it, but we validate the host first.
+        # If the transport is something like socket.create_connection, we need the IP.
+        # Since the prompt says "transport(url) returns...", it implies transport takes a URL string.
+        # If the transport is a standard library opener, it resolves DNS.
+        # If the transport is a custom socket handler, it might need the IP.
+        # To strictly follow "resolve ... before creating the HTTP request", we will construct
+        # a new URL using the resolved IP if the scheme requires it, or pass the original.
+        # Actually, the safest interpretation of "resolve ... before creating" in a security context
+        # often implies preventing DNS rebinding by using the resolved IP directly.
+        # Let's construct the URL with the resolved IP to be safe, replacing the hostname.
+        
+        # Replace hostname with the resolved IP in the URL
+        # We need to handle the case where the URL has a path.
+        # urllib.parse.urlunparse can help, but we need to be careful with the scheme.
+        
+        # Reconstruct URL with resolved IP
+        new_scheme = scheme
+        new_netloc = f"{ip_addresses[0]}:{target_port}" if target_port != 80 and target_port != 443 else ip_addresses[0]
+        
+        # If the original URL had a path, we need to preserve it.
+        # urlparse gives us path, params, query, fragment.
+        # urlunparse takes (scheme, netloc, path, params, query, fragment)
+        
+        # Construct the new URL
+        new_url = f"{new_scheme}://{new_netloc}{parsed.path}"
+        if parsed.params:
+            new_url += f"?{parsed.params}"
+        if parsed.query:
+            new_url += f"&{parsed.query}"
+        if parsed.fragment:
+            new_url += f"#{parsed.fragment}"
+            
+        # Now call transport with the constructed URL
+        # Note: If the transport is a standard opener, it will resolve DNS again.
+        # If the transport is a raw socket handler, it will use the IP in the URL.
+        # The prompt says "transport(url) returns...", implying it takes the URL string.
+        # To ensure we use the resolved IP, we must pass a URL containing the IP.
+        
+        status, headers, body = transport(new_url)
+        
+    except Exception as e:
+        raise ValueError(f"Request failed: {e}")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    return body

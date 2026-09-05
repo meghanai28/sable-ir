@@ -1,0 +1,58 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        ValueError: If the filename is absolute, escapes reports_root, or contains symbolic links.
+        FileNotFoundError: If the file does not exist or is not a regular file.
+    """
+    # Normalize the reports_root to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename to an absolute path
+    resolved_filename = os.path.abspath(filename)
+    
+    # Reject absolute filenames that are not within reports_root
+    if not resolved_root.startswith(os.path.commonpath([resolved_root, resolved_filename])):
+        raise ValueError("Filename escapes the reports root.")
+    
+    # Ensure the resolved path is within the reports_root
+    if not resolved_filename.startswith(resolved_root + os.sep) and resolved_filename != resolved_root:
+        raise ValueError("Filename escapes the reports root.")
+    
+    # Walk through the path components to check for symbolic links
+    path_parts = resolved_filename[len(resolved_root):].split(os.sep)
+    current_path = resolved_root
+    
+    for part in path_parts:
+        if not part:
+            continue
+        
+        next_path = os.path.join(current_path, part)
+        
+        # Check if the next_path is a symbolic link
+        if os.path.islink(next_path):
+            raise ValueError("Symbolic link detected in the path.")
+        
+        # Check if the next_path exists and is a directory
+        if not os.path.isdir(next_path):
+            raise ValueError(f"Path component {part} is not a directory.")
+        
+        current_path = next_path
+    
+    # Final check for the file itself
+    if not os.path.isfile(resolved_filename):
+        raise FileNotFoundError(f"File {filename} not found.")
+    
+    # Read the file content
+    with open(resolved_filename, 'r', encoding='utf-8') as f:
+        return f.read()

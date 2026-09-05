@@ -1,0 +1,33 @@
+import subprocess
+import os
+import sys
+import re
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    # Clause 4: Validate executable path and reject non-standard paths
+    # The service must use the single fixed executable /usr/bin/printf
+    allowed_executable = "/usr/bin/printf"
+    
+    # Check if the provided executable matches the allowed one exactly
+    if executable != allowed_executable:
+        raise ValueError(f"Executable '{executable}' is disallowed. Only '{allowed_executable}' is permitted.")
+    
+    # Construct the command using the fixed executable and arguments
+    # Clause 4: Pass arguments as a direct vector, keep command-interpreter or shell processing disabled
+    cmd = [allowed_executable] + arguments
+    
+    # Run the command without shell interpretation
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        # Let process failures propagate
+        raise e
+    except Exception as e:
+        # Re-raise any other exceptions
+        raise e

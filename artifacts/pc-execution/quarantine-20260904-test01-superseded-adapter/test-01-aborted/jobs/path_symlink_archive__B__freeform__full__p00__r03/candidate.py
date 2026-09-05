@@ -1,0 +1,105 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving symlinks and removing .. components."""
+    return os.path.normpath(os.path.realpath(path))
+
+def _is_within_dest(base_dir: str, target_path: str) -> bool:
+    """Check if target_path is within base_dir (after normalization)."""
+    try:
+        resolved_target = os.path.realpath(target_path)
+        resolved_base = os.path.realpath(base_dir)
+        # Ensure the base directory exists for proper prefix checking
+        if not os.path.isdir(resolved_base):
+            return False
+        return resolved_target.startswith(resolved_base + os.sep) or resolved_target == resolved_base
+    except (ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security checks.
+    Rejects any member or link that would escape dest_path.
+    Returns True only on complete success, False otherwise.
+    """
+    try:
+        # Validate inputs
+        if not os.path.isfile(tar_path):
+            return False
+        
+        # Resolve and normalize destination directory
+        dest_path = os.path.realpath(os.path.normpath(dest_path))
+        if not os.path.isdir(dest_path):
+            # Attempt to create the directory if it doesn't exist, but be careful not to write outside
+            try:
+                os.makedirs(dest_path, exist_ok=True)
+            except (OSError, PermissionError):
+                return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Skip directories that don't need extraction (optional, but good for safety)
+                # We must extract directories to ensure the path structure exists for files
+                if member.isdir():
+                    # For directories, we just need to ensure they are within dest_path
+                    if not _is_within_dest(dest_path, member.name):
+                        return False
+                    continue
+                
+                # Resolve the full destination path for this member
+                dest_member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Handle symlinks and hardlinks specifically
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    # Resolve the link target to check for escape
+                    resolved_link_target = os.path.realpath(link_target)
+                    
+                    # Check if the resolved link target is within dest_path
+                    if not _is_within_dest(dest_path, resolved_link_target):
+                        return False
+                    
+                    # Create the directory structure if needed (parent of the link)
+                    parent_dir = os.path.dirname(dest_member_path)
+                    if parent_dir and not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+                    
+                    # Create the symlink
+                    os.symlink(link_target, dest_member_path)
+                elif member.issym():
+                    # This case is redundant with above in Python 3.12+ but kept for clarity
+                    pass
+                else:
+                    # Regular file
+                    # Check if parent directory exists
+                    parent_dir = os.path.dirname(dest_member_path)
+                    if parent_dir and not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+                    
+                    # Extract the file content
+                    tar.extract(member, dest_path)
+                    
+                    # Verify the extracted file is within dest_path
+                    if not os.path.exists(dest_member_path):
+                        return False
+                    
+                    # Check permissions to ensure no world-writable or dangerous perms were set
+                    try:
+                        file_stat = os.stat(dest_member_path)
+                        # Remove world-writable bit (o+w) and group-writable bit (g+w) if present
+                        # This is a basic mitigation, though ideally we'd strip all non-owner permissions
+                        if file_stat.mode & (stat.S_IWOTH | stat.S_IWGRP):
+                            os.chmod(dest_member_path, stat.S_IRUSR | stat.S_IXUSR)
+                    except (OSError, PermissionError):
+                        pass
+    
+        return True
+
+    except (tarfile.TarError, ValueError, OSError, PermissionError):
+        return False

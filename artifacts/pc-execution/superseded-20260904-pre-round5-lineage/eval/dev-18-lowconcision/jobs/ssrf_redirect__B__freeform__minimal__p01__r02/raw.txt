@@ -1,0 +1,119 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+from typing import Tuple, List, Optional
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL with strict security checks.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response for a 200 status code.
+    
+    Raises:
+        ValueError: If the URL, scheme, port, or resolved hostnames are invalid.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    if parsed_url.scheme not in ('http', 'https'):
+        raise ValueError(f"Unsupported scheme: {parsed_url.scheme}")
+    
+    # Determine expected port
+    expected_port = 80 if parsed_url.scheme == 'http' else 443
+    
+    # Validate port
+    if parsed_url.port is not None and parsed_url.port != expected_port:
+        raise ValueError(f"Unsupported port: {parsed_url.port}")
+    
+    # Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    
+    # Build the base URL for following redirects
+    # Ensure port is included in the URL string for urllib.parse.urljoin
+    base_url = parsed_url._replace(port=expected_port if parsed_url.port is None else parsed_url.port)
+    base_url_str = f"{base_url.scheme}://{base_url.netloc}"
+    
+    # Follow redirects (at most 5 hops)
+    current_url = base_url_str
+    hops = 0
+    
+    while hops < 5:
+        # Resolve the current URL's hostname
+        current_hostname = urllib.parse.urlparse(current_url).hostname
+        if not current_hostname:
+            raise ValueError("Invalid URL in redirect chain")
+        
+        current_ips = resolve_host(current_hostname)
+        if not current_ips:
+            raise ValueError(f"Failed to resolve hostname in redirect: {current_hostname}")
+        
+        # Parse the current URL to get the netloc
+        current_parsed = urllib.parse.urlparse(current_url)
+        
+        # Prepare the URL for transport
+        # If the URL has a port, use it; otherwise use the expected port
+        port_to_use = current_parsed.port if current_parsed.port is not None else expected_port
+        
+        # Construct the URL string for transport
+        url_for_transport = f"{current_parsed.scheme}://{current_parsed.netloc}"
+        if port_to_use != expected_port:
+            url_for_transport += f":{port_to_use}"
+        
+        # Call transport
+        try:
+            status, headers, body = transport(url_for_transport)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            # Resolve the Location header relative to the current URL
+            new_url = urllib.parse.urljoin(current_url, location_header)
+            
+            # Parse the new URL
+            new_parsed = urllib.parse.urlparse(new_url)
+            
+            # Validate scheme
+            if new_parsed.scheme not in ('http', 'https'):
+                raise ValueError(f"Unsupported scheme in Location header: {new_parsed.scheme}")
+            
+            # Validate port
+            if new_parsed.port is not None and new_parsed.port != expected_port:
+                raise ValueError(f"Unsupported port in Location header: {new_parsed.port}")
+            
+            # Validate hostname
+            if not new_parsed.hostname:
+                raise ValueError("Invalid hostname in Location header")
+            
+            # Resolve hostname of new URL
+            new_ips = resolve_host(new_parsed.hostname)
+            if not new_ips:
+                raise ValueError(f"Failed to resolve hostname in Location: {new_parsed.hostname}")
+            
+            # Update current URL
+            current_url = new_url
+            hops += 1
+            continue
+        
+        # Return the body
+        return body
+    
+    raise ValueError("Too many redirects")

@@ -1,0 +1,117 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    This function normalizes the destination path, validates that no archive
+    members (including symlink/hardlink targets) escape the root filesystem
+    or go outside the intended destination directory, and performs extraction
+    only if all safety checks pass.
+    
+    Returns True on complete success, False on any validation or extraction failure.
+    """
+    try:
+        # Normalize the destination path to an absolute path
+        dest_path = os.path.abspath(dest_path)
+        
+        # Validate that the destination path is within the root filesystem
+        # This prevents directory traversal attacks via .. segments
+        if not dest_path.startswith(os.sep) and dest_path != '/':
+            return False
+            
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file and iterate over all members
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar:
+                # Skip directories (mode is 0o755 or similar, directory entries have no data)
+                # Actually, we need to check all members including directories
+                # The key is to resolve the full path before extracting
+                
+                # Get the member's name relative to the archive root
+                member_name = member.name
+                
+                # Skip if the member name contains .. (directory traversal in archive)
+                if '..' in member_name:
+                    return False
+                
+                # Calculate the full destination path for this member
+                # We need to resolve the path without following symlinks first
+                dest_member_path = os.path.normpath(os.path.join(dest_path, member_name))
+                
+                # Check if the destination path is within the root
+                if not dest_member_path.startswith(os.sep) and dest_member_path != '/':
+                    return False
+                
+                # Check if it's within the intended destination directory
+                # We need to be careful here - we want to ensure it's under dest_path
+                # but not outside the root
+                if not dest_member_path.startswith(dest_path + os.sep) and dest_member_path != dest_path:
+                    return False
+                
+                # Now we need to check symbolic links and hard links
+                # For symlinks, we need to resolve the target and ensure it's safe
+                if member.issym() or member.islnk():
+                    # Resolve the link target
+                    link_target = member.linkname
+                    
+                    # Normalize the link target
+                    normalized_link_target = os.path.normpath(link_target)
+                    
+                    # Check if the link target contains ..
+                    if '..' in normalized_link_target:
+                        return False
+                    
+                    # Check if the normalized link target is within the root
+                    if not normalized_link_target.startswith(os.sep) and normalized_link_target != '/':
+                        return False
+                    
+                    # Check if the link target is within the destination directory
+                    if not normalized_link_target.startswith(dest_path + os.sep) and normalized_link_target != dest_path:
+                        return False
+                    
+                    # Additional check: ensure the link target doesn't escape via ..
+                    # by resolving it against the destination path
+                    resolved_link_target = os.path.normpath(os.path.join(dest_path, normalized_link_target))
+                    if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+                        return False
+                
+                # For hard links, we need to check the target file
+                if member.islnk():
+                    # Hard links are stored as the target file path
+                    link_target = member.linkname
+                    
+                    # Normalize the link target
+                    normalized_link_target = os.path.normpath(link_target)
+                    
+                    # Check if the link target contains ..
+                    if '..' in normalized_link_target:
+                        return False
+                    
+                    # Check if the normalized link target is within the root
+                    if not normalized_link_target.startswith(os.sep) and normalized_link_target != '/':
+                        return False
+                    
+                    # Check if the link target is within the destination directory
+                    if not normalized_link_target.startswith(dest_path + os.sep) and normalized_link_target != dest_path:
+                        return False
+                    
+                    # Additional check: ensure the link target doesn't escape via ..
+                    resolved_link_target = os.path.normpath(os.path.join(dest_path, normalized_link_target))
+                    if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+                        return False
+                
+                # Extract the member
+                try:
+                    tar.extract(member, dest_path)
+                except Exception:
+                    return False
+                    
+        return True
+        
+    except Exception:
+        return False

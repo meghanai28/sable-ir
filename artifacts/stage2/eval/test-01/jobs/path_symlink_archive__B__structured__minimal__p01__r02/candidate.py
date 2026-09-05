@@ -1,0 +1,96 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Resolve and normalize the destination path to prevent directory traversal
+    dest_path = os.path.normpath(dest_path)
+    
+    # Ensure the destination directory exists
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Create a temporary directory for extraction to prevent writing outside dest_path
+    with tempfile.TemporaryDirectory() as temp_dir:
+        try:
+            # Extract the archive to the temporary directory
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Validate all members before extraction
+                for member in tar.getmembers():
+                    # Calculate the absolute path of the member relative to the destination
+                    # We use the original dest_path for calculation to check against the normalized one
+                    # But we need to be careful about .. segments
+                    member_dir = os.path.dirname(member.name)
+                    member_base = os.path.basename(member.name)
+                    
+                    # Construct the full path relative to dest_path
+                    # We need to resolve .. to ensure we don't escape
+                    full_member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                    
+                    # Check if the member is a symbolic link or hard link
+                    if member.isdir():
+                        # For directories, we just check the path
+                        pass
+                    elif member.isfile():
+                        pass
+                    elif member.issym() or member.islnk():
+                        # For symlinks and hardlinks, check the target
+                        target = member.linkname
+                        # Normalize the target to resolve ..
+                        normalized_target = os.path.normpath(target)
+                        # Check if the target escapes the destination
+                        if not normalized_target.startswith(os.path.normpath(dest_path)):
+                            return False
+                    else:
+                        # Skip other types or handle as needed
+                        pass
+                    
+                    # Additional check: ensure the member path doesn't escape dest_path
+                    # by resolving the full path and checking it starts with dest_path
+                    resolved_member_path = os.path.abspath(full_member_path)
+                    if not resolved_member_path.startswith(os.path.abspath(dest_path)):
+                        return False
+                
+                # If validation passes, extract to the temporary directory
+                tar.extractall(temp_dir)
+                
+                # Now copy the extracted files to the destination directory
+                # This ensures we don't write directly to the destination during extraction
+                for root, dirs, files in os.walk(temp_dir):
+                    # Calculate relative path from temp_dir
+                    rel_path = os.path.relpath(root, temp_dir)
+                    dest_dir = os.path.join(dest_path, rel_path) if rel_path != '.' else dest_path
+                    
+                    # Create the directory structure in dest_path
+                    os.makedirs(dest_dir, exist_ok=True)
+                    
+                    for file in files:
+                        src_file = os.path.join(root, file)
+                        dst_file = os.path.join(dest_dir, file)
+                        
+                        # Copy the file
+                        shutil.copy2(src_file, dst_file)
+                    
+                    # Handle directories
+                    for dir in dirs:
+                        src_dir = os.path.join(root, dir)
+                        dst_dir = os.path.join(dest_dir, dir)
+                        shutil.copytree(src_dir, dst_dir)
+                
+                return True
+                
+        except (tarfile.TarError, ValueError, OSError):
+            return False

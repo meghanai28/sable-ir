@@ -1,0 +1,42 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, ensuring no files escape
+    the intended destination path. Returns True on complete success, False otherwise.
+    """
+    try:
+        # Resolve and normalize the destination path
+        dest_path_resolved = os.path.realpath(dest_path)
+        os.makedirs(dest_path_resolved, exist_ok=True)
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members to validate before extraction
+            members = tar.getnames()
+            
+            for member in members:
+                # Skip directories (they are handled by the default extraction logic)
+                # We focus on files and symlinks that need explicit path checking
+                if member.endswith('/'):
+                    continue
+                
+                # Construct the target path
+                target_path = os.path.join(dest_path_resolved, member)
+                
+                # Normalize the target path to resolve . and .. and symlinks
+                target_path_resolved = os.path.realpath(target_path)
+                
+                # Security check: ensure the resolved target is within the destination
+                if not target_path_resolved.startswith(dest_path_resolved + os.sep) and target_path_resolved != dest_path_resolved:
+                    raise ValueError(f"Extracting to a path outside of {dest_path_resolved}: {target_path_resolved}")
+                
+                # Extract the member
+                tar.extract(member, dest_path_resolved, set_attrs=True)
+            
+            return True
+            
+    except Exception:
+        return False

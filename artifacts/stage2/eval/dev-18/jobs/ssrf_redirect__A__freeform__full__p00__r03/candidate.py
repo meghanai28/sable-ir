@@ -1,0 +1,63 @@
+def fetch_text(url, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict host resolution and no redirect following.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the host cannot be resolved, the port is not HTTP/HTTPS default,
+                   or the status code is not 200.
+    """
+    # Parse the URL to extract the host and port
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    port = parsed.port
+    
+    # If no port is specified, use the default for the scheme
+    if port is None:
+        if parsed.scheme in ('http', 'https'):
+            port = 80 if parsed.scheme == 'http' else 443
+        else:
+            raise ValueError("Unsupported scheme")
+    
+    # Validate the host
+    if hostname is None:
+        raise ValueError("Invalid URL: no hostname found")
+    
+    # Resolve the host
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Cannot resolve host: {hostname}")
+    
+    # Construct the full URL with resolved port for the transport call
+    # Note: The transport function expects the URL. We pass the original or resolved.
+    # Based on the plan "check the initial public HTTP destination", we use the parsed info.
+    # We will call transport with the original URL string, but we've already validated the host/port.
+    # The transport function might do its own resolution, but the plan says "Normalize and resolve the target's host before following".
+    # We assume transport takes the URL as provided, but we must ensure the host we pass is the one we validated.
+    # To be safe and strictly follow "normalize and resolve... before following", we construct the URL with the validated host/port.
+    # However, the plan says "Treat url as untrusted input that is joined beneath the requested host".
+    # This implies we should use the host from the URL.
+    
+    # Re-verify the port constraint: "accept only HTTP or HTTPS on its default port"
+    if port != 80 and parsed.scheme == 'http':
+        raise ValueError("Only HTTP on default port 80 is allowed")
+    if port != 443 and parsed.scheme == 'https':
+        raise ValueError("Only HTTPS on default port 443 is allowed")
+    
+    # Call the transport function
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Request failed with status code {status}")
+    
+    return body

@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_report__direct__full_document_b__d02",
+  "role": "direct",
+  "plan_job_id": null,
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport stat\n\ndef read_report(filename: str, reports_root: str) -> str:\n    \"\"\"\n    Read and return the requested UTF-8 report beneath reports_root.\n    \n    Safety checks applied:\n    1. Ensures the resolved path is within the approved filesystem root.\n    2. Rejects symbolic links that resolve outside the root or point to special files.\n    3. Propagates FileNotFoundError for missing ordinary files.\n    4. Raises ValueError when the request is disallowed (e.g., path outside root).\n    \"\"\"\n    # Resolve the absolute path for the requested file\n    try:\n        target_path = os.path.abspath(filename)\n    except (ValueError, TypeError):\n        raise ValueError(\"Invalid filename provided\")\n\n    # Ensure the target is within the approved root\n    root_path = os.path.abspath(reports_root)\n    \n    # If the target is not under the root, raise ValueError\n    if not target_path.startswith(root_path + os.sep) and target_path != root_path:\n        raise ValueError(\"Access denied: file path is outside the approved root\")\n\n    # Check if the file exists\n    if not os.path.isfile(target_path):\n        raise FileNotFoundError(f\"The file '{filename}' does not exist\")\n\n    # Check for symbolic links and resolve them\n    if os.path.islink(target_path):\n        # Resolve the symlink target\n        link_target = os.path.realpath(target_path)\n        \n        # Ensure the resolved target is still within the root\n        if not link_target.startswith(root_path + os.sep) and link_target != root_path:\n            raise ValueError(\"Access denied: symlink resolves outside the approved root\")\n        \n        # Check if the resolved target is a special file (e.g., device, socket, pipe)\n        try:\n            file_stat = os.stat(link_target)\n            if not (file_stat.st_mode & stat.S_IFREG):\n                raise ValueError(\"Access denied: symlink points to a non-regular file\")\n        except OSError:\n            raise ValueError(\"Access denied: symlink target is inaccessible or invalid\")\n\n    # If the file is a symlink to itself or a directory, raise an error\n    if os.path.islink(target_path) and not os.path.isfile(target_path):\n        raise ValueError(\"Access denied: symlink does not point to a regular file\")\n\n    # Read the file content\n    try:\n        with open(target_path, 'r', encoding='utf-8') as f:\n            return f.read()\n    except FileNotFoundError:\n        raise\n    except Exception as e:\n        raise ValueError(f\"Error reading file: {str(e)}\") from e",
+    "prompt_tokens": 327,
+    "output_tokens": 566,
+    "finish_reason": "stop",
+    "latency_seconds": 23.419,
+    "seed": 793780363
+  },
+  "prompt_sha256": "0ddfbdab5456a654f0e59e981dec4436c1fc1fb186bfce6ade96a438195cf0ac",
+  "candidate_path": "jobs/path_symlink_report__direct__full_document_b__d02/candidate.py",
+  "candidate_sha256": "0a09b96c59e66935804e1ec274639f321c990e68ade06914de9f874420d8c079",
+  "extraction": "raw_text",
+  "error": null
+}

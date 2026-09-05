@@ -1,0 +1,181 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolver.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if resolve_host returns no IPs,
+                   or if a redirect violates the guard rules.
+    """
+    import socket
+    from urllib.parse import urlparse, parse_qs, unquote, urlparse as _urlparse
+    from urllib.request import Request, HTTPHandler, build_opener
+    
+    # Parse the initial URL
+    initial_url = _urlparse(url)
+    initial_scheme = initial_url.scheme.lower()
+    initial_host = initial_url.hostname
+    initial_port = initial_url.port
+    initial_path = initial_url.path
+    initial_query = initial_url.query
+    
+    # GUARD: Check scheme
+    if initial_scheme not in ('http', 'https'):
+        raise ValueError("Disallowed request: scheme must be http or https")
+    
+    # GUARD: Resolve initial host
+    if not initial_host:
+        raise ValueError("Disallowed request: invalid hostname")
+    
+    ip_addresses = resolve_host(initial_host)
+    if not ip_addresses:
+        raise ValueError("Disallowed request: hostname could not be resolved")
+    
+    # Validate DNS and public-address (basic check for non-loopback/non-private)
+    if not is_valid_public_address(ip_addresses):
+        raise ValueError("Disallowed request: invalid IP address")
+    
+    # State for redirect following
+    current_url = initial_url
+    current_scheme = initial_scheme
+    current_host = initial_host
+    current_port = initial_port
+    current_path = initial_path
+    current_query = initial_query
+    redirect_count = 0
+    max_redirects = 5
+    
+    # Helper to validate IP addresses
+    def is_valid_public_address(ips):
+        for ip in ips:
+            try:
+                ip_int = int(ip.split('.')[0]) if '.' in ip else int(ip)
+                # Basic check: not 127.x.x.x, not 10.x.x.x, not 192.168.x.x, etc.
+                # This is a simplified check; a robust implementation would use more thorough rules.
+                if ip.startswith('127.') or ip.startswith('10.') or ip.startswith('192.168.') or ip.startswith('169.254.') or ip.startswith('0.'):
+                    return False
+            except ValueError:
+                pass
+        return True
+    
+    # Helper to resolve and validate a new URL
+    def resolve_and_validate_new_url(new_url_str):
+        new_parsed = _urlparse(new_url_str)
+        new_scheme = new_parsed.scheme.lower()
+        new_host = new_parsed.hostname
+        new_port = new_parsed.port
+        new_path = new_parsed.path
+        new_query = new_parsed.query
+        
+        # Check scheme
+        if new_scheme not in ('http', 'https'):
+            raise ValueError("Disallowed request: redirect to non-http/https scheme")
+        
+        # Check host
+        if not new_host:
+            raise ValueError("Disallowed request: invalid hostname in redirect")
+        
+        # Check DNS resolution
+        resolved_ips = resolve_host(new_host)
+        if not resolved_ips:
+            raise ValueError("Disallowed request: hostname could not be resolved in redirect")
+        
+        # Check public address
+        if not is_valid_public_address(resolved_ips):
+            raise ValueError("Disallowed request: invalid IP address in redirect")
+        
+        # Check port consistency
+        if new_port != current_port:
+            raise ValueError("Disallowed request: redirect to different port")
+        
+        # Check scheme consistency
+        if new_scheme != current_scheme:
+            raise ValueError("Disallowed request: redirect to different scheme")
+        
+        return new_parsed, new_path, new_query
+    
+    # Helper to build the final URL
+    def build_url(parsed, path, query):
+        if path:
+            path = '/' + path
+        else:
+            path = '/'
+        if query:
+            query = '?' + query
+        return f"{parsed.scheme}://{parsed.hostname}:{parsed.port or 80 if parsed.scheme == 'http' else 443}{path}{query}"
+    
+    # Build the initial request
+    request_url = build_url(current_url, current_path, current_query)
+    request = Request(request_url)
+    
+    # Handle redirects
+    while True:
+        # Get response
+        try:
+            response = transport(current_url.geturl())
+        except Exception as e:
+            raise ValueError(f"Disallowed request: transport error: {e}")
+        
+        status, headers, body = response
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Disallowed request: non-200 status {status}")
+        
+        # Check for redirect
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError("Disallowed request: too many redirects")
+            
+            # Parse the redirect location
+            redirect_parsed = _urlparse(location)
+            redirect_scheme = redirect_parsed.scheme.lower()
+            redirect_host = redirect_parsed.hostname
+            redirect_port = redirect_parsed.port
+            redirect_path = redirect_parsed.path
+            redirect_query = redirect_parsed.query
+            
+            # Resolve the redirect location
+            resolved_parsed, resolved_path, resolved_query = resolve_and_validate_new_url(location)
+            
+            # Update current URL state
+            current_url = resolved_parsed
+            current_scheme = resolved_scheme
+            current_host = resolved_host
+            current_port = resolved_port
+            current_path = resolved_path
+            current_query = resolved_query
+            
+            # Continue loop
+            continue
+        
+        # Return body
+        return body.decode('utf-8') if isinstance(body, bytes) else str(body)
+    
+    # Final return
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)
+
+def is_valid_public_address(ips):
+    """
+    Basic validation to ensure IPs are not loopback or private.
+    """
+    for ip in ips:
+        try:
+            parts = ip.split('.')
+            if len(parts) != 4:
+                continue
+            first = int(parts[0])
+            if first == 127 or first == 10 or first == 192 and parts[1] == 168 or first == 169 and parts[1] == 254 or first == 0:
+                return False
+        except ValueError:
+            pass
+    return True

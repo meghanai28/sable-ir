@@ -1,0 +1,60 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+    """
+    # Resolve the root directory to ensure we work with an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to handle .. and . segments
+    # We resolve it relative to the root first, then check if it's absolute
+    if os.path.isabs(filename):
+        requested_path = os.path.normpath(filename)
+    else:
+        requested_path = os.path.normpath(os.path.join(reports_root, filename))
+    
+    # Resolve the target path to check for escapes
+    resolved_target = os.path.normpath(os.path.abspath(requested_path))
+    
+    # Security Check 1: Ensure the resolved path is within the reports_root
+    # We use os.path.commonpath to verify the path structure, or simply check prefix
+    # A robust check ensures the resolved path starts with the root plus a separator (or is the root itself)
+    if not (resolved_target == resolved_root or resolved_target.startswith(resolved_root + os.sep)):
+        raise ValueError("Path escapes the reports_root directory.")
+    
+    # Security Check 2: Walk each user-selected path component beneath the resolved reports_root
+    # and raise ValueError if any component is a symbolic link.
+    # We split the path into components and check each one.
+    parts = os.path.normpath(requested_path).split(os.sep)
+    current_path = resolved_root
+    
+    for part in parts:
+        if part == '' or part == '.':
+            continue
+        if part == '..':
+            # This should not happen after normpath on the final path, but if it did,
+            # we need to ensure we don't traverse up. However, normpath handles .. in the final string.
+            # The instruction says "walk each user-selected path component", implying we check the components of the normalized path.
+            pass
+        
+        # Check if the current directory (or the link we are about to follow) is a symlink
+        # We check the directory we are entering. If it's a symlink, disallow.
+        if os.path.islink(current_path):
+            raise ValueError("Symbolic link found in path components.")
+        
+        # Move into the component
+        current_path = os.path.join(current_path, part)
+    
+    # After walking components, check the final target again for symlinks (in case the file itself is a symlink)
+    if os.path.islink(resolved_target):
+        raise ValueError("Symbolic link found in requested path.")
+    
+    # Final validation: Ensure the file exists and is a regular file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"The file {filename} does not exist or is not a regular file.")
+    
+    # Read the file
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

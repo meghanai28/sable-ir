@@ -1,0 +1,60 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Returns True only if extraction completes successfully without writing outside dest_path.
+    Returns False if validation fails or extraction is interrupted.
+    """
+    try:
+        # Resolve the destination path to an absolute path
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the absolute path of the member's name
+                member_dir = os.path.dirname(member.name)
+                member_base = os.path.basename(member.name)
+                
+                # Construct the full path the member would be extracted to
+                full_member_path = os.path.join(resolved_dest, member_dir, member_base)
+                resolved_member_path = os.path.abspath(full_member_path)
+                
+                # Check if the resolved path escapes the destination
+                # We need to ensure the path is within the resolved_dest directory
+                # and not in any parent directory
+                if not resolved_member_path.startswith(resolved_dest + os.sep) and resolved_member_path != resolved_dest:
+                    # This would escape the destination directory
+                    return False
+                
+                # Additional check: ensure no .. traversal in the member name itself
+                # that could bypass the initial check (though the above should catch it)
+                # We also need to check if the directory path contains ..
+                if '..' in member_dir.split(os.sep):
+                    return False
+            
+            # If all members pass validation, extract them
+            for member in tar:
+                member_dir = os.path.dirname(member.name)
+                member_base = os.path.basename(member.name)
+                
+                # Create intermediate directories if needed
+                full_member_path = os.path.join(resolved_dest, member_dir, member_base)
+                os.makedirs(os.path.dirname(full_member_path), exist_ok=True)
+                
+                # Extract the member
+                tar.extract(member, path=resolved_dest)
+    
+    except Exception:
+        return False
+    
+    return True

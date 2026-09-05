@@ -1,0 +1,208 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+from typing import Tuple, List, Optional
+
+def _is_global_public_address(addr: str) -> bool:
+    """Check if an IP address is a global public address (not localhost, link-local, etc.)."""
+    try:
+        ip = socket.inet_aton(addr)
+        # Check for private/reserved ranges
+        # 127.0.0.0/8 - Loopback
+        # 10.0.0.0/8 - Private
+        # 172.16.0.0/12 - Private
+        # 192.168.0.0/16 - Private
+        # 169.254.0.0/16 - Link-local
+        # 0.0.0.0/32 - Default route
+        # 224.0.0.0/4 - Multicast
+        # 240.0.0.0/4 - Reserved
+        # ::1, fe80::, etc. for IPv6 if needed, but transport likely returns IPv4 here or we check both.
+        # For simplicity in this context, we assume standard IPv4 checks or a simple heuristic.
+        # A robust check would parse the address into a tuple and check octets.
+        parts = addr.split('.')
+        if len(parts) != 4:
+            return False
+        try:
+            octets = [int(p) for p in parts]
+        except ValueError:
+            return False
+        
+        # Loopback
+        if octets[0] == 127:
+            return False
+        # Link-local
+        if octets[0] == 169 and octets[1] == 254:
+            return False
+        # Multicast/Reserved
+        if octets[0] >= 224:
+            return False
+        # Private ranges
+        if octets[0] == 10:
+            return False
+        if octets[0] == 172 and 16 <= octets[1] <= 31:
+            return False
+        if octets[0] == 192 and octets[1] == 168:
+            return False
+        
+        return True
+    except (socket.error, OSError):
+        return False
+
+def _resolve_host(hostname: str) -> List[str]:
+    """Resolve hostname to textual IP addresses.
+    Note: In a real scenario, this would use socket.getaddrinfo.
+    For the purpose of this module definition without external dependencies like 'aiodns',
+    we simulate the resolution or use standard socket.
+    However, the prompt implies 'resolve_host' is a supplied function.
+    We will assume standard socket.getaddrinfo is available or the function is mocked.
+    Since I must provide the complete module, I will use socket.getaddrinfo for resolution
+    but the logic to validate against the 'resolve_host' requirement is that it MUST be called.
+    The plan says "resolve the hostname with resolve_host".
+    I will implement the logic assuming resolve_host is passed in, but for the code to run
+    if resolve_host is not passed, I'll use socket.
+    Actually, the signature is fetch_text(url, transport, resolve_host).
+    So resolve_host is an argument.
+    """
+    if not resolve_host:
+        raise ValueError("resolve_host is required")
+    return resolve_host(hostname)
+
+def _validate_destination(url: str, resolve_host: callable) -> Tuple[str, int]:
+    """Validate the URL destination according to the plan.
+    Returns (scheme, port) or raises ValueError.
+    """
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Check for username/password
+    if parsed.username or parsed.password:
+        raise ValueError("URL contains username or password")
+    
+    # Check scheme and port
+    allowed_schemes = ['http', 'https']
+    if scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Check port
+    if scheme == 'http':
+        if port is not None and port != 80:
+            raise ValueError(f"HTTP must use port 80 or be omitted, got {port}")
+    elif scheme == 'https':
+        if port is not None and port != 443:
+            raise ValueError(f"HTTPS must use port 443 or be omitted, got {port}")
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid hostname in URL")
+    
+    try:
+        addresses = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname {hostname}: {e}")
+    
+    if not addresses:
+        raise ValueError(f"Resolve failed for {hostname}")
+    
+    # Check if any address is global public
+    # The plan says "raise ValueError if it yields no addresses or any address is not a global public address"
+    # This implies ALL addresses must be public? Or at least one?
+    # "any address is not a global public address" -> if ANY is bad, raise.
+    # So we must ensure all returned addresses are public.
+    for addr in addresses:
+        if not _is_global_public_address(addr):
+            raise ValueError(f"Non-public address found for {hostname}: {addr}")
+    
+    return scheme, port
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """Fetch text from URL following redirects with validation.
+    
+    Args:
+        url: Initial URL string.
+        transport: Function(url) -> (status, headers, body).
+        resolve_host: Function(hostname) -> List[str].
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If validation fails or redirect limit exceeded.
+    """
+    current_url = url
+    redirect_count = 0
+    max_redirects = 5
+    
+    while True:
+        # Validate current destination
+        scheme, port = _validate_destination(current_url, resolve_host)
+        
+        # Prepare request
+        if scheme == 'http':
+            if port is None:
+                port = 80
+            request_uri = f"{scheme}://{current_url}"
+            if port != 80:
+                request_uri = f"{scheme}://{current_url}:{port}"
+        else:
+            if port is None:
+                port = 443
+            request_uri = f"{scheme}://{current_url}"
+            if port != 443:
+                request_uri = f"{scheme}://{current_url}:{port}"
+        
+        # Make request
+        try:
+            # We need to construct the actual request string for transport
+            # Since transport is opaque, we assume it takes the full URL or we pass the URL we constructed.
+            # The plan says transport(url) returns ...
+            # So we pass the URL string we built.
+            # However, the URL we built might have a port.
+            # Let's just use the URL string directly as passed to transport.
+            pass
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+
+        # Re-evaluating transport call:
+        # The prompt says "transport(url) returns a (status, headers, body) tuple"
+        # So we call transport with the current_url string.
+        # But wait, if current_url has a port, does transport handle it?
+        # The validation ensures the URL is valid (port 80/443 omitted or explicit).
+        # We pass current_url to transport.
+        
+        status, headers, body = transport(current_url)
+        
+        # Check status
+        if status == 200:
+            return body
+        
+        # Check for redirect
+        if status in [301, 302, 303, 307, 308]:
+            location = headers.get('Location', None)
+            if not location:
+                raise ValueError("Redirect without Location header")
+            
+            # Resolve location
+            # The location is a URL. We need to resolve it against the current URL.
+            # urllib.parse.urljoin(current_url, location)
+            new_url = urllib.parse.urljoin(current_url, location)
+            
+            # Apply validation to new destination
+            _validate_destination(new_url, resolve_host)
+            
+            redirect_count += 1
+            if redirect_count >= max_redirects:
+                raise ValueError("Redirect limit exceeded")
+            
+            current_url = new_url
+        else:
+            # Non-redirect status (not 200, not redirect)
+            # The plan says "return the body for status 200".
+            # If not 200, do we stop?
+            # The plan says "raise ValueError for a disallowed request".
+            # It doesn't explicitly say what to do with non-200 non-redirect.
+            # Usually, we stop and return body? Or raise?
+            # "return the body for status 200" implies if not 200, we don't return it.

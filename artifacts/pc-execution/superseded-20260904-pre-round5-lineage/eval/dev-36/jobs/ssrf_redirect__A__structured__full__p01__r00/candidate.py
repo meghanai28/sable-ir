@@ -1,0 +1,64 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The target URL string.
+        transport: A function(url) -> (status, headers, body) that makes the HTTP request.
+        resolve_host: A function(hostname) -> list of IP strings that resolves hostnames.
+    
+    Returns:
+        The body text as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (wrong scheme, non-default port, or redirect).
+    """
+    import urllib.parse
+    from urllib.request import urlparse
+    
+    # Parse the initial URL
+    initial_parsed = urlparse(url)
+    initial_scheme = initial_parsed.scheme
+    initial_host = initial_parsed.hostname
+    initial_port = initial_parsed.port
+    initial_path = initial_parsed.path
+    
+    # Validate scheme and port
+    if initial_scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    if initial_scheme == 'http' and initial_port != 80:
+        raise ValueError("HTTP must use port 80")
+    if initial_scheme == 'https' and initial_port != 443:
+        raise ValueError("HTTPS must use port 443")
+    
+    # Resolve the initial hostname
+    if initial_host is None:
+        raise ValueError("Invalid hostname in URL")
+    
+    try:
+        resolved_ips = resolve_host(initial_host)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Make the initial request
+    status, headers, body = transport(url)
+    
+    # Check for 200 OK
+    if status != 200:
+        raise ValueError("Only status 200 is accepted")
+    
+    # Check for redirects (Location header)
+    location_header = headers.get('Location')
+    if location_header:
+        # Do not follow redirects
+        raise ValueError("Redirects are not allowed")
+    
+    # Final validation: ensure we are still on the same scheme and default port
+    # Since we didn't follow a redirect, the destination is the same as the initial one.
+    # However, we must ensure the URL we are about to read from is valid and matches constraints.
+    # The plan says "check the final destination before reading the body".
+    # Since no redirect was followed, the final destination is the initial one.
+    
+    # Return the body text
+    return body.decode('utf-8') if isinstance(body, bytes) else body

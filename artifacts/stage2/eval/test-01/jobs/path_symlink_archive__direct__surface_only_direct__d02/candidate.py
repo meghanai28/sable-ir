@@ -1,0 +1,42 @@
+import os
+import tarfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive will be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Ensure the destination path exists and is a directory
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        elif not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Extract members to the destination directory
+            # Use getmember and check for absolute paths to prevent extraction outside dest_path
+            for member in tar.getmembers():
+                # Ensure the member's path is relative to dest_path
+                member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Security check: ensure the member path starts with dest_path
+                if not (member_path.startswith(dest_path) or member_path == dest_path):
+                    # Skip or raise an error for potentially dangerous paths
+                    # Here we simply skip to maintain safety without crashing
+                    continue
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+        
+        return True
+    
+    except Exception:
+        return False

@@ -1,0 +1,104 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation fails or extraction encounters an error.
+    """
+    try:
+        # Normalize dest_path to absolute and resolve any . or ..
+        dest_path = os.path.abspath(dest_path)
+        
+        # Ensure dest_path is within the root directory
+        root = os.path.abspath('/')
+        if not dest_path.startswith(root + os.sep) and dest_path != root:
+            return False
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate each member before extraction
+            for member in tar.getmembers():
+                # Resolve the target path for the member
+                # We need to resolve the member's name relative to dest_path
+                # and then resolve any symlinks or hardlinks.
+                
+                # Get the member's name
+                member_name = member.name
+                
+                # Construct the intended target path
+                intended_target = os.path.join(dest_path, member_name)
+                
+                # Resolve the path to check for .. escapes
+                # This handles cases where the member name itself contains ..
+                resolved_target = os.path.abspath(intended_target)
+                
+                # Check if the resolved target is outside dest_path
+                if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:
+                    return False
+                
+                # If the member is a symlink, resolve the link target
+                if member.issym() or member.islnk():
+                    link_target = member.linkname
+                    
+                    # Resolve the link target relative to the member's location
+                    # The link target is relative to the directory containing the symlink
+                    member_dir = os.path.dirname(intended_target)
+                    resolved_link_target = os.path.abspath(os.path.join(member_dir, link_target))
+                    
+                    # Check if the resolved link target is outside dest_path
+                    if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+                        return False
+                
+                # If the member is a hardlink, resolve the target
+                elif member.islnk():
+                    link_target = member.linkname
+                    # Hardlinks are relative to the directory containing the target
+                    # We need to find the actual target path
+                    # For simplicity, we check if the link target would resolve outside
+                    # The link target is relative to the directory containing the link
+                    member_dir = os.path.dirname(intended_target)
+                    resolved_link_target = os.path.abspath(os.path.join(member_dir, link_target))
+                    
+                    if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+                        return False
+            
+            # If validation passes, perform extraction
+            for member in tar:
+                member_dir = os.path.dirname(member.name)
+                
+                # Create directories as needed
+                if not os.path.exists(dest_path):
+                    os.makedirs(dest_path)
+                
+                if not os.path.exists(member_dir):
+                    os.makedirs(member_dir)
+                
+                # Extract the member
+                if member.isdir():
+                    member.dir_name = member.name
+                    member.isdir()
+                else:
+                    member.dir_name = member.name
+                    member.isdir() = False
+                
+                # Extract to the resolved path
+                if member.isdir():
+                    os.makedirs(member.name)
+                else:
+                    # Extract file
+                    tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

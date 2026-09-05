@@ -1,0 +1,131 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security validations.
+    
+    Args:
+        url: The requested URL (may be absolute, contain .., or be relative).
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of IP addresses.
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., absolute URL, 
+                    no valid IPs, invalid redirect chain, etc.).
+    """
+    import urllib.parse
+    
+    # 1. Reject absolute URLs
+    if url.startswith(('http://', 'https://')):
+        raise ValueError("Absolute URLs are disallowed.")
+    
+    # 2. Parse the URL
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise ValueError("Invalid URL format.")
+    
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # 3. Check scheme and port before starting the connection
+    default_port = {'http': 80, 'https': 443}.get(scheme)
+    if parsed.port is None:
+        port = default_port
+    else:
+        port = parsed.port
+    
+    if port < 0:
+        raise ValueError("Invalid port number.")
+    
+    # 4. Resolve the requested hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid hostname in URL.")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname.")
+    
+    if not ips:
+        raise ValueError("No valid IP addresses found for hostname.")
+    
+    # 5. Validate DNS resolution (basic check: at least one valid-looking IP)
+    valid_ip = False
+    for ip in ips:
+        if isinstance(ip, str) and '.' in ip or (isinstance(ip, int) and 0 <= ip <= 255):
+            valid_ip = True
+            break
+    if not valid_ip:
+        raise ValueError("Invalid IP address format.")
+    
+    # 6. Construct the full destination URL
+    # We use the resolved scheme, port, and hostname to build a canonical URL
+    # Note: We do not follow redirects yet; we just validate the initial destination.
+    # We will use the provided url for the actual request, but validate its components against the resolved host.
+    
+    # 7. Follow redirects (at most five hops)
+    # We need to track the hop count and validate each redirect.
+    # The initial destination is the parsed url.
+    
+    # We'll maintain a list of visited hosts to prevent loops and ensure validation.
+    visited_hosts = set()
+    visited_hosts.add(hostname)
+    
+    current_scheme = scheme
+    current_port = port
+    current_hostname = hostname
+    current_url = url
+    hop_count = 0
+    max_hops = 5
+    
+    while hop_count <= max_hops:
+        if hop_count > 0:
+            # Validate redirect scheme and port match initial destination
+            if current_scheme != scheme or current_port != port:
+                raise ValueError("Redirect scheme or port mismatch.")
+            
+            # Validate DNS for the new hostname
+            try:
+                new_hostname = urllib.parse.urlparse(current_url).hostname
+            except Exception:
+                raise ValueError("Invalid URL in redirect.")
+            
+            if not new_hostname:
+                raise ValueError("Invalid hostname in redirect.")
+            
+            if new_hostname not in visited_hosts:
+                visited_hosts.add(new_hostname)
+            else:
+                raise ValueError("Redirect loop detected.")
+            
+            # Resolve the new hostname
+            try:
+                new_ips = resolve_host(new_hostname)
+            except Exception:
+                raise ValueError("Failed to resolve hostname in redirect.")
+            
+            if not new_ips:
+                raise ValueError("No valid IP addresses found for hostname in redirect.")
+            
+            # Validate DNS for the new hostname
+            valid_ip = False
+            for ip in new_ips:
+                if isinstance(ip, str) and '.' in ip or (isinstance(ip, int) and 0 <= ip <= 255):
+                    valid_ip = True
+                    break
+            if not valid_ip:
+                raise ValueError("Invalid IP address format in redirect.")
+        
+        # Call transport
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Non-200 status code received.")
+        
+        return body
+    
+    raise ValueError("Maximum redirect hops exceeded.")

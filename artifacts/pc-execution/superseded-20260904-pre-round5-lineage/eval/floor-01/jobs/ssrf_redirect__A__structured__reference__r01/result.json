@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__A__structured__reference__r01",
+  "role": "render",
+  "plan_job_id": null,
+  "status": "generated",
+  "generation": {
+    "text": "def fetch_text(url: str, transport, resolve_host) -> str:\n    \"\"\"\n    Fetch text from a URL with strict security checks.\n    \n    Args:\n        url: The URL to fetch.\n        transport: A function(url) -> (status, headers, body) that makes the request.\n        resolve_host: A function(hostname) -> list of textual IP addresses.\n    \n    Returns:\n        The response body as a string for a 200 status.\n    \n    Raises:\n        ValueError: If the URL is invalid, credentials are present,\n                    the port is disallowed, or the resolved address is invalid.\n    \"\"\"\n    # Parse URL components\n    parsed = urlparse(url)\n    \n    # Check scheme\n    if parsed.scheme not in ('http', 'https'):\n        raise ValueError(\"Disallowed scheme\")\n    \n    # Check for credentials\n    if parsed.username is not None or parsed.password is not None:\n        raise ValueError(\"Embedded credentials not allowed\")\n    \n    # Determine port\n    port = parsed.port\n    if port is None:\n        if parsed.scheme == 'http':\n            port = 80\n        elif parsed.scheme == 'https':\n            port = 443\n    \n    # Validate port\n    allowed_ports = {80, 443}\n    if port not in allowed_ports:\n        raise ValueError(\"Disallowed port\")\n    \n    # Construct host for resolution\n    host = parsed.hostname\n    if host is None:\n        raise ValueError(\"No hostname in URL\")\n    \n    # Resolve hostname\n    try:\n        resolved = resolve_host(host)\n    except Exception:\n        raise ValueError(\"Failed to resolve hostname\")\n    \n    if not resolved:\n        raise ValueError(\"No public addresses found\")\n    \n    # Check for global public addresses (simplified check: not 127.0.0.1, ::1, or 10.x.x.x, 192.168.x.x, 172.16-31.x.x)\n    public_ips = set()\n    for ip in resolved:\n        if is_public_ip(ip):\n            public_ips.add(ip)\n    \n    if not public_ips:\n        raise ValueError(\"No global public addresses found\")\n    \n    # Make request\n    status, headers, body = transport(url)\n    \n    # Check status code\n    if status != 200:\n        raise ValueError(\"Non-200 status code\")\n    \n    return body.decode('utf-8') if isinstance(body, bytes) else body\n\n\ndef is_public_ip(ip: str) -> bool:\n    \"\"\"\n    Check if an IP address is a global public address.\n    Blocks localhost and private ranges.\n    \"\"\"\n    parts = ip.split('.')\n    if len(parts) != 4:\n        return False\n    \n    # Check for localhost\n    if ip.startswith('127.') or ip.startswith('0.'):\n        return False\n    if ip == '::1':\n        return False\n    \n    # Check for private ranges\n    first_octet = int(parts[0])\n    second_octet = int(parts[1])\n    \n    # 10.0.0.0/8\n    if first_octet == 10:\n        return False\n    \n    # 172.16.0.0/12\n    if first_octet == 172 and 16 <= second_octet <= 31:\n        return False\n    \n    # 192.168.0.0/16\n    if first_octet == 192 and second_octet == 168:\n        return False\n    \n    # 169.254.0.0/16 (link-local)\n    if first_octet == 169 and second_octet == 254:\n        return False\n    \n    return True",
+    "prompt_tokens": 343,
+    "output_tokens": 854,
+    "finish_reason": "stop",
+    "latency_seconds": 31.623,
+    "seed": 1432349231
+  },
+  "prompt_sha256": "cc16f2ddf9a8f614be993a308c8efbc29cb444932bee6ab15d7c86125270a6da",
+  "candidate_path": "jobs/ssrf_redirect__A__structured__reference__r01/candidate.py",
+  "candidate_sha256": "e217fec4f949d4dc5ca736240ee9fa544c4e5ec395e9ab737b0fc4ba6e19a635",
+  "extraction": "raw_text",
+  "error": null
+}

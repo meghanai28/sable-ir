@@ -1,0 +1,17 @@
+import sqlite3
+from typing import List, Tuple
+
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    if not (1 <= limit <= 100):
+        raise ValueError("limit must be between 1 and 100")
+    
+    cursor = sqlite3.connect(database_path).cursor()
+    cursor.execute(f'SELECT name FROM sqlite_master WHERE type="table" AND name="{table_name}"')
+    if not cursor.fetchone():
+        raise ValueError(f"Table '{table_name}' does not exist")
+    
+    cursor.execute(f'SELECT * FROM "{table_name}" ORDER BY rowid LIMIT {limit}')
+    rows = cursor.fetchall()
+    cursor.close()
+    return rows

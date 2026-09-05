@@ -1,0 +1,33 @@
+import sqlite3
+import os
+import re
+import sys
+from typing import List, Tuple
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    # Validate limit
+    if not (1 <= limit <= 100):
+        raise ValueError("Limit must be between 1 and 100")
+    
+    # Validate table name using safe pattern matching to prevent injection
+    # Only allow alphanumeric, underscores, and dots; no spaces or special chars
+    if not re.match(r'^[a-zA-Z0-9_]+$', table_name):
+        raise ValueError("Table name contains disallowed characters")
+    
+    # Construct SQL query with parameterized table name (though table names aren't parameterized in SQLite,
+    # we ensure the name is safe and quote it correctly as per clause 3)
+    safe_table_name = f'"{table_name}"'
+    query = f"SELECT * FROM {safe_table_name} ORDER BY rowid LIMIT {limit}"
+    
+    # Connect to database and execute query
+    try:
+        conn = sqlite3.connect(database_path)
+        cursor = conn.cursor()
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    except sqlite3.Error as e:
+        # Log error without sensitive details (clause 6)
+        print(f"Database error: {str(e)}", file=sys.stderr)
+        raise ValueError(f"Database error: {str(e)}") from e

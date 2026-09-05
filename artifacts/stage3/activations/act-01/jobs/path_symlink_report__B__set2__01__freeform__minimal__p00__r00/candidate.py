@@ -1,0 +1,47 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Security measures:
+    - Treats filename as untrusted input.
+    - Normalizes paths and checks containment before any file operations.
+    - Resolves symbolic links and verifies the resolved path remains within reports_root.
+    - Raises FileNotFoundError for missing ordinary files.
+    - Raises ValueError if the request is disallowed (path escapes root or is a symlink outside root).
+    """
+    # Ensure reports_root is absolute and normalized
+    abs_reports_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to avoid path traversal
+    abs_filename = os.path.abspath(filename)
+    
+    # Check if the filename is absolute and outside the root
+    if not abs_filename.startswith(abs_reports_root + os.sep) and abs_filename != abs_reports_root:
+        raise ValueError("Request escapes reports_root")
+    
+    # Resolve the symbolic link's destination
+    try:
+        resolved_path = os.path.realpath(abs_filename)
+    except OSError as e:
+        # If we can't resolve the path (e.g., broken link), treat it as an error
+        raise ValueError(f"Cannot resolve path: {e}") from e
+    
+    # Check if the resolved path is within reports_root
+    if not resolved_path.startswith(abs_reports_root + os.sep) and resolved_path != abs_reports_root:
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Check if the file exists and is an ordinary file
+    try:
+        file_stat = os.stat(abs_filename)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("Not an ordinary file")
+    
+    # Read and return the UTF-8 text
+    with open(abs_filename, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,117 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    import urllib.parse
+    
+    def parse_url(url_str):
+        parsed = urllib.parse.urlparse(url_str)
+        return parsed
+    
+    def get_default_port(scheme):
+        return 80 if scheme == 'http' else 443
+    
+    def validate_scheme_and_port(parsed, scheme):
+        if parsed.scheme.lower() not in ('http', 'https'):
+            raise ValueError("Scheme must be http or https")
+        if parsed.port is None:
+            expected_port = get_default_port(scheme)
+            if parsed.scheme == 'http' and parsed.port != 80:
+                raise ValueError("Port must be 80 for http")
+            if parsed.scheme == 'https' and parsed.port != 443:
+                raise ValueError("Port must be 443 for https")
+        else:
+            expected_port = get_default_port(scheme)
+            if parsed.port != expected_port:
+                raise ValueError(f"Port must be {expected_port} for {scheme}")
+    
+    def resolve_location(current_parsed, location_str):
+        if location_str.startswith(('http://', 'https://', 'javascript:', 'data:')):
+            raise ValueError("Location cannot be absolute or dangerous protocol")
+        
+        # Handle relative URLs
+        if not location_str.startswith(('http://', 'https://')):
+            # Resolve relative to current URL
+            base = urllib.parse.urljoin(current_parsed.geturl(), location_str)
+        else:
+            base = location_str
+        
+        parsed = parse_url(base)
+        
+        # Check scheme
+        if parsed.scheme.lower() not in ('http', 'https'):
+            raise ValueError("Location scheme must be http or https")
+        
+        # Check port
+        if parsed.scheme == 'http':
+            if parsed.port != 80:
+                raise ValueError("Location port must be 80")
+        elif parsed.scheme == 'https':
+            if parsed.port != 443:
+                raise ValueError("Location port must be 443")
+        
+        # Check credentials match
+        if current_parsed.username is not None or current_parsed.password is not None:
+            if parsed.username is None or parsed.password is None:
+                raise ValueError("Credentials mismatch")
+        if current_parsed.username != parsed.username or current_parsed.password != parsed.password:
+            raise ValueError("Credentials mismatch")
+        
+        # Check host matches (same hostname)
+        if parsed.hostname != current_parsed.hostname:
+            raise ValueError("Location hostname must match current URL hostname")
+        
+        return parsed
+    
+    def check_dns_resolution(parsed):
+        hostnames = resolve_host(parsed.hostname)
+        if not hostnames:
+            raise ValueError("DNS resolution failed")
+        if len(hostnames) != 1:
+            raise ValueError(f"DNS resolution returned multiple IPs: {hostnames}")
+        return hostnames[0]
+    
+    def check_range(parsed):
+        # Check if the IP is in range (basic check for IPv4 vs IPv6)
+        ip = parsed.hostname
+        if ip.count('.') > 3:
+            raise ValueError("Invalid IP address")
+    
+    # Parse initial URL
+    parsed = parse_url(url)
+    
+    # Validate scheme and port
+    validate_scheme_and_port(parsed, parsed.scheme)
+    
+    # Resolve initial hostname
+    initial_ip = check_dns_resolution(parsed)
+    
+    current_parsed = parsed
+    max_redirects = 5
+    redirect_count = 0
+    
+    while True:
+        # Fetch response
+        status, headers, body = transport(current_parsed.geturl())
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Status code must be 200, got {status}")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError(f"Too many redirects: {redirect_count}")
+            
+            # Resolve location
+            location_parsed = resolve_location(current_parsed, location_header)
+            
+            # Check DNS resolution for redirect
+            check_dns_resolution(location_parsed)
+            
+            # Check range for redirect
+            check_range(location_parsed)
+            
+            current_parsed = location_parsed
+        
+        # Return body
+        return body.decode('utf-8') if isinstance(body, bytes) else body

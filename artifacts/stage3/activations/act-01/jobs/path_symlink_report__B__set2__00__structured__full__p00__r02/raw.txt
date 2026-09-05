@@ -1,0 +1,45 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes reports_root).
+    """
+    # Resolve the reports_root to an absolute path if necessary
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the full path by joining filename with reports_root
+    # We use os.path.join, but since filename is untrusted, we must be careful.
+    # The plan says "joined beneath reports_root", so we treat filename as a relative path
+    # unless it's absolute, but we must normalize it.
+    full_path = os.path.join(resolved_root, filename)
+    
+    # Normalize the path to remove .. and . segments
+    # This is crucial to prevent path traversal even if the filename looks safe
+    normalized_path = os.path.normpath(full_path)
+    
+    # Resolve the path, following symbolic links
+    # We need to resolve the symlink to check if the destination is within reports_root
+    try:
+        resolved_path = os.path.realpath(normalized_path)
+    except (OSError, ValueError):
+        raise ValueError(f"Invalid path: {filename}")
+    
+    # Check if the resolved path is within the reports_root
+    # We must ensure the resolved_path starts with the resolved_root, possibly with a separator
+    if not (resolved_path == resolved_root or resolved_path.startswith(os.path.sep + resolved_root + os.path.sep)):
+        # Additional check for Windows where drive letters might differ
+        if not (resolved_path.startswith(resolved_root) and not resolved_path.startswith(resolved_root + os.path.sep)):
+            raise ValueError(f"Access denied: path escapes reports_root: {filename}")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file with UTF-8 encoding
+    try:
+        with open(resolved_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        raise ValueError(f"Error reading file: {e}")

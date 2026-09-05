@@ -1,0 +1,56 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Reject absolute URLs
+    if url.startswith(('http://', 'https://')):
+        raise ValueError("Absolute URLs are not allowed")
+    
+    # Parse the URL to get netloc and path
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.netloc
+    path = parsed.path
+    
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve hostname and check reachability
+    try:
+        ip_addresses = resolve_host(hostname)
+        if not ip_addresses:
+            raise ValueError("Hostname is not reachable")
+    except Exception:
+        raise ValueError("Hostname is not reachable")
+    
+    # Determine the port based on scheme
+    scheme = parsed.scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Build the request URL with default port if not specified
+    if not parsed.port:
+        full_url = f"{scheme}://{hostname}:{default_port}{path}"
+    else:
+        full_url = f"{scheme}://{hostname}:{parsed.port}{path}"
+    
+    # Create the request
+    req = urllib.request.Request(full_url, method='GET')
+    
+    try:
+        # Open the request using the provided transport
+        with urllib.request.urlopen(req) as response:
+            # Check status code
+            status = int(response.status)
+            if status != 200:
+                raise ValueError(f"Request failed with status {status}")
+            
+            # Read the body
+            body = response.read().decode('utf-8')
+            return body
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP Error: {e.code} {e.reason}")
+    except urllib.error.URLError as e:
+        raise ValueError(f"URL Error: {e.reason}")
+    except Exception as e:
+        raise ValueError(f"Unexpected error: {e}")

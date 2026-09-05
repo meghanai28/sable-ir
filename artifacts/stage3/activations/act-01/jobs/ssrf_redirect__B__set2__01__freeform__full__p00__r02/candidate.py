@@ -1,0 +1,87 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of textual IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP/HTTPS, host is invalid, no IPs resolved,
+                    or more than 5 location hops are encountered.
+    """
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Extract host and port
+    host = parsed.hostname
+    if not host:
+        raise ValueError("Invalid URL: missing host")
+    
+    port = parsed.port
+    if port is None:
+        # Use default port based on scheme
+        if scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Validate host format (basic check, assuming resolve_host handles full DNS validation)
+    # We'll do a basic regex check to ensure it looks like a hostname/IP
+    import re
+    hostname_pattern = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$|^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$')
+    if not hostname_pattern.match(host):
+        raise ValueError(f"Invalid host format: {host}")
+    
+    # Resolve hostname to IP
+    try:
+        ip_addresses = resolve_host(host)
+    except Exception:
+        raise ValueError(f"Failed to resolve host: {host}")
+    
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for host: {host}")
+    
+    # Use the first resolved IP
+    target_host = ip_addresses[0]
+    target_url = f"{scheme}://{host}:{port}{parsed.path}"
+    
+    # Parse the target URL to check embedded credentials
+    target_parsed = urllib.parse.urlparse(target_url)
+    if target_parsed.username or target_parsed.password:
+        raise ValueError("Embedded credentials detected in URL")
+    
+    # Prepare the request
+    req = urllib.request.Request(target_url)
+    
+    # Open the connection
+    try:
+        response = urllib.request.urlopen(req)
+    except urllib.error.HTTPError as e:
+        if e.code != 200:
+            raise ValueError(f"Status code is not 200: {e.code}")
+        return e.read().decode('utf-8', errors='replace')
+    except urllib.error.URLError as e:
+        raise ValueError(f"Network error: {e}")
+    
+    # Check status code
+    if response.status != 200:
+        raise ValueError(f"Status code is not 200: {response.status}")
+    
+    # Decode and return body
+    body = response.read().decode('utf-8', errors='replace')
+    return body

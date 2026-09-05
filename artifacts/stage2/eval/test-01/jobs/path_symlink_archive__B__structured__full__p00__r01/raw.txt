@@ -1,0 +1,78 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with security validation.
+    
+    Returns True only if extraction completes successfully.
+    Returns False if validation fails or if an error occurs during extraction,
+    without writing any archive member outside dest_path.
+    """
+    try:
+        # Resolve and normalize the source tar path
+        tar_path = os.path.realpath(tar_path)
+        if not os.path.isfile(tar_path):
+            return False
+        
+        # Resolve and normalize the destination path
+        dest_path = os.path.realpath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Validate that dest_path is not a symlink that escapes the intended location
+        # (though realpath resolves symlinks, we want to ensure we're not creating
+        # outside the user's intended directory tree by checking the parent)
+        dest_parent = os.path.dirname(dest_path)
+        if os.path.islink(dest_path) or os.path.islink(dest_parent):
+            # If dest_path itself is a symlink, resolve it
+            real_dest = os.path.realpath(dest_path)
+            if not real_dest.startswith(os.path.realpath(dest_parent)):
+                return False
+        
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # List all members before extracting to validate safety
+            members = tar.getnames()
+            
+            for member in members:
+                # Skip directories only if they are meant to be created (tarfile handles this)
+                # But we must check the final extraction path for every file
+                if member.endswith('/'):
+                    continue
+                
+                # Resolve the member's path relative to the archive root
+                # and then resolve it relative to the destination
+                member_path = os.path.join(dest_path, member)
+                
+                # Resolve the member's path to get its absolute location
+                try:
+                    resolved_member = os.path.realpath(member_path)
+                except (PermissionError, OSError):
+                    # If we can't resolve (e.g., permission denied on parent), be cautious
+                    # However, for security, we should check the intended path before extraction
+                    resolved_member = os.path.normpath(os.path.join(dest_path, member))
+                
+                # Check if the resolved path escapes the destination directory
+                # We use os.path.commonpath to ensure the resolved path is within dest_path
+                try:
+                    common = os.path.commonpath([resolved_member, dest_path])
+                    if common != dest_path:
+                        return False
+                except ValueError:
+                    # This can happen if paths are on different drives (Windows) or invalid
+                    return False
+                
+                # Additional check: ensure the parent directory exists and is within dest_path
+                parent_dir = os.path.dirname(resolved_member)
+                if parent_dir != dest_path and not parent_dir.startswith(dest_path + os.sep):
+                    return False
+            
+            # Extract the archive
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except (tarfile.TarError, PermissionError, OSError, ValueError):
+        return False

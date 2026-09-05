@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__B__structured__full__p00__r03",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__B__structured__full__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\n\ndef fetch_text(url: str, transport, resolve_host) -> str:\n    # Parse the URL to extract scheme, netloc, and path\n    parsed = urllib.parse.urlparse(url)\n    scheme = parsed.scheme.lower()\n    \n    # GUARD: Check scheme is http or https\n    if scheme not in ('http', 'https'):\n        raise ValueError(\"Disallowed request: scheme must be http or https\")\n    \n    # Extract hostname\n    hostname = parsed.netloc\n    if not hostname:\n        raise ValueError(\"Disallowed request: missing hostname\")\n    \n    # Remove port from hostname if present for resolution\n    if ':' in hostname:\n        hostname = hostname.split(':')[0]\n    \n    # GUARD: Resolve hostname\n    ip_addresses = resolve_host(hostname)\n    if not ip_addresses:\n        raise ValueError(\"Disallowed request: could not resolve hostname\")\n    \n    # Determine port based on scheme\n    port = 80 if scheme == 'http' else 443\n    \n    # Create socket and connect\n    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n    sock.settimeout(5)  # Prevent hanging indefinitely\n    \n    # Connect to one of the resolved IPs\n    for ip in ip_addresses:\n        try:\n            sock.connect((ip, port))\n            break\n        except (socket.timeout, socket.error, ConnectionRefusedError):\n            continue\n    else:\n        raise ValueError(\"Disallowed request: could not connect to server\")\n    \n    # Send request (basic GET)\n    request_path = parsed.path if parsed.path else '/'\n    request = f\"GET {request_path} HTTP/1.1\\r\\nHost: {hostname}\\r\\n\\r\\n\"\n    sock.send(request.encode('utf-8'))\n    \n    # Read response\n    response = b\"\"\n    while True:\n        try:\n            chunk = sock.recv(4096)\n            if not chunk:\n                break\n            response += chunk\n        except (socket.timeout, socket.error):\n            break\n    \n    sock.close()\n    \n    # Parse response lines to find status code\n    lines = response.split(b'\\r\\n')\n    status_line = lines[0].decode('utf-8')\n    \n    # Extract status code (e.g., \"HTTP/1.1 200 OK\")\n    parts = status_line.split()\n    if len(parts) < 2:\n        raise ValueError(\"Disallowed request: invalid response status\")\n    \n    status_code = int(parts[1])\n    \n    # ORDER: Return body only for status 200\n    if status_code == 200:\n        # Skip status line and headers to get body\n        body_start = 2\n        body = response[body_start:].decode('utf-8')\n        return body\n    else:\n        raise ValueError(\"Disallowed request: status code is not 200\")",
+    "prompt_tokens": 268,
+    "output_tokens": 639,
+    "finish_reason": "stop",
+    "latency_seconds": 31.636,
+    "seed": 567422045
+  },
+  "prompt_sha256": "ba1c55c3395ddfad3ccc5ad5c2308be8f5d352217cbcf3705d55987e99a355b2",
+  "candidate_path": "jobs/ssrf_redirect__B__structured__full__p00__r03/candidate.py",
+  "candidate_sha256": "c0800e2b46b63fc2280f7cc94412fec54c1d75c2802f539f054f7ce50351b8ff",
+  "extraction": "raw_text",
+  "error": null
+}

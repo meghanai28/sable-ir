@@ -1,0 +1,151 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+import ssl
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The target URL string.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If scheme is not http/https, or if any resolved destination is unsafe.
+    """
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Determine port
+    port = parsed.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+    
+    # Validate host and resolve
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL must have a valid hostname")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not resolved_ips:
+        raise ValueError("No valid IP addresses found for hostname")
+    
+    # Validate public address (basic check against localhost/private ranges)
+    for ip in resolved_ips:
+        if ip.startswith(('127.', '10.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', 
+                          '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', 
+                          '172.30.', '172.31.', '192.168.', '::1', '::ffff:127.0.0.1')):
+            raise ValueError("Localhost or private IP addresses are not allowed")
+    
+    current_url = url
+    max_redirects = 5
+    redirect_count = 0
+    
+    while True:
+        # Build the request URL
+        if parsed.scheme == 'http':
+            port_str = str(port)
+        else:
+            port_str = str(port)
+        
+        # Reconstruct the URL for the request to ensure correct port handling
+        # We need to handle the case where the original URL might have had credentials or query params
+        # We will use the parsed components to build a clean URL for the request
+        
+        # Ensure we have a valid netloc
+        netloc = f"{hostname}:{port}"
+        if parsed.username or parsed.password:
+            netloc = f"{parsed.username}:{parsed.password}@{hostname}:{port}"
+        
+        request_url = f"{parsed.scheme}://{netloc}{parsed.path}"
+        if parsed.query:
+            request_url += f"?{parsed.query}"
+        
+        # Make the request
+        try:
+            req = urllib.request.Request(request_url, method='GET')
+            with urllib.request.urlopen(req) as response:
+                status = response.status
+                headers = dict(response.headers)
+                body = response.read().decode('utf-8')
+        except urllib.error.HTTPError as e:
+            status = e.code
+            headers = dict(e.headers)
+            body = e.read().decode('utf-8')
+        except Exception as e:
+            raise ValueError(f"Failed to connect to URL: {e}")
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+    
+    # Handle redirects
+    location = headers.get('Location')
+    if location:
+        redirect_count += 1
+        if redirect_count > max_redirects:
+            raise ValueError(f"Too many redirects: {redirect_count}")
+        
+        # Resolve the redirect URL
+        redirect_parsed = urllib.parse.urlparse(location)
+        
+        # Resolve the new hostname
+        new_hostname = redirect_parsed.hostname
+        if not new_hostname:
+            raise ValueError("Redirect URL has no valid hostname")
+        
+        # Validate the new hostname
+        try:
+            new_resolved_ips = resolve_host(new_hostname)
+        except Exception:
+            raise ValueError("Failed to resolve redirect hostname")
+        
+        if not new_resolved_ips:
+            raise ValueError("No valid IP addresses found for redirect hostname")
+        
+        # Validate public address for redirect
+        for ip in new_resolved_ips:
+            if ip.startswith(('127.', '10.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', 
+                              '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', 
+                              '172.30.', '172.31.', '192.168.', '::1', '::ffff:127.0.0.1')):
+                raise ValueError("Localhost or private IP addresses found in redirect")
+        
+        # Update current_url and parsed for the next iteration
+        current_url = f"{redirect_parsed.scheme}://{redirect_parsed.netloc}{redirect_parsed.path}"
+        if redirect_parsed.query:
+            current_url += f"?{redirect_parsed.query}"
+        parsed = urllib.parse.urlparse(current_url)
+        
+        # Recalculate port
+        port = parsed.port
+        if port is None:
+            if parsed.scheme == 'http':
+                port = 80
+            elif parsed.scheme == 'https':
+                port = 443
+        
+        # Continue loop
+        continue
+    else:
+        # No Location header, but status is 200, so we return body
+        return body

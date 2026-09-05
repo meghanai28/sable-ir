@@ -1,0 +1,79 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def _normalize_path(path: str) -> str:
+    """Resolve and normalize a path, removing . and .. components."""
+    return os.path.normpath(os.path.abspath(path))
+
+def _is_within_root(target: str, root: str) -> bool:
+    """Check if target path is within the root directory."""
+    try:
+        target_resolved = os.path.realpath(target)
+        root_resolved = os.path.realpath(root)
+        # Ensure root ends with a separator for correct prefix checking
+        if not root_resolved.endswith(os.sep):
+            root_resolved += os.sep
+        return target_resolved.startswith(root_resolved)
+    except (ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    try:
+        # Normalize and validate destination path
+        root_dir = _normalize_path(dest_path)
+        
+        # Check if destination path escapes root (e.g., contains ..)
+        # We ensure the root is normalized and doesn't start with ..
+        if root_dir.startswith(('.', '..')):
+            return False
+        
+        # Create a temporary directory to hold the archive during validation
+        with tempfile.TemporaryDirectory() as temp_extract_dir:
+            try:
+                with tarfile.open(tar_path, 'r:*') as tar:
+                    # Validate all members before extraction
+                    for member in tar.getmembers():
+                        # Calculate the absolute path of the member's target
+                        # We use os.path.normpath to resolve .. components
+                        member_dir = os.path.dirname(member.name)
+                        member_name = os.path.basename(member.name)
+                        
+                        # Construct the potential full path
+                        potential_path = os.path.join(root_dir, member_dir, member_name)
+                        
+                        # Resolve the actual path to check for .. tricks
+                        resolved_member_path = os.path.realpath(potential_path)
+                        
+                        # Check if the resolved path escapes the root
+                        if not _is_within_root(resolved_member_path, root_dir):
+                            return False
+                        
+                        # Also check the directory part of the member
+                        if member_dir:
+                            resolved_dir_path = os.path.realpath(os.path.join(root_dir, member_dir))
+                            if not _is_within_root(resolved_dir_path, root_dir):
+                                return False
+                    
+                    # If validation passes, perform the extraction
+                    with tarfile.open(tar_path, 'r:*') as tar:
+                        tar.extractall(path=root_dir)
+                    
+                    return True
+                    
+            except (tarfile.TarError, OSError):
+                return False
+                
+    except (OSError, ValueError):
+        return False

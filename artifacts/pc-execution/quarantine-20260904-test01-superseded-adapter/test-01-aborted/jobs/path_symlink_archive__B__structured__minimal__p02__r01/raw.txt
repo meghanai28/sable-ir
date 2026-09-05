@@ -1,0 +1,92 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validations.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # 1. Validate dest_path is not absolute
+        if os.path.isabs(dest_path):
+            raise ValueError("dest_path cannot be an absolute path")
+        
+        # 2. Normalize dest_path and ensure it's within root
+        # Convert to absolute and normalize to remove .. and .
+        dest_path = os.path.abspath(dest_path)
+        
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        # Ensure the resolved path is still within the root (safety check)
+        # Since we used abspath, it's absolute, but we need to ensure no .. escapes
+        # The abspath already resolves .., so if the input was safe, this is safe.
+        # However, we explicitly check that the normalized path doesn't start with multiple slashes or escape root if input was relative
+        # Actually, abspath handles this. We just need to make sure we don't extract outside dest_path.
+        
+        # 3. Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # 4. Validate members and links before extracting
+            for member in tar.getmembers():
+                # Resolve the member's name relative to dest_path
+                # Get the full path where this member would be extracted
+                member_dir = os.path.dirname(member.name)
+                member_name = os.path.basename(member.name)
+                
+                # Construct the full destination path for this member
+                dest_member_path = os.path.join(dest_path, member_dir, member_name)
+                
+                # Normalize to resolve any .. or . in the member name
+                dest_member_path = os.path.normpath(dest_member_path)
+                
+                # Security check: Ensure the normalized path is still under dest_path
+                if not dest_member_path.startswith(dest_path + os.sep) and dest_member_path != dest_path:
+                    # This check handles cases where dest_path is a directory and we want to extract inside it.
+                    # If dest_member_path equals dest_path, it means we are extracting a file directly in dest_path (valid if member is empty string or similar, but usually not).
+                    # Actually, if dest_path is "home/user" and member is "file.txt", dest_member_path becomes "home/user/file.txt".
+                    # We need to ensure dest_member_path is within dest_path.
+                    # Since dest_path is absolute, we can check if dest_member_path starts with dest_path + os.sep OR dest_member_path == dest_path (if member is empty, which shouldn't happen for files).
+                    # But wait, if member.name is "./file", normpath makes it "file".
+                    # Let's use a safer check: the resolved path must be within dest_path.
+                    if not dest_member_path.startswith(dest_path + os.sep) and dest_member_path != dest_path:
+                        raise ValueError(f"Extraction would escape dest_path: {dest_member_path}")
+                
+                # Check for hard links
+                if member.issym() or member.islnk():
+                    # Resolve link target
+                    link_target = member.linkname
+                    # Normalize link target
+                    link_target = os.path.normpath(link_target)
+                    # If link target is absolute, it must be within dest_path
+                    if os.path.isabs(link_target):
+                        if not link_target.startswith(dest_path + os.sep) and link_target != dest_path:
+                            raise ValueError(f"Link target escapes dest_path: {link_target}")
+                    else:
+                        # Relative link target, resolve relative to the member's directory
+                        member_dir = os.path.dirname(member.name)
+                        resolved_link = os.path.normpath(os.path.join(member_dir, link_target))
+                        if not resolved_link.startswith(dest_path + os.sep) and resolved_link != dest_path:
+                            raise ValueError(f"Link target escapes dest_path: {resolved_link}")
+                
+                # Check for device or other special members that shouldn't be extracted
+                if member.isdir() or member.isreg() or member.issym() or member.islnk():
+                    pass # Proceed with extraction check
+                else:
+                    # Skip unknown member types or raise error depending on strictness
+                    # For safety, we might skip or error. Let's assume standard types are okay.
+                    pass
+            
+            # 5. Extract the archive
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

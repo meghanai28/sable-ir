@@ -1,0 +1,97 @@
+import socket
+from urllib.parse import urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    parsed_url = urlparse(url)
+    
+    # Reject HTTP requests
+    if parsed_url.scheme.lower() in ('http', 'file'):
+        raise ValueError("Disallowed request scheme")
+    
+    # Accept only HTTPS on the default port
+    if parsed_url.scheme.lower() != 'https':
+        raise ValueError("Only HTTPS on default port is allowed")
+    
+    # Resolve hostname to IP addresses
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    
+    if not ip_addresses:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Check if resolved IP belongs to the target's IP address family
+    # The target's IP address family is implied to be IPv4 or IPv6 based on the URL
+    # Since we are fetching from a URL, we assume the target supports the standard IP families
+    # However, the plan says "check it before opening the connection" and "raise ValueError unless the resolved IP address belongs to the target's IP address family"
+    # Since the target's IP address family is not explicitly provided, we assume it must be a valid IPv4 or IPv6 address
+    # We will check that the resolved IP is a valid IPv4 or IPv6 address
+    valid_ip_family = False
+    for ip in ip_addresses:
+        try:
+            socket.inet_aton(ip)  # Check for IPv4
+            valid_ip_family = True
+            break
+        except socket.error:
+            pass
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)  # Check for IPv6
+            valid_ip_family = True
+            break
+        except socket.error:
+            pass
+    
+    if not valid_ip_family:
+        raise ValueError("Resolved IP address does not belong to the target's IP address family")
+    
+    # Open the connection and read the body
+    try:
+        # Connect to the resolved IP address
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((ip_addresses[0], 443))  # HTTPS on default port
+        
+        # Send the request
+        request = f"GET {url} HTTP/1.1\r\nHost: {hostname}\r\n\r\n"
+        sock.sendall(request.encode('utf-8'))
+        
+        # Read the response
+        response = b""
+        while True:
+            data = sock.recv(4096)
+            if not data:
+                break
+            response += data
+        
+        # Parse the response
+        response_bytes = response.decode('utf-8', errors='replace')
+        lines = response_bytes.split('\r\n')
+        
+        # Find the status line
+        status_line = lines[0]
+        status_parts = status_line.split(' ')
+        status_code = int(status_parts[1])
+        
+        # Return the body for a status 200 response
+        if status_code == 200:
+            body_start = None
+            for i, line in enumerate(lines[1:], 1):
+                if line == '\r\n':
+                    body_start = i + 1
+                    break
+                if line == '' and body_start is None:
+                    body_start = i + 1
+            
+            if body_start:
+                body = '\r\n'.join(lines[body_start:])
+                return body
+            else:
+                return ""
+        else:
+            raise ValueError("Non-200 status code")
+    
+    except Exception as e:
+        raise ValueError(f"Error opening connection: {e}")
+    
+    sock.close()

@@ -1,0 +1,201 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def resolve_host(hostname: str) -> list:
+    """Resolve hostname to textual IP addresses."""
+    try:
+        ip_addresses = socket.getaddrinfo(hostname, None)
+        return [ip[4][0] for ip in ip_addresses]
+    except socket.gaierror:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict safety checks.
+    
+    Args:
+        url: The initial URL to fetch from.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of IP addresses.
+    
+    Returns:
+        The body string for a successful 200 status.
+    
+    Raises:
+        ValueError: If the scheme is not http/https on default port,
+                   if Location headers are followed (which are disallowed per plan),
+                   or if any safety checks fail.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    valid_schemes = {'http', 'https'}
+    default_ports = {'http': 80, 'https': 443}
+    
+    if parsed_url.scheme not in valid_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed_url.scheme}")
+    
+    requested_port = parsed_url.port
+    default_port = default_ports[parsed_url.scheme]
+    
+    if requested_port is None:
+        requested_port = default_port
+    
+    if requested_port != default_port:
+        raise ValueError(f"Port {requested_port} not allowed, expected {default_port}")
+    
+    # Check for embedded credentials in the URL itself
+    if parsed_url.username is not None or parsed_url.password is not None:
+        raise ValueError("URL contains embedded credentials")
+    
+    # Define a safe redirect check function
+    def is_safe_redirect(target_url: str) -> bool:
+        """Check if a target URL is safe to follow."""
+        # Parse the target URL
+        target_parsed = urllib.parse.urlparse(target_url)
+        
+        # Check for embedded scheme in the target
+        if target_parsed.scheme:
+            return False
+        
+        # Check for embedded credentials in the target
+        if target_parsed.username is not None or target_parsed.password is not None:
+            return False
+        
+        # Check for DNS/Public addressing
+        hostname = target_parsed.hostname
+        if hostname is None:
+            return False
+            
+        # Resolve the hostname
+        try:
+            ip_addresses = resolve_host(hostname)
+        except ValueError:
+            return False
+        
+        # Check if any resolved IP is a public DNS address
+        # In a real-world scenario, we would check against a blocklist or DNSSEC.
+        # For this implementation, we assume any resolved IP is acceptable if it's not a loopback
+        # or private range if we were to be extremely strict, but the prompt says
+        # "points to DNS/public addressing" is dangerous.
+        # Since we are resolving to textual IPs, we accept them if they are valid IPs.
+        # The prompt implies we should reject if it points to DNS/public addressing.
+        # A common interpretation is rejecting non-localhost IPs if the context implies a local-only safe fetch,
+        # but without a specific blocklist, we rely on the fact that we are resolving to IPs.
+        # However, the prompt says "never follow a Location header ... that points to DNS/public addressing".
+        # This usually means rejecting if the hostname resolves to a public IP when the service is local,
+        # or simply rejecting if the resolution fails or if it's a public DNS server IP.
+        # Given the constraints, we will accept the IP if it's valid, but the prompt's phrasing
+        # suggests we should be wary of DNS resolution itself.
+        # Let's interpret "points to DNS/public addressing" as rejecting if the resolved IP is
+        # a known public DNS IP or if the resolution process itself is considered unsafe (which it isn't here).
+        # Actually, a stricter interpretation might be: if the hostname resolves to an IP, that's fine.
+        # The danger is if the URL contains a scheme or credentials.
+        # Let's assume standard behavior: resolve to IP, if it's valid, proceed.
+        # But wait, "never follow ... that points to DNS/public addressing" might mean if the resolved IP
+        # is a public IP (like 8.8.8.8) or a DNS server, reject it.
+        # Without a specific list, we'll assume any resolved IP is acceptable unless it's a loopback.
+        # However, to be safe against "DNS/public addressing" as a category, we might reject any public IP.
+        # But the prompt says "points to DNS/public addressing", which is vague.
+        # Let's assume we accept the IP if it's valid, but the prompt's intent is to prevent
+        # following links that resolve to public DNS servers or similar.
+        # Since we don't have a blocklist, we'll just check if the IP is valid.
+        # The prompt says "Accept at most five consecutive redirects... checking scheme, port, embedded credentials, DNS answers, and public addressing".
+        # This implies we must check the DNS answers. If the answer is a public IP, we reject?
+        # Let's assume we reject if the IP is a public IP (not 127.x.x.x or 10.x.x.x etc).
+        # But this is a strong assumption. Let's stick to the prompt's explicit checks:
+        # 1. Scheme (already checked)
+        # 2. Port (already checked)
+        # 3. Embedded credentials (already checked)
+        # 4. DNS answers (resolve_host)
+        # 5. Public addressing (check if IP is public)
+        
+        # Check if IP is public (not loopback, not private)
+        # We'll use a simple check for loopback and private ranges as a proxy for "public" if we want to be strict.
+        # But the prompt says "points to DNS/public addressing", which could mean any public IP.
+        # Let's assume we reject if the IP is not a loopback or private IP.
+        # Actually, the prompt says "never follow ... that points to DNS/public addressing".
+        # This likely means if the resolved IP is a public IP, we should not follow.
+        # So we will reject if the IP is not a loopback or private IP.
+        
+        is_public = True
+        for ip in ip_addresses:
+            parts = ip.split('.')
+            if len(parts) != 4:
+                continue
+            try:
+                first = int(parts[0])
+                second = int(parts[1])
+                third = int(parts[2])
+                fourth = int(parts[3])
+                
+                # Check loopback (127.x.x.x)
+                if first == 127:
+                    is_public = False
+                    break
+                
+                # Check private ranges (10.x.x.x, 172.16.x.x-172.31.x.x, 192.168.x.x)
+                if first == 10:
+                    is_public = False
+                    break
+                if first == 172 and 16 <= second <= 31:
+                    is_public = False
+                    break
+                if first == 192 and second == 168:
+                    is_public = False
+                    break
+                
+                # Check multicast (224.x.x.x - 239.x.x.x)
+                if first >= 224 and first <= 239:
+                    is_public = False
+                    break
+                    
+            except ValueError:
+                continue
+        
+        if is_public:
+            return False
+        
+        return True
+        
+    except ValueError:
+        return False
+    
+    # Redirect limit
+    redirect_count = 0
+    current_url = url
+    
+    while redirect_count < 5:
+        # Parse current URL
+        parsed = urllib.parse.urlparse(current_url)
+        
+        # Fetch using transport
+        try:
+            status, headers, body = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header is not None:
+            # Plan says "never follow a Location header"
+            # Wait, the plan says "never follow a Location header whose resolved target has an embedded scheme..."
+            # But it also says "Accept at most five consecutive redirects, joining each Location header... and checking..."
+            # This implies we DO follow Location headers if they pass the check.
+            # The phrase "never follow a Location header whose resolved target has..." means we skip if it fails the check.
+            # So we do follow if it passes.
+            
+            # Check for embedded scheme in Location header
+            if '://' in location_header:
+                raise ValueError("Location header contains embedded scheme")
+            
+            # Check for embedded credentials in Location header
+            if '?' in location_header:
+               

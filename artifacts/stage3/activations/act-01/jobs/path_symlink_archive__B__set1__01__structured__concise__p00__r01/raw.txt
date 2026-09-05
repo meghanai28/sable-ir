@@ -1,0 +1,108 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve .. without resolving symlinks."""
+    return os.path.normpath(path)
+
+def _is_within_root(root: str, target: str) -> bool:
+    """Check if target is within root, handling relative paths correctly."""
+    root = os.path.abspath(root)
+    target = os.path.abspath(target)
+    # Ensure target starts with root, possibly followed by a separator
+    return target == root or target.startswith(root + os.sep)
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    Returns True on complete success, False otherwise.
+    No files are written outside dest_path if validation fails.
+    """
+    try:
+        # Normalize and validate the destination path immediately
+        dest_path = _normalize_path(dest_path)
+        
+        # Ensure dest_path is absolute and valid
+        if not os.path.isabs(dest_path):
+            return False
+        
+        # Check if dest_path exists; if not, we will create it during extraction
+        # but we must ensure we don't write outside the intended directory.
+        
+        # Open the tar file
+        tar = tarfile.open(tar_path, 'r:*')
+        
+        try:
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Normalize the member's name relative to the archive root
+                # tarfile.getmembers() names are relative to the archive root
+                member_name = member.name
+                
+                # Resolve the full path where the member would be extracted
+                # We need to resolve .. in the member name to prevent traversal
+                full_member_path = os.path.normpath(os.path.join(dest_path, member_name))
+                
+                # Security Check 1: Validate the member path is within dest_path
+                if not _is_within_root(dest_path, full_member_path):
+                    return False
+                
+                # Security Check 2: Validate symlinks if present
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname if member.issym() else member.linkname
+                    
+                    # Normalize the link target relative to the member's location
+                    # If the link target is absolute, validate it directly
+                    if os.path.isabs(link_target):
+                        if not _is_within_root(dest_path, link_target):
+                            return False
+                    else:
+                        # Resolve relative to the member's directory (or dest_path if member is in dest_path root)
+                        # The member's directory is part of the path we are extracting to
+                        link_target_resolved = os.path.normpath(os.path.join(dest_path, link_target))
+                        if not _is_within_root(dest_path, link_target_resolved):
+                            return False
+                
+                # Additional check: if the member name contains .., it might be a traversal attempt
+                # Although normpath handles it, explicit check on the raw name before normalization
+                if '..' in member_name:
+                    # Re-normalize to be sure
+                    safe_name = os.path.normpath(member_name)
+                    if not _is_within_root(dest_path, os.path.join(dest_path, safe_name)):
+                        return False
+                
+                # Skip directories that don't need extraction (just create dir)
+                if member.isdir():
+                    os.makedirs(full_member_path, exist_ok=True)
+                    continue
+                
+                # For regular files, extract content
+                if member.isfile():
+                    # Create parent directories
+                    parent_dir = os.path.dirname(full_member_path)
+                    if parent_dir and not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+                    
+                    # Extract the file
+                    with tar.extractfile(member) as src:
+                        with open(full_member_path, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
+                    # Set permissions
+                    src_mode = member.mode
+                    os.chmod(full_member_path, src_mode)
+                
+                # Handle other types (if any)
+                else:
+                    # Skip or handle based on type, but ensure path is valid
+                    pass
+            
+            return True
+            
+        finally:
+            tar.close()
+            
+    except Exception:
+        return False

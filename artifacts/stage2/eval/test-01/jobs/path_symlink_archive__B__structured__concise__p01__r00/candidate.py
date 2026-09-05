@@ -1,0 +1,59 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve the canonical paths for validation
+        canonical_tar = os.path.realpath(tar_path)
+        canonical_dest = os.path.realpath(dest_path)
+        
+        # Ensure the destination directory exists
+        if not os.path.isdir(canonical_dest):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members
+            members = tar.getnames()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Resolve the member's path relative to dest_path
+                member_dir = os.path.dirname(member)
+                member_base = os.path.basename(member)
+                
+                # Construct the full path for the member
+                full_member_path = os.path.join(canonical_dest, member_dir, member_base)
+                
+                # Resolve the canonical path of the member
+                try:
+                    canonical_member = os.path.realpath(full_member_path)
+                except (OSError, ValueError):
+                    return False
+                
+                # Check if the member escapes the destination
+                if not canonical_member.startswith(canonical_dest + os.sep) and canonical_member != canonical_dest:
+                    return False
+                
+                # Check for absolute paths or paths with ..
+                if member.startswith('/') or '..' in member.split(os.sep):
+                    return False
+            
+            # Extract the archive
+            tar.extractall(path=canonical_dest)
+            
+            return True
+            
+    except Exception:
+        return False

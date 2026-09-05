@@ -1,0 +1,152 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        
+    Raises:
+        ValueError: If the destination path escapes the intended root or contains unsafe components.
+        OSError: If the tar file cannot be read or extracted.
+    """
+    # Normalize the destination path to remove any trailing slashes and resolve . and ..
+    # We will use the resolved absolute path as the "root" for safety checks.
+    try:
+        dest_path = os.path.normpath(dest_path)
+        dest_root = os.path.abspath(dest_path)
+    except (ValueError, OSError) as e:
+        return False
+    
+    # Ensure dest_root is a directory
+    if not os.path.isdir(dest_root):
+        return False
+    
+    # Validate tar_path exists and is readable
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Check for absolute paths in archive members
+            for member in tar.getmembers():
+                # Decode the name if it's bytes
+                if isinstance(member.name, bytes):
+                    member.name = member.name.decode('utf-8', errors='replace')
+                
+                # Skip . and ..
+                if member.name == '.' or member.name == '..':
+                    continue
+                
+                # Check for absolute paths
+                if os.path.isabs(member.name):
+                    raise ValueError(f"Archive contains absolute path: {member.name}")
+                
+                # Check for .. components in the path
+                parts = member.name.split(os.sep)
+                for part in parts:
+                    if part == '..':
+                        raise ValueError(f"Archive contains '..' component: {member.name}")
+                
+                # Check for null bytes in name
+                if '\x00' in member.name:
+                    raise ValueError(f"Archive contains null byte in name: {member.name}")
+            
+            # Extract the archive
+            # We use getmembers() to check, but we need to extract to the correct location.
+            # We will extract to dest_root.
+            for member in tar:
+                # Decode the name if it's bytes
+                if isinstance(member.name, bytes):
+                    member.name = member.name.decode('utf-8', errors='replace')
+                
+                # Skip . and ..
+                if member.name == '.' or member.name == '..':
+                    continue
+                
+                # Check for absolute paths
+                if os.path.isabs(member.name):
+                    raise ValueError(f"Archive contains absolute path: {member.name}")
+                
+                # Check for .. components in the path
+                parts = member.name.split(os.sep)
+                for part in parts:
+                    if part == '..':
+                        raise ValueError(f"Archive contains '..' component: {member.name}")
+                
+                # Check for null bytes in name
+                if '\x00' in member.name:
+                    raise ValueError(f"Archive contains null byte in name: {member.name}")
+                
+                # Determine the full path for the member
+                member_path = os.path.join(dest_root, member.name)
+                
+                # Check if the member path escapes the dest_root
+                # We need to resolve the path and check if it starts with dest_root
+                # However, os.path.join might not resolve .. if the name itself has ..
+                # So we must check the resolved path against the root
+                try:
+                    resolved_member_path = os.path.normpath(os.path.join(dest_root, member.name))
+                except ValueError:
+                    raise ValueError(f"Invalid path component in archive: {member.name}")
+                
+                # Ensure the resolved path is within dest_root
+                # We use os.path.commonpath or simply check prefix with os.sep handling
+                if not (resolved_member_path.startswith(dest_root + os.sep) or resolved_member_path == dest_root):
+                    raise ValueError(f"Extraction would escape destination root: {member.name} -> {resolved_member_path}")
+                
+                # Check for symbolic or hard links that might point outside
+                # We can't fully validate link targets without extracting, but we can check the member type
+                # If it's a link, we should be cautious. The spec says "may still point outside the root and must be rejected"
+                # We will extract and let the OS handle link validation, but we can also check the link target if possible
+                # Actually, the safest way is to ensure the link target is also within dest_root if we can resolve it
+                # But tarfile doesn't give us the target path directly in the member object unless we extract it first
+                # So we will rely on the path check above for the link target, but we need to be careful
+                # Let's extract the member first and then check if it's a link and validate the target
+                
+                # Extract the member
+                if member.isdir():
+                    os.makedirs(member_path, exist_ok=True)
+                elif member.issym() or member.ishardlink():
+                    # For symlinks and hardlinks, we need to ensure the target is also within dest_root
+                    # We can't know the target until we extract, but we can check the member type
+                    # Actually, we can extract it and then check the link target
+                    # But the spec says "must be rejected" if it points outside
+                    # We will extract it and then check the link target
+                    # If it's a symlink, we can check the link target
+                    # If it's a hardlink, we can check the target file
+                    pass
+                else:
+                    os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                    tar.extract(member, dest_root, set_attrs=True)
+                
+                # After extraction, check for links
+                if os.path.exists(member_path):
+                    st = os.stat(member_path)
+                    if st.islnk() or st.isodm():
+                        # Check the link target
+                        link_target = os.readlink(member_path)
+                        # Resolve the link target relative to the link's directory
+                        link_dir = os.path.dirname(member_path)
+                        resolved_link_target = os.path.normpath(os.path.join(link_dir, link_target))
+                        # Check if the link target is within dest_root
+                        if not (resolved_link_target.startswith(dest_root + os.sep) or resolved_link_target == dest_root):
+                            raise ValueError(f"Link target points outside destination root: {member_path} -> {resolved_link_target}")
+                    elif st.islnk():
+                        # Hardlink target
+                        hardlink_target = st.st硬link
+                        resolved_hardlink_target = os.path.normpath(os.path.join(os.path.dirname(member_path), hardlink_target))
+                        if not (resolved_hardlink_target.startswith(dest_root + os.sep) or resolved_hardlink_target == dest_root):
+                            raise ValueError(f"Hardlink target points outside destination root: {member_path} -> {hardlink_target}")
+    
+    except (tarfile.TarError, OSError, ValueError) as e:
+        return False
+    
+    return True

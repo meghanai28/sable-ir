@@ -1,0 +1,74 @@
+import socket
+import urllib.parse
+from typing import Tuple, Any
+
+def fetch_text(url: str, transport: Any, resolve_host: Any) -> str:
+    """
+    Fetch text from a URL using the provided transport.
+    
+    Args:
+        url: The URL to fetch (untrusted input).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP or HTTPS, or if the request is disallowed.
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the port
+    default_port = {'http': 80, 'https': 443}[scheme]
+    
+    # Extract hostname and port
+    hostname = parsed.netloc
+    if ':' in hostname:
+        hostname, port_str = hostname.rsplit(':', 1)
+        port = int(port_str)
+    else:
+        port = default_port
+    
+    # Validate port is default (simple check against non-standard ports)
+    # The requirement says "Accept HTTP or HTTPS on its default port"
+    if port != default_port:
+        raise ValueError("Only default ports are allowed.")
+    
+    # Resolve the hostname
+    resolved_ips = resolve_host(hostname)
+    if not resolved_ips:
+        raise ValueError("Failed to resolve hostname.")
+    
+    # Build the URL for transport with resolved hostname
+    # We need to reconstruct the URL with the resolved IP to pass to transport
+    # However, the transport function likely expects the original URL or a URL with the IP.
+    # Since we are following the plan "Resolve the hostname before opening the connection",
+    # we will use the resolved IP in the URL passed to transport.
+    
+    # Reconstruct URL with resolved IP
+    # Note: The plan says "Resolve the hostname before opening the connection".
+    # We will use the resolved IP in the URL for the transport call.
+    new_netloc = f"{resolved_ips[0]}:{port}"
+    new_url = f"{scheme}://{new_netloc}{parsed.path}"
+    
+    if parsed.query:
+        new_url += f"?{parsed.query}"
+    
+    if parsed.fragment:
+        new_url += f"#{parsed.fragment}"
+    
+    # Call transport
+    status, headers, body = transport(new_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed.")
+    
+    return body

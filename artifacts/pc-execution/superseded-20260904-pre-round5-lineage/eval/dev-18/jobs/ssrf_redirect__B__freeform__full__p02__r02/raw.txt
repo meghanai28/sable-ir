@@ -1,0 +1,256 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict safety checks.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function(url) -> (status, headers, body) tuple.
+        resolve_host: Function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        str: Body of the response if status is 200.
+    
+    Raises:
+        ValueError: For disallowed schemes, invalid redirects, or non-200 status.
+    """
+    import urllib.parse
+    import socket
+    import re
+    
+    def _get_scheme_port_and_info(parsed_url):
+        scheme = parsed_url.scheme.lower()
+        port = parsed_url.port
+        credentials = parsed_url.username or parsed_url.password or None
+        dns = parsed_url.hostname
+        if not dns:
+            raise ValueError("Invalid URL: missing hostname")
+        # Validate DNS is not an IP (basic check)
+        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dns):
+            raise ValueError("DNS must not be an IP address")
+        return scheme, port, credentials, dns
+
+    def _is_safe_scheme(scheme, port):
+        allowed_schemes = {'http', 'https'}
+        if scheme not in allowed_schemes:
+            return False
+        default_port = {'http': 80, 'https': 443}.get(scheme)
+        if default_port is None:
+            return False
+        if port != default_port:
+            return False
+        return True
+
+    def _resolve_ip(dns):
+        try:
+            addrs = resolve_host(dns)
+            if not addrs:
+                raise ValueError("No IP addresses resolved for DNS")
+            # Ensure at least one valid IP
+            valid_ips = []
+            for addr in addrs:
+                if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', addr):
+                    valid_ips.append(addr)
+            if not valid_ips:
+                raise ValueError("No valid IP addresses found")
+            return valid_ips[0]
+        except Exception:
+            raise ValueError("Failed to resolve DNS")
+
+    def _validate_redirect_location(current_scheme, current_port, current_credentials, current_dns, current_ip):
+        """
+        Validate that the redirect location matches the initial destination's
+        scheme, port, credentials, DNS, and public IP.
+        """
+        try:
+            if isinstance(current_location, str):
+                current_location = urllib.parse.urlparse(current_location)
+            elif isinstance(current_location, tuple):
+                # Handle if transport returns tuple for location (unlikely but safe)
+                current_location = urllib.parse.urlparse(current_location[0] if len(current_location) > 0 else "")
+            
+            scheme, port, creds, dns = _get_scheme_port_and_info(current_location)
+            
+            if scheme != current_scheme:
+                raise ValueError("Redirect scheme mismatch")
+            if port != current_port:
+                raise ValueError("Redirect port mismatch")
+            if creds != current_credentials:
+                raise ValueError("Redirect credentials mismatch")
+            if dns != current_dns:
+                raise ValueError("Redirect DNS mismatch")
+            
+            resolved_ip = _resolve_ip(dns)
+            if resolved_ip != current_ip:
+                raise ValueError("Redirect IP mismatch")
+                
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Invalid redirect location: {e}")
+
+    # Parse initial URL
+    try:
+        initial_parsed = urllib.parse.urlparse(url)
+    except Exception as e:
+        raise ValueError(f"Invalid initial URL: {e}")
+
+    # Check scheme and port immediately
+    scheme, port, credentials, dns = _get_scheme_port_and_info(initial_parsed)
+    if not _is_safe_scheme(scheme, port):
+        raise ValueError("Disallowed scheme or port")
+
+    # Resolve initial hostname
+    try:
+        initial_ip = _resolve_ip(dns)
+    except ValueError as e:
+        raise ValueError(f"DNS resolution failed: {e}")
+
+    # Track hops
+    current_location = initial_parsed
+    hop_count = 0
+    max_hops = 5
+
+    # Parse headers for Location
+    headers = transport(url)
+    status = headers[0]
+    location_header = None
+    for key, value in headers[1]:
+        if key.lower() == 'location':
+            location_header = value
+            break
+
+    # Follow redirects
+    while location_header is not None and hop_count < max_hops:
+        hop_count += 1
+        
+        # Validate redirect location
+        try:
+            _validate_redirect_location(scheme, port, credentials, dns, initial_ip)
+        except ValueError:
+            raise ValueError("Invalid redirect location")
+        
+        # Parse new location
+        try:
+            new_parsed = urllib.parse.urlparse(location_header)
+        except Exception as e:
+            raise ValueError(f"Invalid redirect URL: {e}")
+        
+        # Update current location
+        current_location = new_parsed
+        scheme, port, credentials, dns = _get_scheme_port_and_info(current_location)
+        
+        # Re-check scheme and port
+        if not _is_safe_scheme(scheme, port):
+            raise ValueError("Disallowed scheme or port in redirect")
+        
+        # Resolve new hostname
+        try:
+            new_ip = _resolve_ip(dns)
+        except ValueError as e:
+            raise ValueError(f"DNS resolution failed: {e}")
+        
+        # Check IP consistency
+        if new_ip != initial_ip:
+            raise ValueError("IP mismatch in redirect")
+        
+        # Update location for next iteration
+        location_header = current_location.get('location') if hasattr(current_location, 'get') else None
+        # Actually, we need to update the variable used in the loop
+        # But since we are using the parsed object, we need to extract the location string if present
+        # Wait, the loop logic above is slightly flawed in extraction. Let's fix:
+        pass
+    
+    # Re-evaluate loop logic correctly
+    current_url = initial_parsed
+    hop_count = 0
+    
+    while True:
+        if hop_count > max_hops:
+            raise ValueError("Maximum redirect hops exceeded")
+        
+        # Validate scheme/port/IP for current URL
+        if not _is_safe_scheme(current_parsed.scheme, current_parsed.port):
+            raise ValueError("Disallowed scheme or port")
+        
+        try:
+            _validate_redirect_location(current_parsed.scheme, current_parsed.port, current_parsed.username or current_parsed.password or None, current_parsed.hostname, initial_ip)
+        except ValueError:
+            raise ValueError("Invalid redirect location")
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Return body
+        return headers[2]
+        
+        # Check for redirect
+        new_location = None
+        for key, value in headers[1]:
+            if key.lower() == 'location':
+                new_location = value
+                break
+        
+        if new_location is None:
+            break
+        
+        hop_count += 1
+        if hop_count > max_hops:
+            raise ValueError("Maximum redirect hops exceeded")
+        
+        # Parse new location
+        try:
+            new_parsed = urllib.parse.urlparse(new_location)
+        except Exception as e:
+            raise ValueError(f"Invalid redirect URL: {e}")
+        
+        # Update current URL
+        current_parsed = new_parsed
+        
+        # Re-fetch
+        status, headers, body = transport(url)
+        location_header = new_location
+        status = headers[0]
+        headers = headers[1]
+
+    # Final check after loop if no redirect
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return headers[2]
+
+# Corrected implementation following the plan precisely
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict safety checks.
+    """
+    import urllib.parse
+    import re
+
+    def _get_scheme_port_and_info(parsed_url):
+        scheme = parsed_url.scheme.lower()
+        port = parsed_url.port
+        credentials = parsed_url.username or parsed_url.password or None
+        dns = parsed_url.hostname
+        if not dns:
+            raise ValueError("Invalid URL: missing hostname")
+        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', dns):
+            raise ValueError("DNS must not be an IP address")
+        return scheme, port, credentials, dns
+
+    def _is_safe_scheme(scheme, port):
+        allowed_schemes = {'http', 'https'}
+        if scheme not in allowed_schemes:
+            return False
+        default_port = {'http': 80, 'https': 443}.get(scheme)
+        if default_port is None:
+            return False
+        if port != default_port:
+            return False
+        return True
+
+    def _resolve_ip(dns):
+        try:
+            addrs = resolve_host(dns)
+            if not addrs:
+                raise ValueError("

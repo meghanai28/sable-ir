@@ -1,0 +1,77 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, or if a redirect is detected,
+                   or if the hostname cannot be resolved.
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed_url.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Unsupported scheme: {scheme}")
+    
+    # Resolve hostname
+    hostname = parsed_url.netloc
+    if not hostname:
+        raise ValueError("No hostname in URL")
+    
+    # Remove port from hostname for resolution if present (e.g., example.com:80)
+    if ':' in hostname:
+        hostname = hostname.split(':')[0]
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+    
+    # Build the request URL without the scheme for the transport function
+    # We need to reconstruct the path and query
+    path = parsed_url.path
+    query = parsed_url.query
+    
+    # Use the full URL passed to transport, but we control the logic
+    # The plan says transport(url) returns (status, headers, body)
+    # We assume transport handles the actual network call, possibly using the IP we resolved
+    # However, the plan says "transport(url) returns...", implying we pass the URL string.
+    # We must ensure we don't follow redirects blindly.
+    
+    current_url = url
+    
+    while True:
+        # Call transport
+        status, headers, body = transport(current_url)
+        
+        # Check for redirect
+        if 300 <= status < 400:
+            raise ValueError("Redirect detected, disallowed")
+        
+        # Check for success
+        if status == 200:
+            return body
+        
+        # If status is not 200 and not a redirect, raise error
+        # The plan says "raise ValueError for a disallowed request"
+        # and "return the body for status 200". It implies non-200 non-redirect errors are bad.
+        raise ValueError(f"Unexpected status code: {status}")
+
+# Note: The actual network I/O is delegated to the 'transport' function.
+# This module provides the validation logic and redirect handling as specified.
+# The 'transport' function must be provided by the caller.
+# The 'resolve_host' function is used to validate the hostname before any network call.
+# The 'fetch_text' function ensures only http/https schemes are used and blocks redirects.

@@ -1,0 +1,51 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve the root directory for validation
+        resolved_dest = os.path.realpath(dest_path)
+        
+        # Validate tar_path exists
+        if not os.path.isfile(tar_path):
+            return False
+        
+        with tarfile.open(tar_path) as tar:
+            # Get all members from the archive
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Get the absolute path of the member's name
+                member_dir = os.path.dirname(member.name)
+                member_file = member.name
+                
+                # Construct the full path relative to the destination
+                full_path = os.path.join(resolved_dest, member_dir, member_file)
+                
+                # Resolve the full path to check for escapes
+                resolved_full_path = os.path.realpath(full_path)
+                
+                # Check if the resolved path escapes the destination root
+                if not resolved_full_path.startswith(resolved_dest + os.sep) and resolved_full_path != resolved_dest:
+                    return False
+            
+            # If validation passes, extract the archive
+            tar.extractall(path=resolved_dest)
+            
+            return True
+            
+    except Exception:
+        return False

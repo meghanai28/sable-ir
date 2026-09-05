@@ -1,0 +1,167 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import re
+
+def _is_valid_ip(ip_str):
+    """Check if a string is a valid IPv4 address."""
+    pattern = r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$'
+    match = re.match(pattern, ip_str)
+    if not match:
+        return False
+    for i in range(1, 5):
+        octet = int(match.group(i))
+        if octet < 0 or octet > 255:
+            return False
+    return True
+
+def _resolve_host(hostname):
+    """Resolve hostname to IP addresses using the supplied resolver."""
+    return resolve_host(hostname)
+
+def _validate_scheme_port(url, scheme, port):
+    """Check if the URL's scheme and port match the expected ones."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != scheme:
+        return False
+    if parsed.port != port:
+        return False
+    return True
+
+def _resolve_location(current_url, location_url):
+    """Resolve a Location header URL against the current URL."""
+    current_parsed = urllib.parse.urlparse(current_url)
+    location_parsed = urllib.parse.urlparse(location_url)
+    
+    # Check scheme match
+    if location_parsed.scheme != current_parsed.scheme:
+        return None
+    
+    # Check port match (default port handling)
+    if location_parsed.port != current_parsed.port:
+        return None
+    
+    # Check credentials match
+    if current_parsed.username != location_parsed.username or \
+       current_parsed.password != location_parsed.password:
+        return None
+    
+    # Check DNS/public-address match
+    if current_parsed.hostname != location_parsed.hostname:
+        return None
+    
+    # Reconstruct URL
+    new_url = location_parsed._replace(
+        scheme=current_parsed.scheme,
+        netloc=current_parsed.netloc,
+        path=location_parsed.path,
+        params=location_parsed.params,
+        query=location_parsed.query
+    )
+    return new_url
+
+def _validate_dns_resolution(resolved_ips):
+    """Validate that resolved IP addresses are valid."""
+    for ip in resolved_ips:
+        if not _is_valid_ip(ip):
+            return False
+    return True
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed or validation fails.
+    """
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Determine scheme and default port
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+        else:
+            raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    # Resolve the host
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    resolved_ips = resolve_host(hostname)
+    
+    # Validate DNS resolution
+    if not resolved_ips or not _validate_dns_resolution(resolved_ips):
+        raise ValueError("Invalid DNS resolution")
+    
+    # Check scheme and port match
+    if not _validate_scheme_port(url, scheme, port):
+        raise ValueError("Scheme or port mismatch")
+    
+    # Handle relative URLs by making them absolute
+    if not parsed.scheme:
+        base_url = f"{scheme}://{hostname}"
+        if port != 80 and port != 443:
+            base_url = f"{scheme}://{hostname}:{port}"
+        if parsed.path:
+            base_url += parsed.path
+        else:
+            base_url += "/"
+        if parsed.query:
+            base_url += "?" + parsed.query
+        url = base_url
+    
+    # Fetch the response
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    # Handle redirects (Location headers)
+    location = None
+    hop_count = 0
+    max_hops = 5
+    
+    while location is not None and hop_count < max_hops:
+        if location not in headers:
+            break
+        
+        location_url = headers[location]
+        new_url = _resolve_location(url, location_url)
+        
+        if new_url is None:
+            break
+        
+        # Validate DNS resolution for the new URL
+        new_hostname = new_url.hostname
+        if new_hostname is None:
+            break
+        
+        new_resolved_ips = resolve_host(new_hostname)
+        if not new_resolved_ips or not _validate_dns_resolution(new_resolved_ips):
+            break
+        
+        # Check scheme and port match for the new URL
+        if not _validate_scheme_port(new_url, scheme, port):
+            break
+        
+        url = new_url
+        hop_count += 1
+    
+    # Return the body
+    return body

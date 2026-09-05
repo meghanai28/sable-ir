@@ -1,0 +1,67 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes root or contains symlinks).
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.normpath(filename)
+    if not os.path.isabs(requested_path):
+        requested_path = os.path.join(resolved_root, requested_path)
+    else:
+        requested_path = os.path.normpath(requested_path)
+    
+    # Ensure the requested path is absolute
+    if not os.path.isabs(requested_path):
+        raise ValueError("Requested path must be absolute or relative to reports_root")
+    
+    # Check if the path escapes the root
+    # We resolve the path and compare it against the root
+    resolved_requested = os.path.realpath(requested_path)
+    
+    # Ensure the resolved path is within the root directory
+    # Use os.path.commonpath to check containment, but handle edge cases
+    try:
+        common = os.path.commonpath([resolved_root, resolved_requested])
+        if not resolved_root.startswith(common) or resolved_requested.startswith(os.sep + resolved_root):
+            raise ValueError("Path escapes reports_root")
+    except ValueError:
+        raise ValueError("Invalid path structure")
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # and raise ValueError if any component is a symbolic link
+    # We need to check all parent directories up to the requested file
+    current_path = resolved_root
+    parts = [p for p in os.path.split(requested_path) if p]
+    
+    # Check for symlinks in all parent directories
+    for part in parts:
+        next_path = os.path.join(current_path, part)
+        if os.path.islink(next_path):
+            raise ValueError("Symbolic link detected in path")
+        if not os.path.exists(next_path):
+            # If it doesn't exist yet, we can't check for symlinks, but we can check if it's a symlink to a non-existent target
+            # However, the requirement says "even one that currently points inside the root".
+            # If it doesn't exist, we can't resolve it, so we skip the symlink check for non-existent parents
+            # But we must ensure we don't traverse into it if it becomes a symlink later?
+            # The spec says "walk each user-selected path component... and raise ValueError if any component is a symbolic link"
+            # This implies we check the components as they are used. If a component doesn't exist, it's not a symlink.
+            pass
+        current_path = next_path
+    
+    # Check the final file path for symlinks
+    if os.path.islink(requested_path):
+        raise ValueError("Symbolic link detected in path")
+    
+    # Check if the file exists and is an ordinary file
+    if not os.path.isfile(requested_path):
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read the file
+    with open(requested_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,43 @@
+import os
+import sys
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (path escapes root or follows symlinks outside).
+    """
+    # Normalize the root to an absolute path to ensure consistent comparison
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename to an absolute path
+    # We must resolve symlinks to check the final target location
+    resolved_target = os.path.abspath(filename)
+    
+    # First, check if the initial resolved path (without following symlinks yet)
+    # escapes the root. This is a basic containment check.
+    # However, the spec says to resolve the complete target path (following symlinks)
+    # and check containment then.
+    
+    # Let's resolve the path fully, following symlinks, to get the final location.
+    # os.path.realpath follows symlinks.
+    final_path = os.path.realpath(filename)
+    
+    # Check if the final path is within the reports_root directory
+    # We need to ensure the final_path starts with the resolved_root + os.sep
+    # or is exactly the resolved_root (if reports_root is a file, though typically it's a dir)
+    if not (final_path.startswith(resolved_root + os.sep) or final_path == resolved_root):
+        raise ValueError("Request disallowed: path escapes reports_root")
+    
+    # Check if the file exists and is an ordinary file (not a directory, not a symlink to a directory, etc.)
+    if not os.path.isfile(final_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Double-check containment after resolving symlinks to be absolutely sure
+    # (The above check with realpath handles the symlink following, but let's be explicit)
+    if not (final_path.startswith(resolved_root + os.sep) or final_path == resolved_root):
+        raise ValueError("Request disallowed: resolved path escapes reports_root")
+    
+    # Read the file content
+    with open(final_path, 'r', encoding='utf-8') as f:
+        return f.read()

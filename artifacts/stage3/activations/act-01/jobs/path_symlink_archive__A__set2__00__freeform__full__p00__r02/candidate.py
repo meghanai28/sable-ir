@@ -1,0 +1,86 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation or extraction fails.
+    """
+    try:
+        # Resolve the absolute path for dest_path
+        dest_path = os.path.abspath(dest_path)
+        
+        # Ensure dest_path exists as a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Create a resolved root directory for safety checks
+        resolved_root = os.path.abspath(dest_path)
+        
+        # Validate that tar_path is accessible
+        if not os.path.isfile(tar_path):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Resolve the member's name relative to the root
+                member_name = member.name
+                
+                # Check for path traversal
+                if '..' in member_name.split(os.sep):
+                    return False
+                
+                # Construct the full path where the member would be written
+                # We need to handle the case where the member is a directory vs file
+                # The member.name is relative to the archive root, we need to resolve it against dest_path
+                # But we must also handle the case where the member name starts with '/'
+                
+                # Calculate the intended destination path for this member
+                # We use os.path.join to combine dest_path with the member name
+                # However, we need to be careful about the leading slash
+                if member_name.startswith('/'):
+                    member_name = member_name[1:]
+                
+                # Resolve the full path
+                full_path = os.path.join(resolved_root, member_name)
+                
+                # Normalize the path to remove any remaining .. or .
+                normalized_path = os.path.normpath(full_path)
+                
+                # Check if the normalized path is outside the resolved root
+                if not normalized_path.startswith(resolved_root + os.sep) and normalized_path != resolved_root:
+                    return False
+                
+                # If it's a directory, we need to check if it would be created outside
+                if member.isdir():
+                    # Check if the directory would be created outside the root
+                    if not normalized_path.startswith(resolved_root + os.sep) and normalized_path != resolved_root:
+                        return False
+            
+            # If validation passes, perform the extraction
+            # Use extractfile for each member to ensure we don't write outside the root
+            # But we need to extract all members, so we'll use extractall but with a custom handler
+            # Actually, we can use extractall but we need to verify the paths are safe
+            # The safest approach is to extract each member individually with extractfile
+            
+            for member in members:
+                # Extract the member
+                member.extract(tar_path, dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

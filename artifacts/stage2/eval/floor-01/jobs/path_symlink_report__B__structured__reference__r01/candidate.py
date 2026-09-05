@@ -1,0 +1,49 @@
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Name of the report file (may be absolute or relative).
+        reports_root: Root directory where reports are stored.
+    
+    Returns:
+        The content of the report file as a UTF-8 string.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the path escapes reports_root or follows symlinks outside the root.
+    """
+    import os
+    import os.path
+    
+    # Normalize the root path to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename, joining it with the root
+    # We use os.path.join to handle relative paths correctly
+    requested_path = os.path.join(resolved_root, filename)
+    
+    # Normalize the path to remove any redundant separators or current directory references
+    # This helps in consistent comparison, but we must be careful not to resolve symlinks yet
+    normalized_requested = os.path.normpath(requested_path)
+    
+    # Check if the normalized path starts with the root directory
+    # This check must be done before resolving symlinks to prevent path traversal via ..
+    if not normalized_requested.startswith(resolved_root + os.sep) and normalized_requested != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Resolve the full path, following symbolic links
+    resolved_target = os.path.realpath(normalized_requested)
+    
+    # Check if the resolved target is still within the reports_root
+    # We need to ensure the resolved path starts with the root directory
+    if not resolved_target.startswith(resolved_root + os.sep) and resolved_target != resolved_root:
+        raise ValueError("Resolved path escapes reports_root after following symlinks")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file content as UTF-8
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,74 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path, rejecting any symbolic or hard links.
+    Returns True only on complete success; False otherwise.
+    """
+    # Resolve and validate dest_path
+    try:
+        dest_path = os.path.realpath(dest_path)
+    except (OSError, ValueError):
+        return False
+
+    # Ensure dest_path exists and is a directory
+    try:
+        if not os.path.isdir(dest_path):
+            return False
+    except OSError:
+        return False
+
+    # Open the archive
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Check if member is a symlink or hardlink
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Calculate the target path
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Resolve the target path to check for traversal
+                try:
+                    resolved_target = os.path.realpath(target_path)
+                except (OSError, ValueError):
+                    return False
+                
+                # Ensure the resolved target is within dest_path
+                # We compare the directory part of the resolved target with dest_path
+                resolved_dir = os.path.dirname(resolved_target)
+                if not (resolved_dir == dest_path or resolved_dir.startswith(os.path.join(dest_path, os.sep))):
+                    return False
+                
+                # Check if the file/directory already exists (we overwrite or fail? Plan says "complete success")
+                # If it exists and is not the same, we should probably fail to avoid accidental modification, 
+                # but the plan says "regular files and directories may be extracted". 
+                # Standard safe behavior: if it exists, don't overwrite unless it's the same file (which it isn't if paths differ).
+                # However, tarfile.extract() by default replaces. To be safe and match "complete success" without side effects:
+                if os.path.exists(resolved_target):
+                    # If the existing file is a symlink or link, we reject it.
+                    # If it's a regular file, we might want to skip or fail. 
+                    # The plan says "Check each member before extracting it". 
+                    # If it exists, extracting it again is usually a no-op for content but might be a side effect.
+                    # To be strictly safe: if it exists, we should probably not extract it or fail.
+                    # Let's assume we should not overwrite existing files to be safe, or at least ensure the extraction is clean.
+                    # Actually, standard extraction overwrites. If the plan implies a clean extraction, we should check.
+                    # But if the file is identical, it's fine. 
+                    # Safest approach for "no archive member written outside dest_path" is to ensure we don't break containment.
+                    # We will proceed with extraction but ensure containment.
+                    pass
+
+                # Extract the member
+                try:
+                    tar.extract(member, path=dest_path)
+                except Exception:
+                    return False
+
+            return True
+
+    except Exception:
+        return False

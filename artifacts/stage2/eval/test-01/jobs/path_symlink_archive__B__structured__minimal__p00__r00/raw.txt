@@ -1,0 +1,131 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove any .. or . segments and resolve to absolute if possible."""
+    return os.path.normpath(path)
+
+def _is_within_sandbox(safe_base: str, candidate_path: str) -> bool:
+    """Check if candidate_path is within safe_base."""
+    try:
+        safe_base_resolved = os.path.realpath(safe_base)
+        candidate_resolved = os.path.realpath(candidate_path)
+        return candidate_resolved.startswith(safe_base_resolved + os.sep) or candidate_resolved == safe_base_resolved
+    except (ValueError, OSError):
+        return False
+
+def _validate_tar_members(tar_path: str, dest_path: str) -> bool:
+    """Validate that all members in the tar archive would stay within dest_path."""
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Determine the intended target path for this member
+                member_dir = os.path.dirname(member.name)
+                member_file = os.path.basename(member.name)
+                
+                # Construct the potential destination path
+                if member_dir == '':
+                    potential_dest = dest_path
+                else:
+                    potential_dest = os.path.join(dest_path, member_dir)
+                
+                # If it's a symlink or hardlink, we must also check the target
+                if member.type == tarfile.SYMLINK or member.type == tarfile.HARDLINK:
+                    try:
+                        target_path = member.linkname
+                        # Resolve the target relative to the member's location or dest_path
+                        if member_dir == '':
+                            target_resolved = os.path.realpath(os.path.join(dest_path, target_path))
+                        else:
+                            target_resolved = os.path.realpath(os.path.join(potential_dest, target_path))
+                        
+                        # Ensure the target is also within dest_path
+                        if not _is_within_sandbox(dest_path, target_resolved):
+                            return False
+                    except (ValueError, OSError):
+                        return False
+                else:
+                    # For regular files, directories, etc., check the potential_dest
+                    if not _is_within_sandbox(dest_path, potential_dest):
+                        return False
+            
+            return True
+    except (tarfile.TarError, ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """Extract a tar archive beneath dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completed successfully, False otherwise.
+        No files are written outside dest_path on failure.
+    """
+    # Normalize the destination path to prevent escape via ..
+    dest_path = _normalize_path(dest_path)
+    
+    # Validate that the destination is within itself (trivial, but ensures safety)
+    # We also ensure dest_path is absolute or resolve it
+    if not os.path.isabs(dest_path):
+        dest_path = os.path.abspath(dest_path)
+    
+    # Create the destination directory if it doesn't exist
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except (OSError, ValueError):
+        return False
+    
+    # Validate all members before extraction
+    if not _validate_tar_members(tar_path, dest_path):
+        return False
+    
+    # Perform extraction
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Extract members, ignoring the member name to prevent path traversal
+            # We use a temporary approach to ensure we only write to dest_path
+            # Actually, tarfile.extractall with a filter or custom extraction is safer
+            # But the simplest safe way is to extract to a temp dir and move, or use extractall with a custom filter
+            # However, tarfile.extractall(dest_path) extracts directly to dest_path.
+            # To be safe against path traversal in member names, we should filter.
+            
+            members = tar.getmembers()
+            
+            for member in members:
+                # Construct the full path
+                if member.isdir():
+                    full_path = os.path.join(dest_path, member.name)
+                    # Ensure the directory is within dest_path
+                    if not _is_within_sandbox(dest_path, full_path):
+                        return False
+                    os.makedirs(full_path, exist_ok=True)
+                else:
+                    full_path = os.path.join(dest_path, member.name)
+                    # Ensure the file is within dest_path
+                    if not _is_within_sandbox(dest_path, full_path):
+                        return False
+                    
+                    # Extract the file
+                    tar.extract(member, dest_path)
+                    
+                    # Post-extraction check: ensure the file exists within dest_path
+                    if not os.path.exists(full_path):
+                        return False
+                    
+                    # For symlinks, ensure the target is also checked (already done in validation)
+                    # But if extraction creates a symlink, we should verify its target
+                    if member.type == tarfile.SYMLINK:
+                        # The extraction creates the symlink, we need to check the target again
+                        # The linkname is relative to the member's location or dest_path
+                        # We already checked linkname in validation, but let's be sure
+                        pass
+                    
+            return True
+            
+    except (tarfile.TarError, ValueError, OSError):
+        return False

@@ -1,0 +1,99 @@
+import socket
+from urllib.parse import urlparse, urljoin
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL following safety constraints.
+    
+    Args:
+        url: The URL to fetch (can be absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response for a 200 status code.
+    
+    Raises:
+        ValueError: If the URL scheme, port, or resolved hostname is invalid.
+    """
+    current_url = url
+    
+    # Resolve the initial hostname
+    initial_parsed = urlparse(current_url)
+    initial_host = initial_parsed.hostname
+    
+    if not initial_host:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    resolved_ips = resolve_host(initial_host)
+    if not resolved_ips:
+        raise ValueError("DNS resolution failed for hostname")
+    
+    # Validate initial scheme and port
+    if initial_parsed.scheme not in ('http', 'https'):
+        raise ValueError("Unsupported scheme")
+    
+    target_port = initial_parsed.port
+    if target_port is None:
+        if initial_parsed.scheme == 'http':
+            target_port = 80
+        elif initial_parsed.scheme == 'https':
+            target_port = 443
+    else:
+        if initial_parsed.scheme == 'http' and target_port != 80:
+            raise ValueError("HTTP must use port 80")
+        if initial_parsed.scheme == 'https' and target_port != 443:
+            raise ValueError("HTTPS must use port 443")
+    
+    # Perform the transport request
+    status, headers, body = transport(current_url)
+    
+    if status != 200:
+        raise ValueError("Only 200 status codes are accepted")
+    
+    # Check for Location header and follow up to 5 hops
+    location_header = headers.get('Location')
+    hop_count = 0
+    
+    while location_header is not None and hop_count < 5:
+        hop_count += 1
+        
+        # Resolve the location against the current URL
+        new_parsed = urlparse(location_header)
+        new_host = new_parsed.hostname
+        
+        if not new_host:
+            raise ValueError("Invalid Location header: missing hostname")
+        
+        # Resolve the new hostname
+        new_resolved_ips = resolve_host(new_host)
+        if not new_resolved_ips:
+            raise ValueError("DNS resolution failed for Location hostname")
+        
+        # Validate scheme and port for the Location
+        if new_parsed.scheme not in ('http', 'https'):
+            raise ValueError("Location has unsupported scheme")
+        
+        new_target_port = new_parsed.port
+        if new_target_port is None:
+            if new_parsed.scheme == 'http':
+                new_target_port = 80
+            elif new_parsed.scheme == 'https':
+                new_target_port = 443
+        else:
+            if new_parsed.scheme == 'http' and new_target_port != 80:
+                raise ValueError("Location HTTP must use port 80")
+            if new_parsed.scheme == 'https' and new_target_port != 443:
+                raise ValueError("Location HTTPS must use port 443")
+        
+        # Check if scheme and port match the original
+        if initial_parsed.scheme != new_parsed.scheme:
+            raise ValueError("Location scheme must match original scheme")
+        if target_port != new_target_port:
+            raise ValueError("Location port must match original port")
+        
+        # Update current URL
+        current_url = location_header
+        location_header = headers.get('Location')
+    
+    return body

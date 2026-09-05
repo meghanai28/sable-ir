@@ -1,0 +1,62 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation or extraction fails.
+    """
+    try:
+        # Resolve the root directory for validation
+        root_dir = os.path.abspath(dest_path)
+        
+        # Normalize and validate tar_path exists
+        if not os.path.exists(tar_path):
+            return False
+            
+        # Open the tar file
+        with tarfile.open(tar_path) as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the potential destination path for this member
+                dest_member = os.path.join(root_dir, member.name)
+                
+                # Resolve the actual path to check for escapes
+                resolved_dest = os.path.normpath(dest_member)
+                
+                # Ensure the resolved destination is within the root directory
+                if not resolved_dest.startswith(root_dir + os.sep) and resolved_dest != root_dir:
+                    # This handles both absolute paths outside root and relative paths with ..
+                    return False
+            
+            # If validation passes, perform extraction
+            for member in tar:
+                member_dir = os.path.dirname(member.name)
+                if member_dir:
+                    # Create necessary directories
+                    full_dir_path = os.path.join(root_dir, member_dir)
+                    if not os.path.exists(full_dir_path):
+                        os.makedirs(full_dir_path)
+                
+                if member.isdir():
+                    os.makedirs(os.path.join(root_dir, member.name))
+                else:
+                    # Extract the file
+                    with tar.extractfile(member) as source:
+                        dest_file_path = os.path.join(root_dir, member.name)
+                        # Ensure the directory exists
+                        os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
+                        source.write(dest_file_path)
+                        
+    except Exception:
+        return False
+    
+    return True

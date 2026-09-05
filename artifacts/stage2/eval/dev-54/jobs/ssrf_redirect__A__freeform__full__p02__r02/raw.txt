@@ -1,0 +1,109 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL after validating and resolving the hostname.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, no IP is resolved, or status is not 200.
+    """
+    # Parse the URL to extract components
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    # Default ports: HTTP=80, HTTPS=443
+    if scheme == 'http':
+        default_port = 80
+    elif scheme == 'https':
+        default_port = 443
+    else:
+        raise ValueError(f"Only HTTP and HTTPS are allowed, got {scheme}")
+    
+    # Check if the port is the default port
+    if port is not None and port != default_port:
+        raise ValueError(f"Only default ports are allowed for {scheme}, got {port}")
+    
+    # Extract hostname
+    hostname = parsed_url.hostname
+    
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve hostname to IP address(es)
+    ip_addresses = resolve_host(hostname)
+    
+    if not ip_addresses:
+        raise ValueError("resolve_host returned no IP addresses")
+    
+    # Check if the resolved hostname is "public" (non-loopback, non-link-local, non-ipv6-mapped)
+    # The plan says "check the initial public HTTP destination". We assume any resolved IP is acceptable 
+    # unless it's a private/reserved range, but the prompt implies we just need to ensure we have an IP.
+    # However, "public" usually implies not 127.x.x.x, ::1, 10.x.x.x, 172.16-31.x.x, 192.168.x.x, etc.
+    # Since we are opening a connection to the IP, we must ensure it's not a loopback or private IP.
+    def is_public_ip(ip_str):
+        ip = socket.inet_aton(ip_str) if ':' not in ip_str else None
+        if ip is None:
+            # IPv6
+            # Check for ::1
+            if ip_str == '::1':
+                return False
+            # Check for all-ones (invalid)
+            if ip_str == 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff':
+                return False
+            return True
+        # IPv4
+        # Check for loopback
+        if ip == b'\x7f\x00\x00\x00':
+            return False
+        # Check for link-local
+        if ip[0] == 0x0e or ip[0] == 0x05:
+            return False
+        # Check for private
+        if (ip[0] == 0x0a) or (ip[0] == 0x0c and ip[1] >= 0x2d):
+            return False
+        if (ip[0] == 0x0d and ip[1] == 0xa8):
+            return False
+        return True
+    
+    # The plan says "raise ValueError if it is not public". 
+    # We will check if ANY of the resolved IPs is public. If none are public, raise error.
+    # Note: In a real scenario, we might want to restrict to specific public ranges, but here we assume 
+    # standard public IP validation.
+    if not any(is_public_ip(ip) for ip in ip_addresses):
+        raise ValueError("Resolved hostname does not have a public IP address")
+    
+    # Use the first public IP for the request
+    target_ip = ip_addresses[0]
+    
+    # Construct the full URL for the request (ensure we use the original scheme and path)
+    # We need to handle the case where the URL was relative or had a port
+    # The transport function expects a URL string. We will construct a canonical URL.
+    # If the original URL had a port, we keep it, otherwise use default.
+    if port is not None:
+        full_url = f"{parsed_url.scheme}://{hostname}:{port}{parsed_url.path}"
+    else:
+        full_url = f"{parsed_url.scheme}://{hostname}{parsed_url.path}"
+    
+    # Make the request using the transport
+    status, headers, body = transport(full_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Request status is not 200: {status}")
+    
+    # Return the body
+    return body

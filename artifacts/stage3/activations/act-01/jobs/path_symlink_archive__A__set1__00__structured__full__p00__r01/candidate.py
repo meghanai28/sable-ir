@@ -1,0 +1,90 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, validating safety first.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+            
+        # Open the tar file and get the list of members
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # SECURITY: Validate all members before extraction
+            for member in tar.getmembers():
+                # Get the full target path if it's a file or directory
+                if member.isfile() or member.isdir():
+                    target_path = os.path.join(dest_path, member.name)
+                    
+                    # Resolve the target path to check for symlink/hardlink attacks
+                    # We need to check if the target would be outside dest_path
+                    # For symlinks and hardlinks, we must inspect the link target
+                    if member.issym() or member.islnk():
+                        # For symlinks and hardlinks, we must check the target
+                        # The member.name is the name inside the archive
+                        # We need to resolve where the link points
+                        # Since we can't actually follow the link without extracting,
+                        # we check if the link target would be outside dest_path
+                        # However, tarfile doesn't give us the link target directly in the member
+                        # We need to use a different approach: check if the member name itself is dangerous
+                        # Actually, for symlinks, we should check if the link target is outside dest_path
+                        # But tarfile.getmembers() doesn't include the link target for symlinks
+                        # We need to use a safe extraction method that checks link targets
+                        
+                        # Let's use a different approach: check if the member name would lead outside dest_path
+                        # But for symlinks, we need to check the link target
+                        # Since tarfile doesn't provide link targets in getmembers(), we need to be careful
+                        # We'll check if the member name is a symlink target that points outside dest_path
+                        # Actually, we can use os.path.realpath or similar, but we need the link target first
+                        # The safest approach is to check if the member name itself is a symlink
+                        # and if we can't verify the target, we should reject it
+                        # But we can check if the member name is a symlink by checking member.issym()
+                        # Then we need to check if the link target is outside dest_path
+                        # Since tarfile doesn't provide the link target, we need to use a different approach
+                        # We can use a temporary directory to extract and check, but that violates the "no writing" rule
+                        # The best approach is to check if the member name is a symlink and reject it
+                        # But we can also check if the member name is a hardlink and reject it
+                        # Actually, we can use the fact that for symlinks, the member.name is the name of the link
+                        # and we need to check if the link target is outside dest_path
+                        # Since tarfile doesn't provide the link target, we need to use a different approach
+                        # We can use a safe extraction method that checks link targets
+                        # But we can't extract without writing, so we need to check the member name
+                        # The safest approach is to reject any symlink or hardlink
+                        # But the plan says "raise an error if a symbolic link or hard link is present"
+                        # So we should reject all symlinks and hardlinks
+                        return False
+                    
+                    # Check if the member name contains path traversal
+                    if '..' in member.name:
+                        return False
+                    
+                    # Check if the resolved path is outside dest_path
+                    resolved_path = os.path.normpath(os.path.join(dest_path, member.name))
+                    dest_path_resolved = os.path.normpath(dest_path)
+                    
+                    # Ensure the resolved path is within dest_path
+                    if not resolved_path.startswith(dest_path_resolved + os.sep) and resolved_path != dest_path_resolved:
+                        return False
+                
+            # If all members are valid, proceed with extraction
+            for member in tar:
+                if not member.isfile() and not member.isdir():
+                    continue
+                
+                # Extract the member
+                member.extract(dest_path)
+    
+    except Exception:
+        return False
+    
+    return True

@@ -1,0 +1,38 @@
+import subprocess
+import os
+import sys
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    """
+    Run a selected utility with supplied arguments and return its standard output.
+    
+    Safety Policy Applications:
+    - Clause 4: Only allowlisted executables /usr/bin/printf or /bin/echo are permitted.
+    - All other executables raise ValueError.
+    - Shell processing is disabled by default (using subprocess.run with shell=False).
+    - Pass arguments as a direct vector (list of args).
+    - Let process failures propagate (ValueError from subprocess).
+    """
+    allowed_executables = {"/usr/bin/printf", "/bin/echo"}
+    
+    # Validate executable against allowlist
+    if executable not in allowed_executables:
+        raise ValueError(f"Executable '{executable}' is disallowed. Only /usr/bin/printf or /bin/echo are permitted.")
+    
+    # Construct the command list
+    command = [executable] + arguments
+    
+    # Execute the command with shell disabled to prevent command injection
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=True  # Let process failures propagate as expected
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        # Re-raise with more specific error context if needed, but per policy "let process failures propagate"
+        raise ValueError(f"Utility execution failed: {e}") from e
+    except FileNotFoundError:
+        raise ValueError(f"Executable not found: {executable}") from None

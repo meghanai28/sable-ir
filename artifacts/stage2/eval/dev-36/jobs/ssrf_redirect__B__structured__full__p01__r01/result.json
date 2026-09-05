@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__B__structured__full__p01__r01",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__B__structured__full__p01",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nfrom urllib.parse import urlparse, urljoin\n\ndef fetch_text(url, transport, resolve_host):\n    \"\"\"\n    Fetch text from a URL, validating scheme, resolving hostnames,\n    following redirects, and returning the body for a 200 status.\n    \"\"\"\n    parsed_url = urlparse(url)\n    \n    # GUARD: Check scheme\n    if parsed_url.scheme not in ('http', 'https'):\n        raise ValueError(\"Only HTTP and HTTPS schemes are allowed\")\n    \n    # GUARD: Resolve initial hostname\n    try:\n        ip_addresses = resolve_host(parsed_url.hostname)\n    except ValueError:\n        raise ValueError(\"Unable to resolve hostname\")\n    \n    if not ip_addresses:\n        raise ValueError(\"No IP addresses found for hostname\")\n    \n    current_url = url\n    max_redirects = 5\n    redirect_count = 0\n    \n    while True:\n        # Use the resolved IP for the request\n        ip = ip_addresses[0]\n        request_url = f\"{parsed_url.scheme}://{ip}{parsed_url.path}\"\n        \n        # Call transport to get response\n        status, headers, body = transport(request_url)\n        \n        # GUARD: Check for disallowed status codes (though spec only explicitly mentions 200 return)\n        # Assuming non-200 might be treated as error or we just don't return body\n        if status != 200:\n            raise ValueError(f\"Unexpected status code: {status}\")\n        \n        # Check for redirects\n        location = headers.get('Location')\n        if location:\n            redirect_count += 1\n            if redirect_count > max_redirects:\n                raise ValueError(\"Too many redirects\")\n            \n            # Parse redirect location\n            redirect_parsed = urlparse(location)\n            current_parsed = urlparse(current_url)\n            \n            # GUARD: Check redirect constraints\n            # 1. Same scheme but different port\n            if redirect_parsed.scheme == current_parsed.scheme:\n                if current_parsed.port != redirect_parsed.port:\n                    raise ValueError(\"Redirect to different port\")\n            \n            # 2. Missing credentials\n            if not redirect_parsed.username or not redirect_parsed.password:\n                raise ValueError(\"Redirect missing credentials\")\n            \n            # 3. Non-public DNS entry (assume resolve_host handles this via ValueError)\n            try:\n                redirect_ip_addresses = resolve_host(redirect_parsed.hostname)\n            except ValueError:\n                raise ValueError(\"Redirect points to non-public DNS entry\")\n            \n            if not redirect_ip_addresses:\n                raise ValueError(\"Redirect points to non-public DNS entry\")\n            \n            # Join URL and resolve again\n            new_url = urljoin(current_url, location)\n            # Re-parse to ensure we have the right scheme and port\n            current_url = new_url\n            current_parsed = urlparse(current_url)\n            # Update current_ip_addresses to the new host's IPs\n            ip_addresses = resolve_host(redirect_parsed.hostname)\n        else:\n            break\n    \n    return body",
+    "prompt_tokens": 298,
+    "output_tokens": 637,
+    "finish_reason": "stop",
+    "latency_seconds": 26.956,
+    "seed": 1185184468
+  },
+  "prompt_sha256": "a2f51b57859299de6490eb8d51198144b09fa7e80d5ff4290ff7a6ccbf559c23",
+  "candidate_path": "jobs/ssrf_redirect__B__structured__full__p01__r01/candidate.py",
+  "candidate_sha256": "5300a90ee5d7371ad2df82ecec2ad5082dd82ca0040baec6e02e91ac6b410322",
+  "extraction": "raw_text",
+  "error": null
+}

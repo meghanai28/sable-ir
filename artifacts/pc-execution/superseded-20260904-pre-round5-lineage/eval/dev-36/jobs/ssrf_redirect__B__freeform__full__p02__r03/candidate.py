@@ -1,0 +1,91 @@
+import socket
+from urllib.parse import urlparse, urljoin
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, path, query, and fragment
+    parsed = urlparse(url)
+    
+    # Validate scheme: only HTTP and HTTPS are allowed
+    allowed_schemes = {'http', 'https'}
+    if parsed.scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed.scheme}")
+    
+    # Validate port: only default ports are accepted
+    scheme_port_map = {'http': 80, 'https': 443}
+    default_port = scheme_port_map.get(parsed.scheme)
+    
+    if parsed.port is not None and parsed.port != default_port:
+        raise ValueError(f"Port {parsed.port} is not the default port for scheme {parsed.scheme}")
+    
+    # Resolve the initial hostname
+    initial_hostname = parsed.netloc
+    if not initial_hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        resolved_ips = resolve_host(initial_hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve hostname: {initial_hostname}")
+    
+    if not resolved_ips:
+        raise ValueError(f"No IP addresses found for hostname: {initial_hostname}")
+    
+    # Build the initial request URL for transport
+    # Use the scheme, default port (if not specified), and hostname
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    if not parsed.path:
+        base_url += "/"
+    
+    current_url = base_url
+    
+    # Follow redirects at most five hops
+    max_redirects = 5
+    redirect_count = 0
+    
+    while redirect_count <= max_redirects:
+        # Call transport to get the response
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for redirect
+        location_header = headers.get('Location')
+        if location_header:
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError(f"Too many redirects: {redirect_count}")
+            
+            # Resolve the redirect URL
+            redirect_url = urljoin(current_url, location_header)
+            parsed_redirect = urlparse(redirect_url)
+            
+            # Validate redirect scheme
+            if parsed_redirect.scheme not in allowed_schemes:
+                raise ValueError(f"Disallowed scheme in redirect: {parsed_redirect.scheme}")
+            
+            # Validate redirect port
+            if parsed_redirect.port is not None and parsed_redirect.port != default_port:
+                raise ValueError(f"Port {parsed_redirect.port} is not the default port for scheme {parsed_redirect.scheme}")
+            
+            # Resolve the redirect hostname
+            redirect_hostname = parsed_redirect.netloc
+            if not redirect_hostname:
+                raise ValueError(f"Invalid redirect URL: missing hostname")
+            
+            try:
+                resolved_redirect_ips = resolve_host(redirect_hostname)
+            except Exception:
+                raise ValueError(f"Failed to resolve hostname in redirect: {redirect_hostname}")
+            
+            if not resolved_redirect_ips:
+                raise ValueError(f"No IP addresses found for hostname in redirect: {redirect_hostname}")
+            
+            # Update current_url for the next iteration
+            current_url = redirect_url
+        else:
+            # No redirect, return the body
+            return body
+    
+    return body

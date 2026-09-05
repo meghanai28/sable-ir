@@ -1,0 +1,91 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+import os
+import sys
+
+def _validate_url_scheme(url):
+    """
+    Validates that the URL scheme is HTTP or HTTPS.
+    Raises ValueError for disallowed schemes.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed request scheme: {parsed.scheme}")
+
+def _resolve_host(hostname):
+    """
+    Resolves a hostname to textual IP addresses.
+    """
+    try:
+        ip_addresses = socket.getaddrinfo(hostname, None)
+        return [addr[4][0] for addr in ip_addresses]
+    except socket.gaierror as e:
+        raise ValueError(f"Failed to resolve host {hostname}: {e}")
+
+def _fetch_text(url, transport, resolve_host):
+    """
+    Fetches text from a URL using the provided transport.
+    Implements safety checks relevant to the request:
+    - Validates URL scheme (Clause 5: scheme validation).
+    - Resolves hostnames to IPs (Clause 5: DNS resolution).
+    - Handles HTTP/HTTPS on default ports.
+    - Returns body for status 200.
+    - Raises ValueError for disallowed requests.
+    """
+    # Clause 5: Validate scheme and resolve host
+    _validate_url_scheme(url)
+    hostname = urllib.parse.urlparse(url).hostname
+    if not hostname:
+        raise ValueError("Invalid URL format")
+    
+    # Resolve host to IP addresses
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for {hostname}")
+    
+    # Determine the scheme and port
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    port = parsed.port
+    
+    # Default ports
+    default_http_port = 80
+    default_https_port = 443
+    
+    # If no port specified, use default based on scheme
+    if port is None:
+        if scheme == 'http':
+            port = default_http_port
+        elif scheme == 'https':
+            port = default_https_port
+    
+    # Construct the full URL with explicit port if needed
+    full_url = f"{scheme}://{hostname}:{port}{parsed.path}"
+    
+    # Attempt to fetch using the transport
+    try:
+        response = transport(full_url)
+        status, headers, body = response
+        
+        # Clause 5: Ensure we are following redirects if applicable (though transport handles this)
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Ensure body is a string
+        if isinstance(body, bytes):
+            body = body.decode('utf-8', errors='replace')
+            
+        return body
+    
+    except Exception as e:
+        raise ValueError(f"Request failed: {e}")
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Public wrapper for fetch_text.
+    """
+    return _fetch_text(url, transport, resolve_host)

@@ -1,0 +1,88 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving symlinks and removing .. components."""
+    return os.path.normpath(os.path.realpath(path))
+
+def _is_under_directory(file_path: str, dest_dir: str) -> bool:
+    """Check if file_path is within dest_dir, accounting for symlinks."""
+    try:
+        real_file = os.path.realpath(file_path)
+        real_dest = os.path.realpath(dest_dir)
+        return real_file.startswith(real_dest + os.sep) or real_file == real_dest
+    except (OSError, ValueError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize and validate the destination path
+    try:
+        dest_dir = _normalize_path(dest_path)
+    except (OSError, ValueError):
+        return False
+
+    # Validate the tar file exists and is readable
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Skip directories to avoid creating them (only extract files)
+                if member.isdir():
+                    continue
+                
+                # Resolve the member's target path
+                member_path = os.path.join(dest_dir, member.name)
+                
+                # Check for escape attempts in the member name itself
+                if not _is_under_directory(member.name, dest_dir):
+                    return False
+                
+                # Resolve the full path and check for escape
+                full_path = os.path.join(dest_dir, member.name)
+                if not _is_under_directory(full_path, dest_dir):
+                    return False
+                
+                # Check for symbolic links or hard links to destinations
+                if member.issym() or member.ishardlink():
+                    # Resolve the link target
+                    try:
+                        link_target = member.linkname
+                        resolved_link = os.path.realpath(os.path.join(dest_dir, member.name))
+                        # Check if the link target points inside the destination
+                        if _is_under_directory(link_target, dest_dir):
+                            return False
+                    except (OSError, ValueError):
+                        return False
+                
+                # Additional check: ensure the member name doesn't start with ..
+                if member.name.startswith('..'):
+                    return False
+            
+            # Proceed with extraction
+            try:
+                tar.extractall(dest_dir)
+                return True
+            except Exception:
+                return False
+                
+    except Exception:
+        return False

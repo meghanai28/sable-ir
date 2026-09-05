@@ -1,0 +1,70 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text content from a URL using the provided transport and hostname resolver.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns a tuple (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of textual IP addresses.
+    
+    Returns:
+        The body of the response as a string if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not http or https, or if no IP addresses are resolved.
+    """
+    # Parse the URL to extract scheme and host
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = parsed.netloc
+    
+    # Guard: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Guard: Resolve hostname
+    ip_addresses = resolve_host(host)
+    if not ip_addresses:
+        raise ValueError("No IP addresses resolved for the hostname.")
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Construct the full URL for transport
+    # Ensure the host is properly formatted (e.g., no extra slashes)
+    # urlparse's netloc might have a leading colon if the input was like "http://example.com"
+    # We need to handle the case where the URL is absolute or relative, but the plan implies absolute.
+    # However, to be safe with the transport function which expects a URL, we use the parsed components.
+    # If the URL was relative, urlparse might not have a netloc, but the plan says "may be absolute".
+    # Assuming absolute URLs as per typical fetch requests.
+    
+    # Build the full URL string for the transport function
+    # We need to ensure the host is correctly formatted.
+    # If the original URL had a port, we keep it, otherwise use default_port.
+    # The transport function likely expects a full URL.
+    full_url = parsed._replace(scheme='http', port=default_port).geturl()
+    # If the original scheme was https, we need to be careful not to change it if a port was specified.
+    # But the plan says "Accept HTTP or HTTPS on its default port".
+    # Let's reconstruct the URL carefully.
+    
+    # Re-evaluating URL construction:
+    # If the URL is "http://example.com", we want "http://example.com:80".
+    # If the URL is "https://example.com:443", we want "https://example.com:443".
+    # If the URL is "https://example.com", we want "https://example.com:443".
+    
+    # Using the parsed object to build a canonical URL
+    canonical_url = parsed._replace(scheme='http', port=default_port).geturl()
+    # If the original scheme was https, we must revert the scheme back to https
+    if scheme == 'https':
+        canonical_url = parsed._replace(scheme='https', port=default_port).geturl()
+    
+    # Call the transport function
+    status, headers, body = transport(canonical_url)
+    
+    # Guard: Check status code
+    if status != 200:
+        raise ValueError("Request failed: Status code is not 200.")
+    
+    return body

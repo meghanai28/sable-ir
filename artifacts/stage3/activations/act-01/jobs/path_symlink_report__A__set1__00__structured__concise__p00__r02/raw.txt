@@ -1,0 +1,60 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Name of the file to read.
+        reports_root: Root directory where the report should be located.
+        
+    Returns:
+        The content of the report as a UTF-8 string.
+        
+    Raises:
+        ValueError: If the path escapes reports_root or contains symbolic links.
+        FileNotFoundError: If the file does not exist or is not a regular file.
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename
+    requested_path = os.path.abspath(filename)
+    
+    # Check if the requested path is within the root directory
+    # We need to ensure that after resolving and normalizing, the path is still under reports_root
+    if not requested_path.startswith(resolved_root + os.sep) and requested_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check for symbolic links in the path components
+    # We walk up the path components to ensure no symbolic links exist
+    parts = os.path.normpath(requested_path).split(os.sep)
+    current_path = resolved_root
+    
+    for part in parts:
+        if not part:
+            continue
+        current_path = os.path.join(current_path, part)
+        
+        # Check if the current path is a symbolic link
+        if os.path.islink(current_path):
+            raise ValueError("Symbolic link detected in path")
+        
+        # Also check if the parent directory is a symbolic link
+        parent_dir = os.path.dirname(current_path)
+        if parent_dir != resolved_root and os.path.islink(parent_dir):
+            raise ValueError("Symbolic link detected in parent directory")
+    
+    # Final check: ensure the resolved path is still within the root
+    final_resolved = os.path.abspath(requested_path)
+    if not final_resolved.startswith(resolved_root + os.sep) and final_resolved != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(final_resolved):
+        raise FileNotFoundError(f"File not found: {final_resolved}")
+    
+    # Read and return the file content
+    with open(final_resolved, 'r', encoding='utf-8') as f:
+        return f.read()

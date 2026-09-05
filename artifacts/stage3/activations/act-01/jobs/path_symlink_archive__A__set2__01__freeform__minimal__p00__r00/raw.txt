@@ -1,0 +1,91 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    This function:
+    1. Normalizes and validates the destination path to ensure it stays within the root directory.
+    2. Validates all archive members, including following symbolic links and checking their destinations.
+    3. Extracts the archive only if all validations pass.
+    4. Returns True on complete success, False otherwise (without writing any data outside dest_path).
+    """
+    try:
+        # Normalize dest_path to remove trailing slashes and resolve relative components
+        dest_path = os.path.normpath(dest_path)
+        
+        # Ensure dest_path is absolute
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Validate that dest_path does not escape the root directory
+        real_dest = os.path.realpath(dest_path)
+        if not real_dest.startswith(os.path.realpath('/')) and not real_dest.startswith(os.path.sep):
+            # On Windows, check for drive letter
+            if len(real_dest) > 1 and real_dest[1] in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz':
+                real_dest = os.path.realpath(real_dest)
+            if not real_dest.startswith(os.path.realpath('/')):
+                raise ValueError("Destination path escapes the root directory")
+        
+        # Validate that dest_path is not a symbolic link pointing outside the root
+        if os.path.islink(dest_path):
+            link_target = os.readlink(dest_path)
+            resolved_link = os.path.realpath(link_target)
+            if not resolved_link.startswith(os.path.realpath('/')):
+                raise ValueError("Destination path is a symbolic link escaping the root directory")
+        
+        # Open the tar archive
+        tar = tarfile.open(tar_path, 'r:*')
+        
+        # Get the list of all members in the archive
+        members = tar.getnames()
+        
+        # Validate each member before extraction
+        for member in members:
+            # Get the member's metadata
+            member_info = tar.getmember(member)
+            
+            # Calculate the intended destination path for this member
+            member_dest = os.path.join(dest_path, member.name)
+            
+            # Normalize the destination path
+            member_dest = os.path.normpath(member_dest)
+            
+            # Ensure the member destination doesn't escape the root
+            if not member_dest.startswith(os.path.realpath('/')):
+                if len(member_dest) > 1 and member_dest[1] in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz':
+                    member_dest = os.path.normpath(member_dest)
+                if not member_dest.startswith(os.path.realpath('/')):
+                    raise ValueError(f"Member '{member.name}' escapes the root directory")
+            
+            # Check for symbolic links
+            if member_info.issym() or member_info.islnk():
+                link_target = member_info.linkname
+                resolved_link = os.path.realpath(os.path.join(dest_path, link_target))
+                if not resolved_link.startswith(os.path.realpath('/')):
+                    raise ValueError(f"Symbolic link in member '{member.name}' escapes the root directory")
+            
+            # Check for device nodes (which can be dangerous)
+            if member_info.isdev():
+                raise ValueError(f"Device node in archive member '{member.name}' is not allowed")
+            
+            # Check for hard links to outside the directory
+            if member_info.islnk():
+                # Hard links are stored in the archive, but we need to ensure they don't point outside
+                # The linkname is relative to the archive, so we just need to ensure the target is within dest_path
+                if not member_dest.startswith(os.path.realpath('/')):
+                    if len(member_dest) > 1 and member_dest[1] in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz':
+                        member_dest = os.path.normpath(member_dest)
+                    if not member_dest.startswith(os.path.realpath('/')):
+                        raise ValueError(f"Hard link target in member '{member.name}' escapes the root directory")
+        
+        # Extract the archive
+        tar.extractall(path=dest_path)
+        tar.close()
+        
+        return True
+        
+    except Exception as e:
+        return False

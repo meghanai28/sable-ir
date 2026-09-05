@@ -1,0 +1,43 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def resolve_host(hostname):
+    try:
+        return socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        raise ValueError(f"Unable to resolve hostname: {hostname}")
+
+def check_scheme(url):
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+
+def fetch_text(url, transport, resolve_host):
+    # Order: Resolve and check scheme before making the request
+    if not resolve_host(url):
+        raise ValueError("Invalid URL")
+    
+    # Check scheme
+    check_scheme(url)
+    
+    # Capture the initial destination and never follow a redirect
+    initial_url = url
+    
+    try:
+        # Make the request
+        response = transport(initial_url)
+        status, headers, body = response
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Status code is not 200: {status}")
+        
+        # Return the body
+        return body
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"Error during request: {str(e)}")

@@ -1,0 +1,49 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Untrusted input filename.
+        reports_root: Root directory for safe file access.
+    
+    Returns:
+        UTF-8 text content of the validated report.
+    
+    Raises:
+        ValueError: If the path escapes reports_root or is disallowed.
+        FileNotFoundError: If the file does not exist or is not a regular file.
+    """
+    # Resolve the base directory to a canonical path
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Construct the full path by joining reports_root and filename
+    # This handles both relative and absolute filenames, though we will normalize
+    full_path = os.path.join(reports_root, filename)
+    
+    # Normalize the path to remove .. and . segments without resolving symlinks yet
+    # This helps in the containment check before following symlinks
+    normalized_path = os.path.normpath(full_path)
+    
+    # Check if the normalized path escapes the reports_root directory
+    # We compare the normalized path against the resolved root
+    if not normalized_path.startswith(resolved_root + os.sep) and normalized_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Resolve the full path, following symbolic links
+    resolved_path = os.path.realpath(normalized_path)
+    
+    # Ensure the resolved path is still within the reports_root directory
+    # This is a critical security check to prevent symlink escapes
+    if not resolved_path.startswith(resolved_root + os.sep) and resolved_path != resolved_root:
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Check if the resolved path exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"The file {resolved_path} does not exist or is not a regular file")
+    
+    # Read the file content
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

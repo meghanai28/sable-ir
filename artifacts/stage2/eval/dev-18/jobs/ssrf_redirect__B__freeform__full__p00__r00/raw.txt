@@ -1,0 +1,200 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetches text from a URL with strict validation of the hostname and redirect chain.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, hostname is invalid, or redirect chain is too long.
+    """
+    # Parse the initial URL
+    try:
+        parsed_url = urllib.parse.urlparse(url)
+    except ValueError:
+        raise ValueError("Invalid URL format")
+
+    # Validate scheme
+    valid_schemes = {'http', 'https'}
+    if parsed_url.scheme.lower() not in valid_schemes:
+        raise ValueError(f"Unsupported scheme: {parsed_url.scheme}")
+
+    # Normalize and resolve the target hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("No hostname in URL")
+
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+
+    if not ip_addresses:
+        raise ValueError("No valid IP addresses found for hostname")
+
+    # Validate IP addresses (basic check to ensure they are valid)
+    for ip in ip_addresses:
+        if not isinstance(ip, str):
+            raise ValueError("IP address must be a string")
+        # Basic format check (could be more strict)
+        try:
+            socket.inet_aton(ip)
+        except socket.error:
+            raise ValueError(f"Invalid IP address format: {ip}")
+
+    # Determine initial scheme, port, and credentials
+    initial_scheme = parsed_url.scheme.lower()
+    initial_port = parsed_url.port
+    if initial_port is None:
+        if initial_scheme == 'http':
+            initial_port = 80
+        else:
+            initial_port = 443
+    initial_credentials = parsed_url.username or parsed_url.password
+
+    # Define a set of valid hosts for comparison (for same-host redirects)
+    # The requirement says "same scheme, port, credentials, DNS, and public-address validation"
+    # This implies the target must pass the same validation rules as the initial host.
+    # We will collect the valid IPs for the initial host and use them as a reference.
+    valid_ips_set = set(ip_addresses)
+
+    def is_valid_target(parsed_url, resolved_ips):
+        """Check if a URL meets the same validation criteria as the initial destination."""
+        # Scheme must match
+        if parsed_url.scheme.lower() != initial_scheme:
+            return False
+        
+        # Port must match
+        if parsed_url.port is not None:
+            if parsed_url.port != initial_port:
+                return False
+        else:
+            # Default port must match
+            expected_default = 80 if initial_scheme == 'http' else 443
+            if initial_port != expected_default:
+                return False
+        
+        # Credentials must match
+        if parsed_url.username != initial_credentials or parsed_url.password != initial_credentials:
+            return False
+        
+        # DNS validation: The resolved hostname must be valid (same logic as initial)
+        try:
+            # We need to resolve the hostname of the target URL to check if it's valid
+            # However, the plan says "check it against the same scheme, port, credentials, DNS, and public-address validation applied to the initial destination"
+            # This implies we should validate the target's resolved IPs against the same rules (i.e., they must be valid IPs).
+            # But to be consistent with "same host" logic, we might expect the hostname to be the same or a known valid one.
+            # Given the constraint "same scheme, port, credentials, DNS", we interpret this as:
+            # 1. Scheme matches.
+            # 2. Port matches.
+            # 3. Credentials match.
+            # 4. The DNS resolution of the target hostname must succeed and yield valid IPs (which we check).
+            # Note: The plan says "resolve each Location header from the current URL".
+            # It does not explicitly say the hostname must be identical, but "same ... DNS" usually implies the same resolved set or a valid one.
+            # Let's assume we just need to validate that the target's resolved IPs are valid (which they should be if resolve_host works correctly and we passed initial validation).
+            # However, to be safe against different domains, we might need to ensure the resolved IPs are valid.
+            # Actually, the most restrictive interpretation of "same ... DNS" is that the hostname itself must be the same or a known safe one.
+            # But since we can't know "safe" domains without a whitelist, we will rely on the fact that if resolve_host works, the IPs are valid.
+            # The critical part is that we don't allow redirects to different hosts unless they pass the same validation.
+            # Since we validate the IPs, and assume resolve_host is safe for the initial host, we assume resolve_host is safe for the redirect host too?
+            # No, the plan says "check it against the same ... validation applied to the initial destination".
+            # This means if the initial destination had a specific set of valid IPs, the redirect must also resolve to valid IPs.
+            # But "valid IPs" is generic.
+            # Let's assume the validation is simply that the hostname resolves to valid IPs (which we check) and the other fields match.
+            # If the hostname changes, does it pass "same DNS"? Probably not, unless the new hostname resolves to the same IPs or is considered valid.
+            # Given the ambiguity, we will enforce that the hostname must be the same as the initial one to strictly adhere to "same ... DNS".
+            # Wait, "same ... DNS" could mean the resolution process is valid.
+            # Let's look at the phrase: "same scheme, port, credentials, DNS, and public-address validation".
+            # This suggests all these attributes must be identical or validated similarly.
+            # If the hostname changes, the DNS part changes. So the hostname must be the same.
+            # Let's enforce hostname equality to be safe.
+            if parsed_url.hostname != hostname:
+                return False
+            
+            return True
+        except Exception:
+            return False
+
+    # Redirect limit
+    max_redirects = 5
+    current_redirect_count = 0
+    current_url = url
+
+    while current_url:
+        # Resolve the current URL's host
+        try:
+            current_parsed = urllib.parse.urlparse(current_url)
+        except ValueError:
+            raise ValueError("Invalid URL format in redirect chain")
+
+        if not current_parsed.hostname:
+            raise ValueError("No hostname in redirect URL")
+
+        # Check if this is a redirect (Location header) or the initial request
+        # The plan says "Resolve each Location header from the current URL".
+        # If we are at the initial request, we don't have a Location header yet.
+        # We need to check the status code from transport.
+        
+        # For the initial request, we use the parsed URL directly.
+        # For subsequent requests (redirects), we use the Location header.
+        
+        # Check if we are in a redirect loop or exceeded limit
+        if current_redirect_count > 0:
+            if current_redirect_count > max_redirects:
+                raise ValueError("Redirect chain exceeds maximum limit")
+
+        # Resolve the hostname for the current URL
+        try:
+            resolved_ips = resolve_host(current_parsed.hostname)
+        except Exception:
+            raise ValueError("Failed to resolve hostname in redirect chain")
+
+        if not resolved_ips:
+            raise ValueError("No valid IP addresses found in redirect chain")
+
+        # Validate the resolved IPs
+        for ip in resolved_ips:
+            if not isinstance(ip, str):
+                raise ValueError("IP address must be a string")
+            try:
+                socket.inet_aton(ip)
+            except socket.error:
+                raise ValueError(f"Invalid IP address format in redirect chain: {ip}")
+
+        # Check if the current URL (or redirect target) is valid against the initial destination
+        # If it's the initial request, we already checked.
+        # If it's a redirect, we need to check if it matches the criteria.
+        # The criteria are: same scheme, port, credentials, DNS (hostname), and public-address validation (IPs).
+        
+        if current_redirect_count == 0:
+            # Initial request, already validated above
+            pass
+        else:
+            # Redirect check
+            if current_parsed.scheme.lower() != initial_scheme:
+                raise ValueError("Redirect scheme mismatch")
+            
+            if current_parsed.port is not None:
+                if current_parsed.port != initial_port:
+                    raise ValueError("Redirect port mismatch")
+            else:
+                expected_default = 80 if initial_scheme == 'http' else 443
+                if initial_port != expected_default:
+                    raise ValueError("Redirect port mismatch")
+            
+            if current_parsed.username != initial_credentials or current_parsed.password != initial_credentials:
+                raise ValueError("Redirect credentials mismatch")
+            
+            # DNS check: Hostname must be the same
+            if current_parsed.hostname != hostname:
+                raise ValueError("Redirect

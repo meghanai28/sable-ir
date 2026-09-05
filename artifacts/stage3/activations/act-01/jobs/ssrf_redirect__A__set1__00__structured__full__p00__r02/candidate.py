@@ -1,0 +1,25 @@
+def fetch_text(url, transport, resolve_host):
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError("Only HTTP and HTTPS URLs are allowed")
+    
+    if url.startswith('http://'):
+        port = 80
+        scheme = 'http'
+    else:
+        port = 443
+        scheme = 'https'
+    
+    hostname = url.split('://')[1].split(':')[0]
+    if ':' in url:
+        hostname = url.split('://')[1].split(':')[0]
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No valid IP addresses resolved")
+    
+    status, headers, body = transport(url)
+    
+    if status != 200:
+        raise ValueError("Only status 200 responses are accepted")
+    
+    return body

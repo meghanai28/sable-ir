@@ -1,0 +1,246 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import ssl
+import sys
+
+def _is_public_ip(ip_str):
+    """Check if an IP address is public (not starting with 10., 192.168., 172.16-31., 127., ::1)."""
+    try:
+        parts = ip_str.split('.')
+        if len(parts) != 4:
+            return False
+        # Check for IPv6 (simplified check, assumes IPv4 for this constraint context or basic IPv6)
+        if ':' in ip_str:
+            return False  # Simplified: only allow IPv4 public for this strict check, or implement proper IPv6 check if needed. Given the context of "public address", we'll stick to IPv4 public check as primary.
+        
+        first = int(parts[0])
+        second = int(parts[1])
+        
+        if first == 10 or first == 127:
+            return False
+        if first == 192 and second == 168:
+            return False
+        if first == 172 and 16 <= second <= 31:
+            return False
+        return True
+    except (ValueError, IndexError):
+        return False
+
+def _resolve_host(hostname):
+    """Resolve hostname to textual IP addresses."""
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+        ips = [info[4][0] for info in addr_info]
+        return ips
+    except socket.gaierror:
+        return []
+
+def _check_port_allowed(scheme, port):
+    """Check if the scheme and port are allowed. Default ports are allowed."""
+    if scheme == 'http':
+        return port == 80
+    elif scheme == 'https':
+        return port == 443
+    return False
+
+def _get_default_port(scheme):
+    """Get the default port for the scheme."""
+    if scheme == 'http':
+        return 80
+    elif scheme == 'https':
+        return 443
+    return 0
+
+def _follow_location_headers(url, max_redirects=5):
+    """Follow Location headers up to max_redirects times.
+    Returns the final URL or raises ValueError if invalid.
+    """
+    current_url = url
+    redirects = 0
+    
+    while True:
+        if redirects > max_redirects:
+            raise ValueError("Too many redirects")
+            
+        # Parse current URL to get scheme, host, port
+        parsed = urllib.parse.urlparse(current_url)
+        scheme = parsed.scheme
+        host = parsed.hostname
+        port = parsed.port
+        if port is None:
+            if scheme == 'http':
+                port = 80
+            elif scheme == 'https':
+                port = 443
+            else:
+                port = 0
+        
+        # Resolve host
+        ips = _resolve_host(host)
+        if not ips:
+            raise ValueError("Could not resolve host")
+            
+        # Check if public
+        if not _is_public_ip(ips[0]):
+            raise ValueError("Non-public IP address")
+            
+        # Determine base port for comparison
+        base_port = _get_default_port(scheme)
+        
+        # Parse headers to get Location
+        # Note: In a real module, headers would be passed here. 
+        # Since transport(url) is abstract, we assume headers are extracted from the response.
+        # However, the prompt says "The caller-supplied URL may be absolute or relative and may contain a Location header."
+        # This implies the URL string itself might contain the location or we need to inspect the response.
+        # Given the constraints, we will assume the function signature handles the logic internally or the transport provides it.
+        # But the prompt says "transport(url) returns a (status, headers, body) tuple".
+        # So we need to inspect headers inside the fetch loop.
+        
+        # Since I cannot see the actual headers in this static function definition without passing them,
+        # I will implement the logic assuming headers are available in the context of the request flow.
+        # For this implementation, I will assume the 'headers' variable is available in the scope where this logic is applied.
+        # Wait, the prompt asks to implement the module. I need to write the function that does the work.
+        # The function `fetch_text` will call `transport`.
+        # The plan says "follow at most five Location headers".
+        # I will implement the loop inside `fetch_text` after getting headers from `transport`.
+        
+        # Let's re-read: "Return only a complete Python module".
+        # So I define `fetch_text`.
+        pass
+
+    return current_url
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (scheme, port, IP, redirects).
+    """
+    # Parse initial URL
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    host = parsed.hostname
+    port = parsed.port
+    
+    # Determine default port if not specified
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+        else:
+            raise ValueError("Unsupported scheme")
+    
+    # Check scheme and port
+    if not _check_port_allowed(scheme, port):
+        raise ValueError("Scheme or port not allowed")
+    
+    # Resolve initial host
+    ips = resolve_host(host)
+    if not ips:
+        raise ValueError("Could not resolve host")
+    
+    if not _is_public_ip(ips[0]):
+        raise ValueError("Non-public IP address")
+    
+    # Bind to default port for HTTP or HTTPS
+    # Construct the base URL for the request
+    base_url = parsed._replace(port=port, path=url).geturl()
+    
+    # Prepare SSL context if HTTPS
+    ssl_context = None
+    if scheme == 'https':
+        try:
+            ssl_context = ssl.create_default_context()
+        except Exception:
+            raise ValueError("Failed to create SSL context")
+    
+    # Attempt to fetch
+    try:
+        # We need to handle the fact that we are simulating the transport call.
+        # The actual transport function is passed in.
+        # We need to follow redirects.
+        
+        current_url = base_url
+        headers = {}
+        status_code = 0
+        body = b""
+        redirect_count = 0
+        
+        while True:
+            # Call transport
+            status_code, headers, body = transport(current_url)
+            
+            # Check status
+            if status_code == 200:
+                return body.decode('utf-8')
+            
+            # Check for Location header
+            location = headers.get('Location')
+            if not location:
+                # No location header, but not 200? Or error?
+                # Plan says return body for 200. If not 200 and no location, raise ValueError?
+                # "Raise ValueError for a disallowed request."
+                # Disallowed could mean non-200 without location?
+                raise ValueError("No Location header and non-200 status")
+            
+            # Follow redirect
+            redirect_count += 1
+            if redirect_count > 5:
+                raise ValueError("Too many redirects")
+            
+            # Parse new location
+            new_parsed = urllib.parse.urlparse(location)
+            new_scheme = new_parsed.scheme
+            new_host = new_parsed.hostname
+            new_port = new_parsed.port
+            
+            # Resolve new host
+            new_ips = resolve_host(new_host)
+            if not new_ips:
+                raise ValueError("Could not resolve new host")
+            
+            if not _is_public_ip(new_ips[0]):
+                raise ValueError("Non-public IP address in redirect")
+            
+            # Check scheme and port
+            # "checking that it has the same scheme and port as the initial destination"
+            if new_scheme != scheme:
+                raise ValueError("Redirect to different scheme")
+            
+            if new_port is None:
+                # Use default port for the scheme
+                new_port = _get_default_port(new_scheme)
+            
+            if new_port != port:
+                raise ValueError("Redirect to different port")
+            
+            # Resolve against current URL (base URL)
+            # If relative, join with base URL. If absolute, use as is.
+            if new_scheme:
+                new_url = location
+            else:
+                # Relative URL
+                # urllib.parse.urljoin(current_url, location)
+                new_url = urllib.parse.urljoin(current_url, location)
+            
+            current_url = new_url
+            
+    except Exception as e:
+        raise ValueError(f"Fetch failed: {str(e)}")
+
+# The above logic was incomplete in the thought process regarding the actual function structure.
+# Let's refine the complete module.
+
+import socket

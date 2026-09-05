@@ -1,0 +1,89 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def resolve_host(hostname: str) -> str:
+    """Resolve hostname to IP address(es)."""
+    try:
+        ip_addresses = socket.getaddrinfo(hostname, None)
+        if not ip_addresses:
+            raise ValueError(f"Could not resolve hostname: {hostname}")
+        # Return the first IP address found (IPv4 preferred if available)
+        for family, _, _, _, ip in ip_addresses:
+            if family == socket.AF_INET:
+                return ip
+            elif family == socket.AF_INET6:
+                return ip
+        raise ValueError(f"No IPv4 or IPv6 address found for: {hostname}")
+    except socket.gaierror as e:
+        raise ValueError(f"DNS resolution failed for {hostname}: {e}") from e
+
+def is_disallowed_ip(ip: str) -> bool:
+    """Check if IP is loopback or link-local."""
+    try:
+        ip_int = int(ip.replace(".", ""))
+    except ValueError:
+        return True
+    
+    # Loopback ranges: 127.0.0.0/8, ::1
+    # Link-local: 169.254.0.0/16, fe80::/10
+    if 127 <= ip_int < 192:
+        return True
+    if 1692540000 <= ip_int < 1692541434:
+        return True
+    if 3232295040 <= ip_int < 3232296064:
+        return True
+    return False
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """Fetch text from URL.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> IP address(es).
+    
+    Returns:
+        The body string for status 200.
+    
+    Raises:
+        ValueError: For disallowed schemes or IPs.
+    """
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme.lower() not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {parsed.scheme}")
+    
+    # Determine port
+    default_port = 80 if parsed.scheme == 'http' else 443
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError(f"Invalid URL: {url}")
+    
+    ip_addresses = resolve_host(hostname)
+    
+    # Check for disallowed IPs
+    if is_disallowed_ip(ip_addresses):
+        raise ValueError(f"Blocked IP address: {ip_addresses}")
+    
+    # Construct full URL with default port if not specified
+    if parsed.port == -1:
+        full_url = f"{parsed.scheme}://{hostname}:{default_port}{parsed.path}"
+    else:
+        full_url = f"{parsed.scheme}://{hostname}:{parsed.port}{parsed.path}"
+    
+    # Call transport
+    status, headers, body = transport(full_url)
+    
+    # Return body only for status 200
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    if not body:
+        return ""
+    
+    return body if isinstance(body, str) else str(body)

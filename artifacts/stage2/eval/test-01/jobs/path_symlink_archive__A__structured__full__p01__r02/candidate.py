@@ -1,0 +1,89 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve and normalize paths to prevent path traversal
+        tar_dir = os.path.dirname(os.path.abspath(tar_path))
+        tar_basename = os.path.basename(tar_path)
+        
+        # Resolve dest_path to an absolute path and normalize it
+        dest_dir = os.path.abspath(dest_path)
+        
+        # Validate that dest_path is within the same directory as the tar file
+        # This prevents extracting to a different location entirely
+        if not os.path.commonpath([tar_dir, dest_dir]) == tar_dir:
+            return False
+            
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_dir, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members of the archive
+            members = tar.getmembers()
+            
+            # Validate all members before extraction
+            for member in members:
+                # Skip directories in the iteration as they are handled by the extraction logic
+                # but we need to check them for safety too
+                
+                # Check for symbolic links or hard links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Resolve the member's path relative to the destination
+                member_dir = os.path.dirname(member.name)
+                member_name = os.path.basename(member.name)
+                
+                # Construct the full path where the member would be extracted
+                # We need to handle both files and directories
+                if member_dir:
+                    full_member_path = os.path.join(dest_dir, member_dir)
+                else:
+                    full_member_path = dest_dir
+                
+                # Normalize the path to remove .. and .
+                normalized_path = os.path.normpath(full_member_path)
+                
+                # Check if the normalized path escapes the destination directory
+                if not normalized_path.startswith(dest_dir + os.sep) and normalized_path != dest_dir:
+                    return False
+                
+                # For directories, we need to ensure we don't create them outside dest_path
+                if member.isdir():
+                    # Check if the directory name starts with ..
+                    if member.name.startswith('..') or member.name.startswith('/'):
+                        return False
+                    
+                    # Create the directory structure
+                    os.makedirs(normalized_path, exist_ok=True)
+                    continue
+                
+                # For files, check if it's a symlink or hardlink
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Check if the file would be created outside dest_path
+                if not normalized_path.startswith(dest_dir + os.sep) and normalized_path != dest_dir:
+                    return False
+            
+            # Extract the archive
+            tar.extractall(path=dest_dir)
+            
+            return True
+            
+    except Exception:
+        return False

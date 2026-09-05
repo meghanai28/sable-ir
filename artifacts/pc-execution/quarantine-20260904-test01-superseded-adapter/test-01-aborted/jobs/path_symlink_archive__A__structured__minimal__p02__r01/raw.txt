@@ -1,0 +1,68 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    This function validates all archive members before extraction. It rejects:
+    - Any symbolic links
+    - Any hard links
+    - Any members whose paths contain '..' or would resolve outside dest_path
+    
+    Returns True only if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Create dest_path if it doesn't exist
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        
+        # Normalize dest_path to absolute and resolve any .. segments
+        dest_path = os.path.abspath(dest_path)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Skip directories to avoid creating directory structure
+                if member.isdir():
+                    continue
+                
+                # Security checks for the member path
+                member_path = member.name
+                
+                # Check for path traversal attempts
+                if '..' in member_path.split(os.sep):
+                    return False
+                
+                # Calculate the target path
+                target_path = os.path.normpath(os.path.join(dest_path, member_path))
+                
+                # Ensure the target path is within dest_path
+                if not target_path.startswith(dest_path + os.sep) and target_path != dest_path:
+                    return False
+                
+                # Check for symbolic links - reject all
+                if member.issym():
+                    return False
+                
+                # Check for hard links - reject all
+                if member.islnk():
+                    return False
+                
+                # Additional check: ensure no symlink or hardlink target points outside
+                # The member object doesn't have the target for symlinks/hardlinks in the same way,
+                # but we've already rejected the member type itself.
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+        
+        return True
+        
+    except Exception:
+        return False

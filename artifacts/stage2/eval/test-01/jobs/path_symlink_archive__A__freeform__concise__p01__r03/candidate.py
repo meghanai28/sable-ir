@@ -1,0 +1,84 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully without escaping dest_path,
+        False otherwise.
+    """
+    # Normalize the destination path to an absolute path
+    # We will use the resolved root of the archive's contents as the safe boundary
+    dest_path = os.path.abspath(dest_path)
+    
+    # Ensure the destination directory exists
+    os.makedirs(dest_path, exist_ok=True)
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the root of the archive's contents (the first member's path component)
+            # This is used as the "safe root" to prevent escape attacks
+            if not tar.getnames():
+                return False  # Empty archive
+            
+            # The root of the archive's contents is the first member's path
+            # We need to resolve this to an absolute path for comparison
+            archive_root = tar.getnames()[0]
+            if not archive_root:
+                archive_root = '.'
+            archive_root = os.path.abspath(archive_root)
+            
+            # If the archive root is outside dest_path, we have an escape attempt
+            if not archive_root.startswith(dest_path) and archive_root != dest_path:
+                return False
+            
+            # Extract each member
+            for member in tar.getmembers():
+                # Skip symbolic links and hard links entirely
+                if member.issym() or member.islnk():
+                    continue
+                
+                # Resolve the member's destination path
+                member_dest = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check if the member's path escapes the destination directory
+                if not member_dest.startswith(dest_path) or member_dest == dest_path:
+                    # If it's not a prefix and equals the directory itself, it's an escape
+                    # Actually, if member_dest == dest_path, it means the member is at the root level
+                    # which is allowed, but we need to check if the member name itself is safe
+                    # The condition should be: member_dest must start with dest_path + os.sep or be dest_path itself
+                    # But if member.name is empty, member_dest is dest_path, which is fine
+                    # However, if member.name is "../something", member_dest would be dest_path or outside
+                    # We need to ensure member_dest is within dest_path
+                    if not member_dest.startswith(dest_path) or (member_dest == dest_path and not member.name):
+                        # This handles the case where member.name is empty but we want to be strict
+                        # Actually, if member_dest == dest_path, it means the member is at the root of dest_path
+                        # But if member.name is not empty, member_dest should be dest_path + member.name
+                        # So we just check if member_dest starts with dest_path
+                        pass
+                
+                # More robust check: ensure member_dest is within dest_path
+                if not member_dest.startswith(dest_path) or member_dest == dest_path and not member.name:
+                    # If member_dest equals dest_path, it means the member name is empty
+                    # which is not allowed in tar archives
+                    return False
+                
+                # Additional check: ensure member_dest is within dest_path
+                if not member_dest.startswith(dest_path):
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+    
+    except Exception:
+        return False
+    
+    return True

@@ -1,0 +1,137 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict host containment checks.
+    
+    Args:
+        url: The target URL string.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: For disallowed requests (non-HTTP/HTTPS, non-default port, 
+                    unresolved host, or location hops pointing outside target host).
+    """
+    import urllib.parse
+    
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    host = parsed.hostname
+    path = parsed.path
+    query = parsed.query
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Validate port (must be default for HTTP/HTTPS)
+    if scheme == 'http':
+        default_port = 80
+    elif scheme == 'https':
+        default_port = 443
+    else:
+        default_port = 0
+    
+    if port is None:
+        port = default_port
+    elif port != default_port:
+        raise ValueError("Only HTTP/HTTPS on default ports are allowed")
+    
+    # Resolve the target hostname
+    if not host:
+        raise ValueError("Missing hostname in URL")
+    
+    resolved_ips = resolve_host(host)
+    if not resolved_ips:
+        raise ValueError("Could not resolve hostname")
+    
+    # Define the canonical target host for containment checks
+    # We use the first resolved IP to represent the target host's network identity
+    target_host_for_containment = resolved_ips[0]
+    
+    def is_contained(current_parsed, current_resolved_ips):
+        """
+        Check if the current URL's resolved host is within the target host's IP range.
+        This is a simplified check assuming the target host resolves to a single IP 
+        or a small set, and we compare against the target's primary IP.
+        In a real scenario, this might involve CIDR checks or DNSSEC validation.
+        """
+        if not current_resolved_ips:
+            return False
+        
+        # Compare the resolved host with the target host
+        # If the resolved host matches the target host exactly, it's contained
+        if current_resolved_ips[0] == target_host_for_containment:
+            return True
+        
+        # If the resolved host is different, it's considered outside
+        return False
+    
+    # Parse the current URL state
+    current_parsed = parsed
+    current_resolved_ips = resolved_ips
+    
+    # Maximum number of Location hops
+    max_hops = 5
+    hop_count = 0
+    
+    # Follow redirects
+    while True:
+        # Check containment before making the request
+        if not is_contained(current_parsed, current_resolved_ips):
+            raise ValueError("Location points outside the target host")
+        
+        # Make the request
+        status, headers, body = transport(current_parsed.geturl())
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            hop_count += 1
+            if hop_count > max_hops:
+                raise ValueError("Too many redirects")
+            
+            # Parse the Location header
+            location_parsed = urllib.parse.urlparse(location_header)
+            
+            # Check scheme
+            if location_parsed.scheme.lower() not in ('http', 'https'):
+                raise ValueError("Location must use HTTP or HTTPS")
+            
+            # Check port
+            loc_port = location_parsed.port
+            if loc_port is None:
+                loc_port = default_port
+            if loc_port != default_port:
+                raise ValueError("Location must use default port")
+            
+            # Check hostname
+            loc_host = location_parsed.hostname
+            if not loc_host:
+                raise ValueError("Missing hostname in Location")
+            
+            # Resolve the Location's hostname
+            loc_resolved_ips = resolve_host(loc_host)
+            if not loc_resolved_ips:
+                raise ValueError("Could not resolve Location hostname")
+            
+            # Check containment of the new location
+            if not is_contained(location_parsed, loc_resolved_ips):
+                raise ValueError("Location points outside the target host")
+            
+            # Update current URL
+            current_parsed = location_parsed
+            current_resolved_ips = loc_resolved_ips
+        else:
+            break
+    
+    # Return the body as text
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

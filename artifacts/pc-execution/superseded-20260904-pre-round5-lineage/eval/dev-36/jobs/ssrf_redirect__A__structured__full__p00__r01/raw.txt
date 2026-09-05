@@ -1,0 +1,76 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The target URL (may be absolute, contain .. segments, or point to any host).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The body of the response as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (non-HTTP/HTTPS, non-default port, 
+                   redirect followed, or final destination mismatch).
+    """
+    from urllib.parse import urlparse, parse_qs
+    
+    # Parse the initial URL
+    parsed_url = urlparse(url)
+    initial_scheme = parsed_url.scheme.lower()
+    initial_port = parsed_url.port
+    initial_host = parsed_url.hostname
+    
+    # Validate scheme and port (HTTP/HTTPS on default port only)
+    allowed_schemes = {'http', 'https'}
+    if initial_scheme not in allowed_schemes:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    default_port_http = 80
+    default_port_https = 443
+    
+    if initial_scheme == 'http':
+        expected_port = default_port_http
+    else:
+        expected_port = default_port_https
+    
+    if initial_port is not None and initial_port != expected_port:
+        raise ValueError("Only HTTP/HTTPS on default ports are allowed.")
+    
+    # Resolve the initial hostname
+    try:
+        resolved_hosts = resolve_host(initial_host)
+    except Exception:
+        raise ValueError("Hostname resolution failed.")
+    
+    if not resolved_hosts:
+        raise ValueError("No IP addresses resolved for the hostname.")
+    
+    # Use the first resolved IP for the transport call
+    final_url_for_transport = f"{initial_scheme}://{resolved_hosts[0]}"
+    
+    # Call transport to get the response
+    status, headers, body = transport(final_url_for_transport)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is accepted.")
+    
+    # Check for Location header (redirects are never followed)
+    location_header = headers.get('Location')
+    if location_header:
+        # Even though we are not following redirects, we must check that 
+        # the final destination (if any) matches the original constraints.
+        # However, the plan says "never follow a redirect", so we simply ignore the Location header.
+        # But we must ensure that the URL we used to call transport was valid.
+        pass
+    
+    # The plan states: "check the final destination before reading the body and raise ValueError 
+    # unless it is on the same scheme and default port as the requested url"
+    # Since we are not following redirects, the final destination is the one we used for transport.
+    # We already validated the initial URL's scheme and port.
+    # If we had followed a redirect, we would need to validate the new URL.
+    # Since we don't follow redirects, we proceed.
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body

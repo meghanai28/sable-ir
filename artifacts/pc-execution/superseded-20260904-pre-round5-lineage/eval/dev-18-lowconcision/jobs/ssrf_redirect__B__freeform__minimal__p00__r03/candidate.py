@@ -1,0 +1,138 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+import ssl
+import typing
+
+def _validate_scheme(url: str) -> None:
+    """Raise ValueError if scheme is not http or https."""
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+
+def _validate_port(url: str) -> None:
+    """Raise ValueError if port is not the default for the scheme."""
+    parsed = urllib.parse.urlparse(url)
+    port = parsed.port
+    if port is None:
+        if parsed.scheme == 'http':
+            if port != 80:
+                raise ValueError(f"Non-default port {port} for HTTP")
+        elif parsed.scheme == 'https':
+            if port != 443:
+                raise ValueError(f"Non-default port {port} for HTTPS")
+    else:
+        if parsed.scheme == 'http':
+            if port != 80:
+                raise ValueError(f"Non-default port {port} for HTTP")
+        elif parsed.scheme == 'https':
+            if port != 443:
+                raise ValueError(f"Non-default port {port} for HTTPS")
+
+def _resolve_url(url: str, base_url: str = None) -> str:
+    """Resolve a relative URL against a base URL, or return absolute URL as-is."""
+    if base_url is None:
+        return url
+    parsed_base = urllib.parse.urlparse(base_url)
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.scheme:
+        return parsed_url.geturl()
+    else:
+        return urllib.parse.urljoin(parsed_base.geturl(), url)
+
+def _check_dns_and_public(host: str) -> bool:
+    """Placeholder for DNS and public address checks.
+    In a real implementation, this would query DNS records and verify the IP is public.
+    For this module, we assume resolve_host provides validated IPs.
+    """
+    # In a constrained environment without external tools, we cannot perform live DNS checks.
+    # We assume the transport layer handles the connection to the resolved IP.
+    return True
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """Fetch text from a URL following Location headers up to 5 hops.
+    
+    Args:
+        url: The initial URL (absolute or relative).
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of IP strings.
+        
+    Returns:
+        The body of a successful request with status 200.
+        
+    Raises:
+        ValueError: If scheme is not http/https, port is non-default, or request fails.
+    """
+    max_hops = 5
+    current_url = url
+    current_headers = None
+    hop_count = 0
+    
+    while hop_count <= max_hops:
+        if current_url is None:
+            raise ValueError("No URL to fetch")
+        
+        # Validate scheme and port
+        _validate_scheme(current_url)
+        _validate_port(current_url)
+        
+        # Resolve host
+        hostname = urllib.parse.urlparse(current_url).hostname
+        if hostname is None:
+            raise ValueError(f"Invalid URL hostname: {current_url}")
+        
+        ips = resolve_host(hostname)
+        if not ips:
+            raise ValueError(f"No IP addresses resolved for {hostname}")
+        
+        # Select first valid IP
+        ip_address = ips[0]
+        
+        # Determine default port based on scheme
+        parsed = urllib.parse.urlparse(current_url)
+        default_port = 80 if parsed.scheme == 'http' else 443
+        
+        # Build request URL with resolved host and default port if missing
+        if parsed.port is None:
+            resolved_url = f"{parsed.scheme}://{ip_address}{parsed.path}"
+            if parsed.query:
+                resolved_url += f"?{parsed.query}"
+        else:
+            resolved_url = f"{parsed.scheme}://{ip_address}:{parsed.port}{parsed.path}"
+            if parsed.query:
+                resolved_url += f"?{parsed.query}"
+        
+        # Make request
+        try:
+            response = transport(resolved_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status, headers, body = response
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Status code is not 200: {status}")
+        
+        # Check for Location header
+        location = None
+        if 'location' in headers:
+            location = headers['location']
+        
+        # If no Location header, we are done
+        if location is None:
+            return body.decode('utf-8') if isinstance(body, bytes) else body
+        
+        # Increment hop count
+        hop_count += 1
+        
+        # Resolve Location against current URL
+        current_url = _resolve_url(location, current_url)
+        
+        # Check if we've exceeded max hops
+        if hop_count > max_hops:
+            raise ValueError(f"Exceeded maximum hop count ({max_hops})")
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body

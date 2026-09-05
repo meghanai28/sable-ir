@@ -1,0 +1,72 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Returns True only if the extraction completes successfully.
+    Returns False if any validation or extraction fails, without writing
+    any archive member outside dest_path.
+    
+    Security measures:
+    - Rejects any symbolic links or hard links.
+    - Ensures no file is written outside dest_path.
+    - Validates all members before extraction.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members and validate them first
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Check for symbolic links
+                if member.issym():
+                    return False
+                
+                # Check for hard links
+                if member.islnk():
+                    return False
+                
+                # Check for device files (should be rejected)
+                if member.isdev():
+                    return False
+                
+                # Check for absolute paths
+                if member.name.startswith('/') or member.name.startswith('\\'):
+                    return False
+                
+                # Check for paths that go outside dest_path
+                # Normalize paths to handle relative paths correctly
+                dest_dir = os.path.normpath(dest_path)
+                member_dir = os.path.normpath(os.path.dirname(member.name))
+                
+                # If the member's directory is outside the destination, reject it
+                if not member_dir.startswith(dest_dir):
+                    return False
+                
+                # If the member's directory is a subdirectory of dest_path, check for '..'
+                if dest_dir in member_dir:
+                    # Ensure the member's directory is within dest_path
+                    if not member_dir.startswith(dest_dir):
+                        return False
+            
+            # Now extract the members
+            for member in members:
+                # Extract the member
+                if member.isdir():
+                    tar.extract(member, dest_path, set_attrs=True)
+                else:
+                    tar.extract(member, dest_path, set_attrs=True)
+            
+            return True
+            
+    except Exception:
+        return False

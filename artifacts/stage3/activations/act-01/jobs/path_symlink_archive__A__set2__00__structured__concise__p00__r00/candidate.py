@@ -1,0 +1,85 @@
+import os
+import tarfile
+import shutil
+
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to its absolute form, resolving . and .. segments."""
+    return os.path.normpath(os.path.abspath(path))
+
+
+def _is_within_root(member_path: str, root: str) -> bool:
+    """Check if a path (relative or absolute) is within the root directory."""
+    if os.path.isabs(member_path):
+        member_path = os.path.normpath(member_path)
+    else:
+        member_path = os.path.normpath(os.path.join(root, member_path))
+    return member_path.startswith(root + os.sep) or (root == os.sep and member_path == os.sep)
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive beneath dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize and validate destination root
+    dest_root = _normalize_path(dest_path)
+    
+    # Validate tar_path is accessible before attempting extraction
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member's destination
+            for member in members:
+                # Determine the member's destination relative to dest_root
+                # We need to resolve the member's name against the root
+                member_dest = os.path.join(dest_root, member.name)
+                
+                # Normalize the member destination to check for escapes
+                # This handles cases where member.name contains .. or absolute paths
+                normalized_member_dest = os.path.normpath(member_dest)
+                
+                # Ensure the normalized path is still within the root
+                if not normalized_member_dest.startswith(dest_root + os.sep) and dest_root != os.sep:
+                    return False
+                elif dest_root == os.sep and normalized_member_dest != os.sep:
+                    return False
+                
+                # Additional check: ensure no absolute paths point outside root
+                if os.path.isabs(member.name):
+                    abs_member_path = os.path.normpath(member.name)
+                    if not abs_member_path.startswith(dest_root + os.sep) and dest_root != os.sep:
+                        return False
+                    elif dest_root == os.sep and abs_member_path != os.sep:
+                        return False
+            
+            # Perform extraction
+            tar.extractall(dest_path)
+            
+            # Post-extraction validation: ensure no files were written outside dest_path
+            # Walk the destination directory and check all files
+            for root, dirs, files in os.walk(dest_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Normalize and check
+                    normalized_file_path = os.path.normpath(file_path)
+                    if not normalized_file_path.startswith(dest_root + os.sep) and dest_root != os.sep:
+                        return False
+                    elif dest_root == os.sep and normalized_file_path != os.sep:
+                        return False
+            
+            return True
+            
+    except Exception:
+        return False

@@ -1,0 +1,132 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize the destination path to remove any .. or . segments
+        # and ensure it's an absolute path if possible, but primarily check for escapes.
+        # We will resolve the path to its canonical form to detect escapes.
+        dest_resolved = os.path.realpath(dest_path)
+        
+        # Security Check: If the resolved path is absolute, ensure it doesn't escape
+        # We also need to ensure the tar_path is within a safe location or handled correctly.
+        # The requirement states to reject absolute dest_path if it escapes.
+        # Actually, the requirement says "Reject absolute dest_path" implies we shouldn't accept
+        # absolute paths as the destination base, but typically we want relative paths or
+        # we resolve them and check for .. escapes. Let's interpret "Reject absolute dest_path"
+        # as ensuring the final resolved directory is not absolute if the intent is to prevent
+        # arbitrary directory writes, but standard practice is to allow absolute paths as long as
+        # they don't escape. However, the plan says "Reject absolute dest_path".
+        # Let's re-read: "Reject absolute dest_path, normalize the destination and raise an error if it escapes"
+        # This is slightly contradictory. Usually, you normalize and check for escapes.
+        # If the plan explicitly says "Reject absolute dest_path", I will treat any absolute path as an error.
+        # BUT, looking at the second part "raise an error if it escapes", it implies we might accept them if safe?
+        # Let's assume the strict interpretation: dest_path must not be absolute.
+        if os.path.isabs(dest_path):
+            raise ValueError("Destination path must not be absolute.")
+        
+        # Normalize dest_path
+        dest_normalized = os.path.normpath(dest_path)
+        
+        # Resolve the canonical path to detect .. escapes
+        # We must check if the resolved path is outside the intended safe directory.
+        # Since we can't define a "safe" directory, we assume the caller's intent is
+        # that dest_path is relative to the current working directory or a trusted base.
+        # However, to be safe against .. in the path itself, we resolve it.
+        # If the resolved path is different from the normalized path (due to ..), we might have an issue.
+        # But the main risk is writing outside the expected directory.
+        # Let's resolve the tar_path as well to ensure we are not extracting from a symlinked path.
+        tar_resolved = os.path.realpath(tar_path)
+        
+        if not os.path.isfile(tar_resolved):
+            return False
+            
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_normalized, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate members before extracting
+            for member in tar.getmembers():
+                # Calculate the full path where the member would be extracted
+                member_path = os.path.join(dest_normalized, member.name)
+                
+                # Resolve the member path to check for escapes
+                # We use realpath on the member path to see where it actually lands
+                # However, member.name might be relative.
+                # We need to ensure the resolved path does not escape dest_normalized.
+                # We resolve the member path relative to dest_normalized.
+                try:
+                    resolved_member_path = os.path.realpath(member_path)
+                except Exception:
+                    return False
+                
+                # Check for .. escapes
+                # If the resolved path starts with the dest path, it's safe.
+                # We need to be careful with trailing slashes and absolute paths.
+                # Since we normalized dest_path, we check if resolved_member_path is within dest_normalized.
+                # However, os.path.realpath resolves symlinks.
+                
+                # Ensure the resolved path is within the destination directory
+                # We strip the dest path from the resolved path and check if it's empty or starts with ..
+                # A robust check:
+                if not (resolved_member_path.startswith(dest_normalized + os.sep) or 
+                        resolved_member_path == dest_normalized):
+                    # This check might fail if dest_normalized has trailing slash issues, so we normalize again
+                    # But simpler: check if the resolved path is outside the directory tree
+                    # We can check if the resolved path's parent is not dest_normalized
+                    # Actually, the safest way is to ensure the resolved path starts with dest_normalized + os.sep
+                    # unless it is exactly dest_normalized.
+                    return False
+                
+                # Check for dangerous member names like .. or absolute paths
+                if member.name.startswith(('.', '..')):
+                    return False
+                    
+                # Check if the member is a directory
+                if member.isdir():
+                    # Ensure the directory doesn't escape
+                    # We already checked the resolved path, but let's be explicit
+                    pass
+                
+                # Check for absolute paths in member.name
+                if os.path.isabs(member.name):
+                    return False
+            
+            # If validation passes, extract
+            for member in tar:
+                member_path = os.path.join(dest_normalized, member.name)
+                # Resolve to check for escapes again before writing
+                resolved_member_path = os.path.realpath(member_path)
+                
+                # Final safety check: ensure the resolved path is within dest_normalized
+                # We need to handle the case where dest_normalized might be a symlink
+                # We should compare against the canonical dest path
+                if not (resolved_member_path.startswith(dest_normalized + os.sep) or 
+                        resolved_member_path == dest_normalized):
+                    return False
+                
+                # Extract the member
+                if member.isdir():
+                    member.dir_name = True
+                else:
+                    member.dir_name = False
+                
+                # Extract
+                tar.extract(member, dest_normalized)
+                
+        return True
+        
+    except Exception:
+        return False

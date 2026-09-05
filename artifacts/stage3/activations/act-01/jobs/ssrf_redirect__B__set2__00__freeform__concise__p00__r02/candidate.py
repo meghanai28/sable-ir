@@ -1,0 +1,155 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+from typing import Tuple, List, Optional
+
+def resolve_host(hostname: str) -> List[str]:
+    """Resolve hostname to textual IP addresses."""
+    try:
+        ip_addresses = socket.getaddrinfo(hostname, None)
+        return [ip[4][0] for ip in ip_addresses]
+    except socket.gaierror:
+        raise ValueError(f"Unable to resolve hostname: {hostname}")
+
+def is_public_address(ip: str) -> bool:
+    """Check if an IP address is public (not localhost or private)."""
+    private_prefixes = ['127.', '10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '0.']
+    for prefix in private_prefixes:
+        if ip.startswith(prefix):
+            return False
+    return True
+
+def is_embedded_scheme(location: str) -> bool:
+    """Check if the location header contains an embedded scheme."""
+    parsed = urllib.parse.urlparse(location)
+    return parsed.scheme.lower() in ('http', 'https', 'ftp', 'file', 'mailto', 'tel')
+
+def is_embedded_credentials(location: str) -> bool:
+    """Check if the location header contains embedded credentials."""
+    return '@' in location
+
+def check_url_safety(url: str, resolved_ips: List[str]) -> bool:
+    """Check if the URL is safe to fetch."""
+    parsed = urllib.parse.urlparse(url)
+    
+    # Check scheme
+    if parsed.scheme.lower() not in ('http', 'https'):
+        return False
+    
+    # Check port (must be default for http/https)
+    if parsed.port is None:
+        port = 80 if parsed.scheme.lower() == 'http' else 443
+    else:
+        port = parsed.port
+    
+    if parsed.scheme.lower() == 'http' and port != 80:
+        return False
+    if parsed.scheme.lower() == 'https' and port != 443:
+        return False
+    
+    # Check for embedded scheme in location
+    if is_embedded_scheme(location):
+        return False
+    
+    # Check for embedded credentials
+    if is_embedded_credentials(location):
+        return False
+    
+    # Check DNS answers
+    for ip in resolved_ips:
+        if is_public_address(ip):
+            return False
+    
+    return True
+
+def fetch_text(url: str, transport, resolve_host: callable) -> str:
+    """Fetch text from URL using provided transport."""
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    
+    # Resolve hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except ValueError:
+        raise ValueError(f"Invalid hostname: {hostname}")
+    
+    # Check URL safety
+    if not check_url_safety(url, resolved_ips):
+        raise ValueError("Request scheme or port is disallowed")
+    
+    # Handle redirects
+    max_redirects = 5
+    redirect_count = 0
+    current_url = url
+    
+    while redirect_count < max_redirects:
+        try:
+            # Make the request
+            request = urllib.request.Request(current_url)
+            response = urllib.request.urlopen(request)
+            
+            # Check status code
+            status = response.status
+            if status != 200:
+                raise ValueError(f"Request failed with status {status}")
+            
+            # Read the body
+            body = response.read().decode('utf-8')
+            return body
+            
+        except urllib.error.HTTPError as e:
+            if e.code == 301 or e.code == 302:
+                # Handle redirect
+                redirect_count += 1
+                new_location = e.headers.get('Location')
+                
+                if not new_location:
+                    raise ValueError(f"Redirect without Location header (status {e.code})")
+                
+                # Check for embedded scheme
+                if is_embedded_scheme(new_location):
+                    raise ValueError("Location header contains embedded scheme")
+                
+                # Check for embedded credentials
+                if is_embedded_credentials(new_location):
+                    raise ValueError("Location header contains embedded credentials")
+                
+                # Resolve new location
+                try:
+                    new_parsed = urllib.parse.urlparse(new_location)
+                    new_hostname = new_parsed.hostname
+                    if not new_hostname:
+                        raise ValueError("Invalid redirect URL: missing hostname")
+                    
+                    new_resolved_ips = resolve_host(new_hostname)
+                    
+                    # Check DNS answers
+                    for ip in new_resolved_ips:
+                        if is_public_address(ip):
+                            raise ValueError(f"DNS answer points to public addressing: {ip}")
+                    
+                    # Check if it's a relative URL
+                    if new_parsed.scheme == '':
+                        # Relative URL, combine with current URL
+                        current_url = new_location
+                    else:
+                        # Absolute URL, use as-is
+                        current_url = new_location
+                        
+                except ValueError:
+                    raise ValueError("Invalid redirect URL")
+                    
+            else:
+                raise ValueError(f"Request failed with status {e.code}")
+                
+        except ValueError as e:
+            raise e
+        except Exception as e:
+            raise ValueError(f"Unexpected error during request: {str(e)}")
+    
+    raise ValueError("Too many redirects")

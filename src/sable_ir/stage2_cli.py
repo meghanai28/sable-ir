@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from sable_ir.harness import DockerSandbox, SandboxBackend, UnsafeLocalSandbox
-from sable_ir.schema import SandboxConfig
+from sable_ir.schema import SandboxConfig, Stage1Concision
 from sable_ir.stage2 import (
     Stage2Error,
     audit_stage2_preflight,
@@ -48,6 +48,7 @@ STAGE2_COMMANDS = frozenset(
         "validate-stage2-reference-audit",
         "complete-stage2-reference-audit",
         "stage2-preflight",
+    "verify-audit-packet",
         "stage2-sandbox-smoke",
         "stage2-model-canary",
         "freeze-stage2-dataset",
@@ -96,6 +97,14 @@ def add_stage2_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentP
             help="expand the reviewer's per-plan decisions file into the row-level audit",
         )
     )
+    verify = common(
+        subparsers.add_parser(
+            "verify-audit-packet",
+            help="independently recompute every audit and lineage binding from repository bytes",
+        )
+    )
+    verify.add_argument("--output", type=Path)
+
     preflight = common(
         subparsers.add_parser("stage2-preflight", help="record PC/data readiness checks")
     )
@@ -135,6 +144,13 @@ def add_stage2_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     )
     prepare_eval.add_argument("--run-id", required=True)
     prepare_eval.add_argument("--kind", choices=tuple(k.value for k in EvalKind), required=True)
+    prepare_eval.add_argument(
+        "--concision",
+        choices=tuple(c.value for c in Stage1Concision),
+        action="append",
+        dest="concision_levels",
+        help="restrict generated concision levels; selection needs only 'full'",
+    )
     prepare_eval.add_argument("--run-directory", type=Path)
     prepare_eval.add_argument("--adapter", type=Path, help="checkpoint directory (omit = base)")
     prepare_eval.add_argument("--training-result", type=Path)
@@ -144,7 +160,10 @@ def add_stage2_parsers(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     run_eval.add_argument("manifest", type=Path)
     run_eval.add_argument("--repository-root", type=Path, default=Path.cwd())
     run_eval.add_argument(
-        "--phase", choices=("plans", "renders", "direct"), action="append", dest="phases"
+        "--phase",
+        choices=("plans", "renders", "reference_renders", "direct"),
+        action="append",
+        dest="phases",
     )
     run_eval.add_argument("--limit", type=int)
     run_eval.add_argument(
@@ -219,6 +238,17 @@ def handle_stage2_command(args: argparse.Namespace) -> int | None:
         completed = complete_stage2_reference_audit(args.config, args.repository_root)
         print(completed.model_dump_json())
         return 0 if completed.ready_for_freeze else 1
+    if args.command == "verify-audit-packet":
+        from sable_ir.stage2_verify import format_report, verify_audit_packet
+
+        verification = verify_audit_packet(args.config, args.repository_root)
+        print(format_report(verification))
+        if args.output is not None:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                verification.model_dump_json(indent=2) + "\n", encoding="utf-8"
+            )
+        return 0 if verification.verified else 1
     if args.command == "stage2-preflight":
         report = audit_stage2_preflight(
             args.config,
@@ -322,6 +352,11 @@ def handle_stage2_command(args: argparse.Namespace) -> int | None:
             training_result_path=args.training_result,
             checkpoint_selection_path=args.checkpoint_selection,
             include_direct=not args.no_direct,
+            concision_levels=(
+                tuple(Stage1Concision(c) for c in args.concision_levels)
+                if args.concision_levels
+                else None
+            ),
         )
         print(
             json.dumps(
@@ -357,7 +392,9 @@ def handle_stage2_command(args: argparse.Namespace) -> int | None:
         run_summary = run_stage2_eval(
             args.manifest,
             generator,
-            phases=tuple(args.phases) if args.phases else ("plans", "renders", "direct"),
+            phases=tuple(args.phases)
+            if args.phases
+            else ("plans", "renders", "reference_renders", "direct"),
             limit=args.limit,
         )
         print(run_summary.model_dump_json())

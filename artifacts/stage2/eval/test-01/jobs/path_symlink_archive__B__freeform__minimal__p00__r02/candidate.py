@@ -1,0 +1,110 @@
+import os
+import tarfile
+import stat
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Returns True only if extraction completes successfully without writing outside dest_path.
+    Returns False if validation or extraction fails, without writing any archive member outside dest_path.
+    """
+    # Normalize dest_path to absolute and ensure it's under root
+    dest_path = os.path.abspath(dest_path)
+    if not dest_path.startswith(os.sep):
+        dest_path = os.sep + dest_path
+    
+    # Check for escape attempts (e.g., ..)
+    if dest_path.startswith('..') or dest_path == '..':
+        return False
+    
+    # Ensure dest_path is under root
+    root = os.sep + '/'
+    if not dest_path.startswith(root):
+        return False
+    
+    # Validate dest_path doesn't contain ..
+    parts = dest_path.split(os.sep)
+    if '..' in parts:
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Check if member name contains ..
+                if '..' in member.name:
+                    return False
+                
+                # Calculate the target path for this member
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the target path to resolve . and ..
+                # We need to check the resolved path, not just the normalized one
+                # because we want to ensure no escape happens
+                normalized_target = os.path.normpath(target_path)
+                
+                # Ensure the normalized target is still under dest_path
+                if not normalized_target.startswith(dest_path + os.sep) and normalized_target != dest_path:
+                    return False
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    # For symlinks, we need to check the target
+                    target = member.linkname
+                    # Normalize the target
+                    normalized_target = os.path.normpath(os.path.join(dest_path, target))
+                    # Check if the target escapes
+                    if not normalized_target.startswith(dest_path + os.sep) and normalized_target != dest_path:
+                        return False
+                    
+                    # Also check if the symlink target itself contains ..
+                    if '..' in target.split(os.sep):
+                        return False
+                
+                # Check for hard links
+                if member.islnk():
+                    # Hard links are stored in the tar header, not as separate entries
+                    # We need to check if the hard link target escapes
+                    # The hard link name is stored in the linkname field
+                    target = member.linkname
+                    normalized_target = os.path.normpath(os.path.join(dest_path, target))
+                    if not normalized_target.startswith(dest_path + os.sep) and normalized_target != dest_path:
+                        return False
+                
+                # Check for device files (should not be extracted to filesystem)
+                if member.isdev():
+                    return False
+                
+                # Check for directory entries
+                if member.isdir():
+                    # Ensure the directory path is valid
+                    if not normalized_target.startswith(dest_path + os.sep) and normalized_target != dest_path:
+                        return False
+            
+            # Extract the archive
+            for member in members:
+                # Skip directories
+                if member.isdir():
+                    continue
+                
+                # Extract the member
+                if member.issym() or member.islnk():
+                    # Extract symbolic or hard links
+                    if member.issym():
+                        member.extract(dest_path, members=member)
+                    else:
+                        member.extract(dest_path, members=member)
+                else:
+                    member.extract(dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

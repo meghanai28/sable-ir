@@ -1,0 +1,70 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Name of the file to read.
+        reports_root: Root directory where the file is expected to be located.
+        
+    Returns:
+        The UTF-8 text content of the file.
+        
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the path escapes reports_root or contains symbolic links.
+    """
+    # Resolve the root directory
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Construct the target path by joining reports_root with the filename
+    target_path = os.path.join(reports_root, filename)
+    
+    # Normalize the target path to resolve any '.' or '..' segments
+    normalized_target = os.path.normpath(target_path)
+    
+    # Resolve the normalized target to get the real path
+    resolved_target = os.path.realpath(normalized_target)
+    
+    # Ensure the resolved target is within the reports_root directory
+    # This check must be done after resolving symbolic links to prevent escape via links
+    if not resolved_target.startswith(resolved_root + os.sep) and resolved_target != resolved_root:
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Walk through each component of the path to check for symbolic links
+    # We split the path into components to inspect each directory and file
+    parts = []
+    current = resolved_root
+    
+    # Split the filename into components if it contains path separators (though os.path.join usually handles this)
+    # We need to ensure we check each directory component for symlinks
+    path_components = normalized_target[len(reports_root):].split(os.sep)
+    
+    # Start from the root and walk down to the file
+    # We need to check each directory in the path for symlinks
+    full_path = resolved_root
+    for component in path_components:
+        if component == '':
+            continue
+        full_path = os.path.join(full_path, component)
+        # Check if this directory is a symbolic link
+        if os.path.islink(full_path):
+            raise ValueError("Access denied: symbolic link in path")
+        # Also check if the directory exists (for intermediate directories)
+        if not os.path.isdir(full_path):
+            # If it's a file or doesn't exist, we'll handle it later, but for directory traversal we need it to exist
+            # However, if it's a file, we stop here
+            break
+    
+    # Now check the final file path for symbolic links
+    if os.path.islink(normalized_target):
+        raise ValueError("Access denied: symbolic link in path")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(normalized_target):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file content
+    with open(normalized_target, 'r', encoding='utf-8') as f:
+        return f.read()

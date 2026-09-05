@@ -1,0 +1,71 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, ensuring no path traversal occurs.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Resolve and normalize the destination path
+    try:
+        dest_path = os.path.realpath(dest_path)
+    except (OSError, ValueError):
+        return False
+    
+    # Ensure the destination directory exists
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Validate the tar_path exists
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate through all members
+            for member in tar.getmembers():
+                # Get the target path based on the member's name
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the target path to check for traversal
+                # We use realpath on the target path to resolve .. and symlinks
+                try:
+                    resolved_target = os.path.realpath(target_path)
+                except (OSError, ValueError):
+                    return False
+                
+                # Check if the resolved target is within the destination directory
+                # The resolved target must start with dest_path + os.sep or be equal to dest_path
+                if not (resolved_target == dest_path or resolved_target.startswith(dest_path + os.sep)):
+                    return False
+                
+                # Additional check for symlinks specifically
+                if member.issym() or member.islnk():
+                    # For symlinks, we need to check the link target itself
+                    if member.issym():
+                        link_target = member.linkname
+                        link_target_resolved = os.path.realpath(os.path.join(dest_path, link_target))
+                        if not (link_target_resolved == dest_path or link_target_resolved.startswith(dest_path + os.sep)):
+                            return False
+                    elif member.islnk():
+                        link_target = member.linkname
+                        link_target_resolved = os.path.realpath(os.path.join(dest_path, link_target))
+                        if not (link_target_resolved == dest_path or link_target_resolved.startswith(dest_path + os.sep)):
+                            return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+                
+    except (tarfile.TarError, OSError, ValueError):
+        return False
+    
+    return True

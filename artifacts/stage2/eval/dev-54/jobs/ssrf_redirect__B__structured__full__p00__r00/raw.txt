@@ -1,0 +1,60 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL after validating the scheme and resolving the host.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function taking a URL and returning (status, headers, body).
+        resolve_host (callable): A function taking a hostname and returning a list of IP addresses.
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https or if no IP addresses are resolved.
+    """
+    # Validate scheme
+    if not url.startswith("http://") and not url.startswith("https://"):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Extract hostname and port
+    if url.startswith("https://"):
+        scheme = "https"
+        url_without_scheme = url[8:]
+    elif url.startswith("http://"):
+        scheme = "http"
+        url_without_scheme = url[7:]
+    else:
+        raise ValueError("Invalid scheme.")
+    
+    # Parse hostname and port
+    if url_without_scheme.startswith("[") and url_without_scheme.endswith("]"):
+        # IPv6 address
+        hostname = url_without_scheme[1:-1]
+        port = None
+    elif ":" in url_without_scheme:
+        hostname, port_str = url_without_scheme.rsplit(":", 1)
+        port = int(port_str) if port_str.isdigit() else None
+    else:
+        hostname = url_without_scheme
+        port = None
+    
+    # Resolve host
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP addresses resolved for the hostname.")
+    
+    # Construct the full URL with resolved IP
+    if port:
+        resolved_url = f"http://{hostname}:{port}"
+    else:
+        resolved_url = f"http://{hostname}"
+    
+    # Call transport
+    status, headers, body = transport(resolved_url)
+    
+    # Return body only for status 200
+    if status != 200:
+        raise ValueError("Only status 200 is allowed.")
+    
+    return body

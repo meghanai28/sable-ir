@@ -1,0 +1,44 @@
+import os
+import stat
+import re
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagates FileNotFoundError for a missing ordinary file and raises ValueError
+    when the request is disallowed (e.g., symbolic links).
+    """
+    # Normalize paths to handle potential OS path separator inconsistencies
+    root_path = os.path.normpath(reports_root)
+    target_path = os.path.normpath(filename)
+    
+    # Construct the full path
+    full_path = os.path.join(root_path, target_path)
+    
+    # Security check 1: Resolve the target path to its absolute form to ensure it's within the root
+    # We need to check if the resolved path is actually under the root
+    resolved_path = os.path.realpath(full_path)
+    resolved_root = os.path.realpath(root_path)
+    
+    # Ensure the resolved path is within the root directory
+    # Use os.path.commonpath or string comparison to verify containment
+    try:
+        common = os.path.commonpath([resolved_root, resolved_path])
+        if common != resolved_root:
+            raise ValueError("Access denied: Path is outside the approved filesystem root.")
+    except ValueError:
+        # This can happen if paths are on different drives (Windows) or invalid
+        raise ValueError("Access denied: Path structure invalid.")
+    
+    # Security check 2: Reject symbolic links
+    # Even if the link points inside the root, we must reject it per policy
+    if os.path.islink(full_path):
+        raise ValueError("Access denied: Symbolic links are not permitted.")
+    
+    # Security check 3: Ensure the file exists and is a regular file
+    if not os.path.isfile(full_path):
+        raise FileNotFoundError(f"File not found: {full_path}")
+    
+    # Read the file content
+    with open(full_path, 'r', encoding='utf-8') as f:
+        return f.read()

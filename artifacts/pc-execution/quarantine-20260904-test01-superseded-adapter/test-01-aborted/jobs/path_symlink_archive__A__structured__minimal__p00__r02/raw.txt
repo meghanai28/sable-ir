@@ -1,0 +1,53 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path, rejecting any symbolic links or hard links.
+    Returns True only if extraction completes successfully for all members.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Reject symbolic links and hard links immediately
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Calculate the full destination path
+                dest_member = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Resolve the full path to check for .. traversal
+                # We need to ensure the resolved path is still within dest_path
+                # by resolving the directory part of the member name relative to dest_path
+                if '..' in member.name.split(os.sep):
+                    return False
+                
+                # Check if the destination member is outside dest_path
+                # by comparing the normalized paths
+                dest_member_resolved = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Ensure the resolved path is within dest_path
+                # Use os.path.commonpath to verify containment, handling edge cases
+                try:
+                    common = os.path.commonpath([dest_path, dest_member_resolved])
+                    if not dest_member_resolved.startswith(os.path.join(common, os.sep)) and dest_member_resolved != common:
+                        return False
+                except ValueError:
+                    # This can happen if paths are on different drives (Windows) or invalid
+                    return False
+                
+                # Extract the member
+                try:
+                    tar.extract(member, dest_path)
+                except Exception:
+                    return False
+            
+            return True
+    
+    except Exception:
+        return False

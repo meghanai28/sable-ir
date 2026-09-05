@@ -1,0 +1,52 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    # Resolve the reports_root to an absolute path if it's not already
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the filename to an absolute path
+    # If filename is absolute, use it; otherwise, make it relative to current dir
+    if os.path.isabs(filename):
+        requested_path = os.path.normpath(filename)
+    else:
+        requested_path = os.path.normpath(os.path.join(os.getcwd(), filename))
+    
+    # Construct the target path by joining resolved_root with the normalized filename
+    # This ensures the file is accessed beneath reports_root
+    target_path = os.path.normpath(os.path.join(resolved_root, requested_path))
+    
+    # Normalize the target path to remove .. and . segments
+    normalized_target = os.path.normpath(target_path)
+    
+    # Check if the normalized path escapes the resolved root
+    # We compare the normalized target with the resolved root
+    if not normalized_target.startswith(resolved_root + os.sep) and normalized_target != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Walk through the path components to validate for symbolic links
+    # We split the path into components to check each one
+    path_parts = normalized_target.split(os.sep)
+    current_path = resolved_root
+    
+    # Ensure we don't go above the root
+    if not os.path.exists(resolved_root):
+        raise FileNotFoundError(f"reports_root does not exist: {resolved_root}")
+    
+    for part in path_parts:
+        if part == '':
+            continue
+            
+        # Check if the current part is a symbolic link
+        if os.path.islink(os.path.join(current_path, part)):
+            raise ValueError(f"Symbolic link detected in path: {os.path.join(current_path, part)}")
+        
+        # Move to the next component
+        current_path = os.path.join(current_path, part)
+    
+    # Final check to ensure the file exists and is an ordinary file
+    if not os.path.isfile(normalized_target):
+        raise FileNotFoundError(f"File not found: {normalized_target}")
+    
+    # Read the file with UTF-8 encoding
+    with open(normalized_target, 'r', encoding='utf-8') as f:
+        return f.read()

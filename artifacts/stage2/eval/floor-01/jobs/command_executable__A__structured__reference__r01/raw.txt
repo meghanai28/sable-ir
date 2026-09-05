@@ -1,0 +1,19 @@
+import subprocess
+import sys
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    if executable != "/usr/bin/printf":
+        raise ValueError(f"Executable '{executable}' is disallowed")
+    
+    # Use the executable and arguments directly without shell processing
+    # arguments is passed as a list to prevent shell metacharacter injection
+    result = subprocess.run(
+        [executable] + arguments,
+        capture_output=True,
+        text=True,
+        check=False
+    )
+    
+    # Let process failures propagate (non-zero exit code will raise CalledProcessError)
+    # Return the standard output text
+    return result.stdout

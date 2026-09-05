@@ -1,0 +1,198 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving symlinks and removing . and .. components."""
+    # Use os.path.realpath to resolve symlinks and normalize path separators
+    return os.path.realpath(path)
+
+def _is_under_root(path: str) -> bool:
+    """Check if a path is under the root filesystem."""
+    return path.startswith(os.sep) or path == '/'
+
+def _is_within_dest(target_path: str, dest_path: str) -> bool:
+    """
+    Check if target_path is within dest_path.
+    This must be done after resolving symlinks to prevent escape via symlink targets.
+    """
+    # Normalize both paths to handle .. and symlinks
+    normalized_target = os.path.realpath(target_path)
+    normalized_dest = os.path.realpath(dest_path)
+    
+    # Ensure dest_path is under root
+    if not _is_under_root(normalized_dest):
+        return False
+    
+    # Check if normalized_target starts with normalized_dest
+    # We need to handle the case where dest_path is a directory
+    if normalized_dest == normalized_target:
+        return True
+    
+    # Check if target is a child of dest
+    return normalized_target.startswith(normalized_dest + os.sep)
+
+def _validate_and_extract_member(member, dest_path: str, archive_members: list) -> bool:
+    """
+    Validate a single tar member and extract it if valid.
+    Validates link targets before extraction.
+    """
+    member_name = member.name
+    member_mode = member.mode
+    member_size = member.size
+    
+    # Resolve the member's path
+    member_path = os.path.join(dest_path, member_name)
+    
+    # For symlinks and hardlinks, we must validate the target before extraction
+    if member.type == tarfile.SYMLINK_TYPE:
+        linkname = member.linkname
+        # Resolve the link target to check for escape
+        # We need to resolve relative to the destination directory
+        link_target = os.path.join(dest_path, linkname)
+        resolved_link_target = os.path.realpath(link_target)
+        
+        # Check if the resolved link target is within dest_path
+        if not _is_within_dest(resolved_link_target, dest_path):
+            return False
+        
+        # Create the symlink
+        try:
+            os.symlink(linkname, member_path)
+            return True
+        except (OSError, ValueError):
+            return False
+            
+    elif member.type == tarfile.HARDLINK_TYPE:
+        linkname = member.linkname
+        # Hardlink target is relative to the member's directory
+        # We need to resolve the full path of the target
+        target_path = os.path.join(dest_path, linkname)
+        resolved_target_path = os.path.realpath(target_path)
+        
+        # Check if the resolved target is within dest_path
+        if not _is_within_dest(resolved_target_path, dest_path):
+            return False
+        
+        # Create the hardlink
+        try:
+            os.link(target_path, member_path)
+            return True
+        except (OSError, ValueError):
+            return False
+            
+    else:
+        # Regular file or directory
+        # Create the directory if it's a directory
+        if member.isdir:
+            os.makedirs(member_path, exist_ok=True)
+            return True
+            
+        # Create the file
+        try:
+            with open(member_path, 'wb') as f:
+                f.write(member.fileobj.read())
+            return True
+        except (OSError, IOError):
+            return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security checks.
+    Validates all members and link targets before extraction.
+    """
+    try:
+        # Normalize the destination path
+        normalized_dest = _normalize_path(dest_path)
+        
+        # Validate that the destination is under the root filesystem
+        if not _is_under_root(normalized_dest):
+            return False
+            
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members without reading their contents
+            members = tar.getmembers()
+            
+            # First pass: validate all members
+            valid_members = []
+            for member in members:
+                # Resolve the member's path
+                member_path = os.path.join(normalized_dest, member.name)
+                
+                # For symlinks and hardlinks, resolve and check the target
+                if member.type == tarfile.SYMLINK_TYPE:
+                    linkname = member.linkname
+                    link_target = os.path.join(normalized_dest, linkname)
+                    resolved_link_target = os.path.realpath(link_target)
+                    
+                    if not _is_within_dest(resolved_link_target, normalized_dest):
+                        return False
+                        
+                elif member.type == tarfile.HARDLINK_TYPE:
+                    linkname = member.linkname
+                    target_path = os.path.join(normalized_dest, linkname)
+                    resolved_target_path = os.path.realpath(target_path)
+                    
+                    if not _is_within_dest(resolved_target_path, normalized_dest):
+                        return False
+                        
+                # For regular files/directories, check if the path itself is within dest
+                elif member.isdir:
+                    if not _is_within_dest(member_path, normalized_dest):
+                        return False
+                else:
+                    if not _is_within_dest(member_path, normalized_dest):
+                        return False
+                
+                valid_members.append(member)
+            
+            # Second pass: extract valid members
+            for member in valid_members:
+                member_path = os.path.join(normalized_dest, member.name)
+                
+                # For symlinks and hardlinks, we need to handle them specially
+                if member.type == tarfile.SYMLINK_TYPE:
+                    linkname = member.linkname
+                    link_target = os.path.join(normalized_dest, linkname)
+                    resolved_link_target = os.path.realpath(link_target)
+                    
+                    # Remove existing file/directory if it exists
+                    if os.path.exists(member_path):
+                        os.remove(member_path)
+                    elif os.path.isdir(member_path):
+                        os.rmdir(member_path)
+                    
+                    os.symlink(linkname, member_path)
+                    
+                elif member.type == tarfile.HARDLINK_TYPE:
+                    linkname = member.linkname
+                    target_path = os.path.join(normalized_dest, linkname)
+                    resolved_target_path = os.path.realpath(target_path)
+                    
+                    # Remove existing file/directory if it exists
+                    if os.path.exists(member_path):
+                        os.remove(member_path)
+                    elif os.path.isdir(member_path):
+                        os.rmdir(member_path)
+                    
+                    os.link(target_path, member_path)
+                    
+                else:
+                    # Regular file or directory
+                    if member.isdir:
+                        if os.path.exists(member_path):
+                            os.rmdir(member_path)
+                        os.makedirs(member_path, exist_ok=True)
+                    else:
+                        if os.path.exists(member_path):
+                            os.remove(member_path)
+                        with open(member_path, 'wb') as f:
+                            f.write(member.fileobj.read())
+                            
+        return True
+        
+    except Exception:
+        return False

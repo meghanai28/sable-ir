@@ -1,0 +1,95 @@
+import socket
+from urllib.parse import urlparse, urljoin
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the initial URL
+    initial_parsed = urlparse(url)
+    
+    # Validate scheme
+    if initial_parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Validate port
+    scheme = initial_parsed.scheme
+    if scheme == 'http':
+        expected_port = 80
+    else:
+        expected_port = 443
+    
+    if initial_parsed.port != expected_port:
+        raise ValueError("Only default ports are allowed")
+    
+    # Resolve hostname
+    hostname = initial_parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL")
+    
+    ips = resolve_host(hostname)
+    if len(ips) != 1:
+        raise ValueError("Exactly one IP address is required")
+    
+    current_url = url
+    max_redirects = 5
+    redirects = 0
+    
+    while True:
+        # Determine the scheme and port for the current URL
+        current_parsed = urlparse(current_url)
+        current_scheme = current_parsed.scheme
+        current_port = current_parsed.port
+        
+        # Fetch the response
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Expected status code 200")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            redirects += 1
+            if redirects > max_redirects:
+                raise ValueError("Too many redirects")
+            
+            # Parse the Location header
+            location_parsed = urlparse(location_header)
+            
+            # Validate scheme
+            if location_parsed.scheme not in ('http', 'https'):
+                raise ValueError("Location must use HTTP or HTTPS")
+            
+            # Validate port
+            if location_parsed.scheme == 'http':
+                expected_loc_port = 80
+            else:
+                expected_loc_port = 443
+            
+            if location_parsed.port != expected_loc_port:
+                raise ValueError("Location must use default port")
+            
+            # Resolve Location hostname
+            loc_hostname = location_parsed.hostname
+            if not loc_hostname:
+                raise ValueError("Invalid Location URL")
+            
+            loc_ips = resolve_host(loc_hostname)
+            if len(loc_ips) != 1:
+                raise ValueError("Location must resolve to exactly one IP")
+            
+            # Check if Location shares same scheme, port, and credentials
+            if location_parsed.scheme != current_scheme:
+                raise ValueError("Location scheme must match")
+            if location_parsed.port != current_port:
+                raise ValueError("Location port must match")
+            if location_parsed.username or location_parsed.password:
+                if location_parsed.username != current_parsed.username or location_parsed.password != current_parsed.password:
+                    raise ValueError("Location credentials must match")
+            
+            # Join the URL
+            new_url = urljoin(current_url, location_header)
+            current_url = new_url
+        else:
+            break
+    
+    # Return body as text
+    return body.decode('utf-8')

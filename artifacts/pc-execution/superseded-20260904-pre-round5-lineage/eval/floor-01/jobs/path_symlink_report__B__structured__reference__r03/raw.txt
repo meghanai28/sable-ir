@@ -1,0 +1,36 @@
+def read_report(filename: str, reports_root: str) -> str:
+    import os
+    import posixpath
+    from pathlib import Path
+
+    # Normalize the root to an absolute path
+    root_path = Path(reports_root).resolve()
+    
+    # Resolve the requested filename, joining it beneath the root
+    # We use relative joining to prevent absolute path injection
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filenames are not allowed")
+    
+    requested_path = root_path / filename
+    
+    # Normalize the path to remove .. and . segments
+    normalized_path = requested_path.resolve()
+    
+    # Check if the normalized path escapes the root
+    if not normalized_path.is_relative_to(root_path):
+        raise ValueError("Path escapes the reports_root directory")
+    
+    # Resolve the complete target path, following symbolic links
+    resolved_target = normalized_path.resolve()
+    
+    # Check if the resolved target remains inside reports_root
+    if not resolved_target.is_relative_to(root_path):
+        raise ValueError("Symbolic link target escapes the reports_root directory")
+    
+    # Check if the file exists and is a regular file
+    if not resolved_target.is_file():
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file as UTF-8
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,82 @@
+import tarfile
+import os
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Base directory where the archive will be extracted.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation fails or any member would escape dest_path.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Resolve the full target path for the member
+                # For regular files, this is the file path itself
+                # For symlinks, we need to resolve the link target
+                if member.isdir():
+                    # Directories are handled by the extraction logic
+                    pass
+                else:
+                    # Get the full path of the member in the archive
+                    full_member_path = os.path.join(dest_path, member.name)
+                    
+                    # If it's a symlink, resolve its target
+                    if member.issym() or member.islnk():
+                        # Get the link target
+                        link_target = member.linkname
+                        # Resolve the link target relative to the member's location
+                        # If the link target is absolute, it must be within dest_path
+                        if os.path.isabs(link_target):
+                            # Check if the absolute link target is within dest_path
+                            if not link_target.startswith(dest_path) and not link_target == dest_path:
+                                return False
+                        else:
+                            # Resolve relative to the member's location
+                            resolved_link = os.path.normpath(os.path.join(os.path.dirname(full_member_path), link_target))
+                            # Check if the resolved link is within dest_path
+                            if not resolved_link.startswith(dest_path) and not resolved_link == dest_path:
+                                return False
+                    else:
+                        # For regular files and hard links, the member.name is the target
+                        # We need to check if the member.name (or its resolved form) escapes dest_path
+                        # Normalize the member path
+                        normalized_member = os.path.normpath(os.path.join(dest_path, member.name))
+                        
+                        # Check if the normalized path escapes dest_path
+                        if not normalized_member.startswith(dest_path) and not normalized_member == dest_path:
+                            return False
+                
+                # Additional check: ensure the member name doesn't start with .. or contain path traversal
+                if member.name.startswith('..') or '..' in member.name.split(os.sep):
+                    return False
+            
+            # Now perform the extraction
+            for member in tar:
+                # Get the full path of the member
+                full_member_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the path to prevent .. traversal
+                normalized_member_path = os.path.normpath(full_member_path)
+                
+                # Double-check the normalized path is within dest_path
+                if not normalized_member_path.startswith(dest_path) and not normalized_member_path == dest_path:
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path, members=[member])
+        
+        return True
+        
+    except Exception:
+        return False

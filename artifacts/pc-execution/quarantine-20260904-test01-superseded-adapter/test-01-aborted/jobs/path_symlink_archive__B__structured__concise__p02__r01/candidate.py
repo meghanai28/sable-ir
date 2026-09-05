@@ -1,0 +1,78 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Returns True only if the archive is fully extracted and all members are safely
+    contained within dest_path. Returns False if any validation or extraction fails.
+    No archive members are written outside dest_path on failure.
+    """
+    try:
+        # Validate dest_path is not absolute
+        if os.path.isabs(dest_path):
+            return False
+        
+        # Normalize dest_path to absolute root-relative path
+        dest_path = os.path.abspath(dest_path)
+        
+        # Ensure dest_path does not escape root
+        if not dest_path.startswith(os.sep) and dest_path != '.':
+            return False
+        
+        # Create dest_path if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Collect all members to validate before extraction
+            members_to_extract = []
+            
+            for member in tar.getmembers():
+                # Skip directories (they are handled by the extraction process)
+                if member.isdir():
+                    continue
+                
+                # Resolve the target path relative to dest_path
+                # We need to resolve the member's name to an absolute path
+                # First, get the member's name (without the trailing / if it's a dir)
+                if member.name.endswith('/'):
+                    continue
+                
+                # Resolve the target path
+                target_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check if the target path escapes the dest_path
+                # We must ensure the resolved path starts with the normalized dest_path
+                if not target_path.startswith(dest_path + os.sep) and target_path != dest_path:
+                    return False
+                
+                # Check for symlinks and hardlinks that might escape
+                if member.issym() or member.ishardlink():
+                    # Resolve the link target
+                    link_target = member.linkname
+                    # Resolve the link target relative to the member's location
+                    # If the member is a file, the link target is relative to the file's directory
+                    # We need to resolve the link target to an absolute path
+                    if os.path.isabs(link_target):
+                        resolved_link_target = link_target
+                    else:
+                        resolved_link_target = os.path.normpath(os.path.join(os.path.dirname(member.name), link_target))
+                    
+                    # Check if the resolved link target escapes the dest_path
+                    if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+                        return False
+                
+                members_to_extract.append(member)
+            
+            # Extract the members
+            for member in members_to_extract:
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

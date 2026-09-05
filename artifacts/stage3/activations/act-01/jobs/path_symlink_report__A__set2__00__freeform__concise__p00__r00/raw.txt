@@ -1,0 +1,49 @@
+import os
+import stat
+import errno
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Untrusted input filename.
+        reports_root: Root directory where reports are located.
+    
+    Returns:
+        UTF-8 text of the validated report.
+    
+    Raises:
+        ValueError: If the path escapes reports_root or if it's a symbolic link.
+        FileNotFoundError: If the file does not exist.
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.abspath(filename)
+    
+    # Ensure the requested path is within the reports_root directory
+    # by checking if the resolved path starts with the resolved root
+    # plus a separator, or is exactly the root (though typically reports are inside)
+    if not (requested_path == resolved_root or requested_path.startswith(resolved_root + os.sep)):
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the path is a symbolic link
+    if os.path.islink(requested_path):
+        raise ValueError("Symbolic links are not allowed")
+    
+    # Check if the path is a directory
+    if os.path.isdir(requested_path):
+        raise ValueError("Expected a file, not a directory")
+    
+    # Check if the file exists
+    if not os.path.isfile(requested_path):
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", requested_path)
+    
+    # Attempt to open and read the file
+    try:
+        with open(requested_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise

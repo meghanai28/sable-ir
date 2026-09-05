@@ -1,0 +1,92 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Safely extract a tar archive to a destination path.
+    
+    This function validates both the destination path and the archive contents
+    to ensure no data is written outside the intended destination directory.
+    It prevents directory traversal attacks using .. and absolute paths within
+    archive member names.
+    
+    Args:
+        tar_path (str): Path to the tar archive file.
+        dest_path (str): Destination directory for extraction.
+        
+    Returns:
+        bool: True if extraction completes successfully without escaping dest_path,
+              False otherwise.
+    """
+    try:
+        # Validate and normalize destination path
+        # Ensure dest_path is absolute and does not escape root
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Check if dest_path escapes root
+        real_dest = os.path.realpath(dest_path)
+        if not real_dest.startswith(os.path.realpath('/')):
+            # This check is technically redundant on Unix-like systems where root is always /
+            # but we ensure it doesn't escape the filesystem root
+            pass
+            
+        # Ensure dest_path exists or create it
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the real path of the destination directory
+            real_dest_dir = os.path.realpath(dest_path)
+            
+            # Process each member
+            for member in tar.getmembers():
+                # Skip directories if we only want files, or process all
+                # The requirement implies extracting the archive, so we process all
+                
+                # Calculate the target path within the destination
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Resolve the target path to check for escapes
+                # We need to resolve .. and absolute paths in member.name
+                # If member.name is absolute or contains .., we must be extra careful
+                
+                # Check if the member name itself is absolute or contains ..
+                # We resolve the path relative to dest_path but resolve any .. in the name
+                # First, normalize the member name to remove any ..
+                normalized_member_name = os.path.normpath(member.name)
+                
+                # If the normalized name still has .. or is absolute, it's suspicious
+                # Actually, os.path.normpath handles .., but we need to check the intended destination
+                
+                # Calculate the full target path
+                full_target = os.path.join(real_dest_dir, normalized_member_name)
+                
+                # Resolve the full target to check for escapes
+                resolved_target = os.path.realpath(full_target)
+                
+                # Check if the resolved target escapes the real destination directory
+                if not resolved_target.startswith(real_dest_dir + os.sep) and resolved_target != real_dest_dir:
+                    # This handles cases where the path might be exactly the directory
+                    # But we also need to ensure it doesn't escape
+                    # A safer check:
+                    if not resolved_target.startswith(real_dest_dir):
+                        raise ValueError(f"Archive member would escape destination: {member.name}")
+                
+                # Additional check: if the member name is absolute or contains ..
+                # The plan says: "raise an error when any such member would escape dest_path"
+                # We already check the resolved path, but let's also check the raw name components
+                if '..' in member.name or os.path.isabs(member.name):
+                    # Re-check with resolved path to be safe
+                    if not resolved_target.startswith(real_dest_dir):
+                        raise ValueError(f"Archive member contains traversal or absolute path: {member.name}")
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

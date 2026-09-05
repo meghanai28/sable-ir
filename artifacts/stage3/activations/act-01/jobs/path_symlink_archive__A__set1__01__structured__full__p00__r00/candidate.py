@@ -1,0 +1,113 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict validation to prevent
+    extraction outside the destination directory.
+    
+    Returns True on complete success, False on any validation or extraction failure.
+    """
+    try:
+        # Validate the archive exists
+        if not os.path.isfile(tar_path):
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the full destination path for this member
+                full_dest = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check for absolute paths or paths that escape the destination
+                if os.path.isabs(member.name):
+                    return False
+                
+                # Resolve the path relative to dest_path
+                # We need to ensure the resolved path is still within dest_path
+                # by checking if the parent directory of the target is within dest_path
+                # or if the target itself is within dest_path
+                
+                # Get the relative path from dest_path
+                rel_path = os.path.relpath(full_dest, dest_path)
+                
+                # If the relative path starts with .. or is just .., it's outside
+                if rel_path == '..' or rel_path.startswith('..'):
+                    return False
+                
+                # Additional check: ensure no parent directory traversal
+                # This handles cases like "dest/../../etc/passwd"
+                if not os.path.commonpath([dest_path, full_dest]) == dest_path:
+                    return False
+                
+                # Check for symlinks and hardlinks that might point outside
+                # We must validate the target before extraction
+                if member.isdir():
+                    # For directories, we just need to ensure the path is valid
+                    pass
+                elif member.issym() or member.islnk():
+                    # For symlinks and hardlinks, we need to check the target
+                    # The target is stored in member.linkname for symlinks
+                    # For hardlinks, it's in member.linkname too
+                    target = member.linkname
+                    
+                    # Check if the target is absolute
+                    if os.path.isabs(target):
+                        return False
+                    
+                    # Check if the target escapes the destination
+                    # Resolve the target relative to the member's location
+                    # But since we can't extract yet, we check the string representation
+                    # We need to be careful: the target could be a path that, when resolved
+                    # from the extraction location, points outside.
+                    
+                    # A safe approach: ensure the target doesn't contain .. that would escape
+                    # However, the most robust check is to ensure the resolved path is within dest_path
+                    # But we can't resolve it without extracting.
+                    # Instead, we check if the target starts with .. or is absolute
+                    # and also check if the target path, when joined with the member's dir,
+                    # would escape.
+                    
+                    # Simple check: if target has .. it might be dangerous
+                    if '..' in target.split(os.sep):
+                        return False
+                    
+                    # More robust: check if the target is within dest_path
+                    # We assume the member is being extracted to a subdirectory of dest_path
+                    # So we check if the target is within dest_path or a subdirectory
+                    # Actually, the safest way is to ensure the target doesn't point outside
+                    # by checking if the target starts with the dest_path or is within it
+                    
+                    # If the target is a path that, when resolved from the member's location,
+                    # would go outside, we block it.
+                    # Since we don't know the exact member's location yet, we check the target string
+                    # We can't fully resolve without extraction, so we rely on the commonpath check above
+                    # and the .. check.
+                    
+                    pass
+                elif member.issym():
+                    # Symbolic links: check linkname
+                    if os.path.isabs(member.linkname):
+                        return False
+                    if '..' in member.linkname.split(os.sep):
+                        return False
+                    
+                # Hard links: check linkname
+                if member.islnk():
+                    if os.path.isabs(member.linkname):
+                        return False
+                    if '..' in member.linkname.split(os.sep):
+                        return False
+            
+            # Extract the archive
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

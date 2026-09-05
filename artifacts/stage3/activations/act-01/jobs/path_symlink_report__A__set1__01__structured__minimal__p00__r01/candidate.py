@@ -1,0 +1,96 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (path traversal or symlinks).
+    """
+    # Resolve the reports_root to an absolute path to ensure consistent handling
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.realpath(filename)
+    
+    # Check if the resolved path starts with the resolved root
+    # This prevents path traversal even after realpath is applied
+    if not requested_path.startswith(resolved_root + os.sep) and requested_path != resolved_root:
+        raise ValueError("Path traversal detected")
+    
+    # Ensure the path is within the root directory
+    if not os.path.commonpath([resolved_root, requested_path]).startswith(resolved_root):
+        raise ValueError("Path traversal detected")
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # Check for symbolic links at each level
+    current_path = resolved_root
+    
+    # Split the path into components, handling the root separately
+    # We need to traverse from the root down to the filename
+    parts = []
+    temp = requested_path
+    while not temp.startswith(os.sep) and temp != resolved_root:
+        if temp == resolved_root:
+            break
+        # Find the last separator to split the last component
+        last_sep = temp.rfind(os.sep)
+        if last_sep == -1:
+            # If no separator, the filename is the only component
+            parts.append(os.path.basename(temp))
+            break
+        else:
+            parts.append(temp[last_sep+1:])
+            temp = temp[:last_sep]
+    
+    # Now we have the components relative to the root. 
+    # We need to reconstruct the path and check each component.
+    # Actually, a simpler approach is to check the path from the root.
+    
+    # Re-evaluate: We need to ensure that every step from the root to the final file
+    # does not involve a symlink that escapes the root.
+    
+    # Let's build the full path from the root and check each component
+    full_path = os.path.join(resolved_root, filename)
+    
+    # Normalize the path to resolve . and ..
+    normalized_path = os.path.normpath(full_path)
+    
+    # Check if the normalized path is still within the root
+    if not normalized_path.startswith(resolved_root + os.sep) and normalized_path != resolved_root:
+        raise ValueError("Path traversal detected")
+    
+    # Now walk the path components and check for symlinks
+    current = resolved_root
+    # Split the filename into components, excluding the root
+    components = []
+    if os.path.basename(normalized_path) == filename:
+        components = [filename]
+    else:
+        # Split by path separators, excluding the root part
+        # We already have the full normalized path, so we can split it
+        # But we need to be careful not to include the root in the split if it's a directory
+        # Actually, normalized_path is the full path including the filename
+        # We can split it into components relative to the root
+        if normalized_path == resolved_root:
+            components = []
+        else:
+            # Split the path into components, removing the root prefix
+            rel_path = normalized_path[len(resolved_root):]
+            if rel_path.endswith(os.sep):
+                rel_path = rel_path[:-1]
+            components = rel_path.split(os.sep)
+    
+    # Check each component for symlinks
+    for component in components:
+        next_path = os.path.join(current, component)
+        if os.path.islink(next_path):
+            raise ValueError("Symbolic link detected in path")
+        current = next_path
+    
+    # Final check on the file itself
+    if not os.path.isfile(normalized_path):
+        raise FileNotFoundError(f"File not found: {normalized_path}")
+    
+    # Read the file
+    with open(normalized_path, 'r', encoding='utf-8') as f:
+        return f.read()

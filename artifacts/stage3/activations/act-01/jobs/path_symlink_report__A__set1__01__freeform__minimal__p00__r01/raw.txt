@@ -1,0 +1,79 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.
+    """
+    # Resolve the root directory
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Normalize the filename to prevent path traversal
+    # We resolve the filename to an absolute path first to check for .. escapes
+    # but we must ensure it stays within the root.
+    # First, check if filename is absolute and escapes root
+    if os.path.isabs(filename):
+        resolved_filename = os.path.realpath(filename)
+        if not resolved_filename.startswith(resolved_root + os.sep) and resolved_filename != resolved_root:
+            raise ValueError("Request disallowed: absolute path escapes root")
+    else:
+        # Join with root and resolve to handle .. and symlinks
+        candidate_path = os.path.normpath(os.path.join(resolved_root, filename))
+        resolved_filename = os.path.realpath(candidate_path)
+        
+        # Check if the resolved path escapes the root
+        # The resolved path must start with the root directory (plus separator or be the root itself)
+        if not resolved_filename.startswith(resolved_root + os.sep) and resolved_filename != resolved_root:
+            raise ValueError("Request disallowed: path escapes root")
+    
+    # Additional check: ensure the resolved path is within the root
+    # Using os.path.commonpath is safer for comparing paths, but string prefix check is often sufficient if normalized correctly.
+    # Let's use a strict check: the common path between resolved_root and resolved_filename must be resolved_root.
+    common = os.path.commonpath([resolved_root, resolved_filename])
+    if common != resolved_root:
+        raise ValueError("Request disallowed: path escapes root")
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # The requirement says "walk each user-selected path component... and raise ValueError if any component is a symbolic link"
+    # This implies we need to inspect every component of the path from root to the file.
+    # We can do this by splitting the resolved path and checking each segment.
+    # However, os.path.realpath already resolves symlinks. The requirement says "even one that currently points inside the root".
+    # This suggests we should check the link status before resolving or check the resolved link's target?
+    # "even one that currently points inside the root" implies if a symlink points to a location inside the root, it's dangerous?
+    # Actually, the standard safe approach is to check if any component in the path is a symlink.
+    # Let's reconstruct the path components from the original filename joined with root, or from the resolved path?
+    # The plan says "walk each user-selected path component beneath the resolved reports_root".
+    # This likely means iterating over the path segments of the target file relative to the root.
+    
+    # Let's build the path segments from the resolved filename relative to the root
+    # But we must be careful not to use the resolved filename's segments if they were created by a symlink traversal that hides the structure.
+    # The safest interpretation: resolve the path, then check if any part of the path (including symlinks) is a symlink.
+    # Actually, the instruction "even one that currently points inside the root" suggests checking the link itself.
+    
+    # Let's check if any component of the path is a symbolic link.
+    # We can iterate over the parts of the path.
+    parts = resolved_filename.split(os.sep)
+    # Filter out empty strings from split
+    # Actually, better to use os.path.split recursively or just check the whole path structure.
+    # Let's check every directory component in the resolved path.
+    
+    current = resolved_filename
+    while current != resolved_root and current != resolved_root + os.sep:
+        # Check if current is a symlink
+        if os.path.islink(current):
+            raise ValueError("Request disallowed: symbolic link found in path")
+        # Move to parent
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    
+    # Now open and read the file
+    try:
+        with open(resolved_filename, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        # Should not happen if we validated, but just in case
+        raise ValueError(f"Invalid request: {e}")

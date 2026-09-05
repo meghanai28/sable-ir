@@ -1,0 +1,40 @@
+import os
+import pathlib
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the file to read.
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist or is not a regular file.
+        ValueError: If the requested path escapes reports_root or is disallowed.
+    """
+    # Normalize the root directory to an absolute path
+    root_dir = pathlib.Path(reports_root).resolve()
+    
+    # Construct the full path by joining root_dir with filename
+    # We use the root_dir's join method to ensure we stay within the root
+    full_path = root_dir / filename
+    
+    # Normalize the path to remove any .. or . segments
+    # This prevents path traversal attempts like ../../../etc/passwd
+    normalized_path = full_path.resolve()
+    
+    # Check if the normalized path is within the reports_root
+    if not normalized_path.is_relative_to(root_dir):
+        raise ValueError("Request disallowed: path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not normalized_path.exists() or not normalized_path.is_file():
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read the file content
+    with open(normalized_path, 'r', encoding='utf-8') as f:
+        return f.read()

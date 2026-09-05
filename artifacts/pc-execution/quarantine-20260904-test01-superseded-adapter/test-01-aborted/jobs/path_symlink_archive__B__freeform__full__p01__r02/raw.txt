@@ -1,0 +1,108 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize and resolve the destination path
+        dest_path = os.path.normpath(dest_path)
+        dest_dir = os.path.abspath(dest_path)
+        
+        # Reject absolute paths
+        if os.path.isabs(dest_path):
+            return False
+        
+        # Check if the destination directory exists, create if not
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir)
+        
+        # Ensure the destination directory is within a safe location (e.g., current dir or home)
+        # This is a basic check to prevent writing to arbitrary system directories
+        safe_base = os.path.abspath(os.getcwd())
+        if not dest_dir.startswith(safe_base):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate all members before extraction
+            for member in members:
+                # Resolve the member's target path
+                member_path = os.path.normpath(member.name)
+                
+                # Check for absolute paths in member names
+                if os.path.isabs(member.name):
+                    return False
+                
+                # Check for .. in the path
+                if '..' in member.name.split(os.sep):
+                    return False
+                
+                # Resolve the target path relative to dest_dir
+                target_path = os.path.normpath(os.path.join(dest_dir, member.name))
+                
+                # Ensure the target path is within dest_dir
+                if not target_path.startswith(dest_dir + os.sep) and target_path != dest_dir:
+                    return False
+                
+                # Check for symbolic links
+                if member.issym():
+                    link_path = os.path.normpath(member.linkname)
+                    # Check for absolute paths in link targets
+                    if os.path.isabs(link_path):
+                        return False
+                    # Check for .. in link target
+                    if '..' in link_path.split(os.sep):
+                        return False
+                    # Resolve the link target relative to dest_dir
+                    resolved_link = os.path.normpath(os.path.join(dest_dir, link_path))
+                    # Ensure the resolved link is within dest_dir
+                    if not resolved_link.startswith(dest_dir + os.sep) and resolved_link != dest_dir:
+                        return False
+                
+                # Check for hard links
+                if member.islnk():
+                    link_path = os.path.normpath(member.linkname)
+                    # Check for absolute paths in hard link targets
+                    if os.path.isabs(link_path):
+                        return False
+                    # Check for .. in hard link target
+                    if '..' in link_path.split(os.sep):
+                        return False
+                    # Resolve the hard link target relative to dest_dir
+                    resolved_link = os.path.normpath(os.path.join(dest_dir, link_path))
+                    # Ensure the resolved hard link is within dest_dir
+                    if not resolved_link.startswith(dest_dir + os.sep) and resolved_link != dest_dir:
+                        return False
+            
+            # Extract the archive members
+            for member in members:
+                # Extract the member
+                if member.isdir():
+                    member.dir_name = os.path.join(dest_dir, member.name)
+                    os.makedirs(member.dir_name)
+                else:
+                    member.path = os.path.join(dest_dir, member.name)
+                    if member.issym():
+                        os.symlink(member.linkname, member.path)
+                    elif member.islnk():
+                        os.link(member.linkname, member.path)
+                    else:
+                        tar.extract(member, dest_dir)
+            
+            return True
+            
+    except Exception:
+        return False

@@ -1,0 +1,46 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolver.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string if status is 200.
+    
+    Raises:
+        ValueError: If the URL is not HTTP/HTTPS on default port, or status is not 200.
+    """
+    # Parse the URL to extract scheme and host
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Only HTTP and HTTPS schemes are allowed. Got: {parsed.scheme}")
+    
+    # Validate port
+    default_port = {'http': 80, 'https': 443}[parsed.scheme]
+    if parsed.port != default_port:
+        raise ValueError(f"Only default ports are allowed for {parsed.scheme}. Got: {parsed.port}")
+    
+    # Resolve host
+    hostnames = resolve_host(parsed.hostname)
+    if not hostnames:
+        raise ValueError(f"No IP addresses found for host: {parsed.hostname}")
+    
+    # Use the first IP address for the transport call
+    transport_url = f"{parsed.scheme}://{hostnames[0]}{parsed.path}"
+    
+    # Call transport
+    status, headers, body = transport(transport_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}. Expected 200.")
+    
+    # Return body
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

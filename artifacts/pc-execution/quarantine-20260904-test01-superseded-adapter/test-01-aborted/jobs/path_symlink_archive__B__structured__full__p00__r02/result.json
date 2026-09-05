@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__B__structured__full__p00__r02",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__B__structured__full__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to dest_path with strict path validation.\n    \n    Args:\n        tar_path: Path to the tar archive.\n        dest_path: Destination directory for extraction.\n        \n    Returns:\n        True if extraction completes successfully without writing outside dest_path.\n        False if any validation or extraction fails.\n    \"\"\"\n    try:\n        # Normalize dest_path to absolute and ensure it's within root\n        dest_path = os.path.normpath(os.path.abspath(dest_path))\n        \n        # Reject absolute paths that start with root directly or contain ..\n        if dest_path.startswith(os.sep) or dest_path.startswith('\\\\'):\n            return False\n            \n        # Check for .. components in the normalized path\n        if '..' in dest_path:\n            return False\n            \n        # Create dest_path if it doesn't exist\n        if not os.path.exists(dest_path):\n            os.makedirs(dest_path)\n            \n        # Open the archive and validate members before extraction\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Get list of all members first\n            members = tar.getmembers()\n            \n            # Validate each member's path\n            for member in members:\n                # Resolve the full path\n                full_path = os.path.normpath(os.path.join(dest_path, member.name))\n                \n                # Check for .. in the resolved path\n                if '..' in full_path:\n                    return False\n                    \n                # Check if the resolved path is outside dest_path\n                # We need to ensure the resolved path starts with dest_path\n                if not full_path.startswith(dest_path + os.sep) and full_path != dest_path:\n                    return False\n                    \n                # Handle symbolic links\n                if member.issym() or member.islnk():\n                    link_target = member.linkname\n                    resolved_link = os.path.normpath(os.path.join(dest_path, link_target))\n                    \n                    # Check for .. in the link target\n                    if '..' in resolved_link:\n                        return False\n                        \n                    # Check if the resolved link target is outside dest_path\n                    if not resolved_link.startswith(dest_path + os.sep) and resolved_link != dest_path:\n                        return False\n                        \n            # Now perform the extraction\n            for member in members:\n                if member.isdir():\n                    os.makedirs(os.path.join(dest_path, member.name))\n                elif member.issym() or member.islnk():\n                    link_target = member.linkname\n                    os.symlink(link_target, os.path.join(dest_path, member.name))\n                else:\n                    # Extract the file\n                    member.copy(dest_path)\n                    \n            return True\n            \n    except Exception:\n        return False",
+    "prompt_tokens": 274,
+    "output_tokens": 593,
+    "finish_reason": "stop",
+    "latency_seconds": 25.429,
+    "seed": 1812097067
+  },
+  "prompt_sha256": "a160d446d7a9addcfbb12f7e116f66b89b145f0e10c54db27274e97bec36e6a2",
+  "candidate_path": "jobs/path_symlink_archive__B__structured__full__p00__r02/candidate.py",
+  "candidate_sha256": "b01fbda5634dbebc6a8acc810d47aa1d18d5d01794c90bbd0f577ad21a1cd148",
+  "extraction": "raw_text",
+  "error": null
+}

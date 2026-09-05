@@ -1,0 +1,156 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize paths to absolute paths and remove trailing slashes
+        tar_path = os.path.abspath(tar_path)
+        dest_path = os.path.abspath(dest_path)
+        
+        # Ensure the destination directory exists
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Create a canonical path for the destination to prevent symlink attacks
+        # We will resolve the final destination of each member against this canonical path
+        canonical_dest = os.path.realpath(dest_path)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members in the archive
+            members = tar.getnames()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Skip directory entries that don't end with '/' (they are files)
+                # but we need to check if they are directories too.
+                # tarfile.getnames() returns names; we need to check if they are directories.
+                # However, tarfile doesn't distinguish well in getnames() without opening.
+                # We'll use getmembers() to get detailed info.
+                pass
+            
+            # Re-open or iterate properly to get member details
+            tar = tarfile.open(tar_path, 'r:*')
+            
+            for member in tar.getmembers():
+                # Skip if the member name starts with a null byte or contains null bytes
+                if '\0' in member.name:
+                    continue
+                
+                # Calculate the full path for the member
+                member_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the member path to handle .. and .
+                # This must be done before any checks
+                normalized_member_path = os.path.normpath(member_path)
+                
+                # Resolve the canonical path of the member
+                # This will resolve symlinks and .. segments
+                resolved_member_path = os.path.realpath(normalized_member_path)
+                
+                # Check if the resolved path is outside the canonical destination
+                if not resolved_member_path.startswith(canonical_dest + os.sep) and resolved_member_path != canonical_dest:
+                    # If it's exactly the dest_path, that's okay (e.g., extracting a single file to the root)
+                    # But if it's a subdirectory, it must start with canonical_dest + os.sep
+                    # Actually, the requirement says "inside dest_path". 
+                    # If dest_path is "/home/user", then "/home/user/file.txt" is inside.
+                    # "/home/user/../file.txt" resolves to "/home/file.txt" which is outside.
+                    # So we check if resolved_member_path starts with canonical_dest.
+                    # But if resolved_member_path == canonical_dest, it means the member is the directory itself?
+                    # No, member.name is relative to dest_path.
+                    # If member.name is ".", normalized_member_path is dest_path.
+                    # If member.name is "..", normalized_member_path is dest_path's parent.
+                    # So we need to ensure resolved_member_path starts with canonical_dest.
+                    # Exception: if the member is a directory and we are extracting to it?
+                    # No, we extract TO dest_path. The members go INTO dest_path.
+                    # So resolved_member_path must be within canonical_dest.
+                    # But what if the archive contains a directory named "dest_path"?
+                    # Then member.name would be "dest_path", and resolved_member_path would be canonical_dest.
+                    # That is allowed.
+                    # But if member.name is "..", then resolved_member_path is canonical_dest's parent, which is not allowed.
+                    # So the condition is: resolved_member_path must start with canonical_dest + os.sep OR be equal to canonical_dest.
+                    # However, if member.name is "dest_path", then normalized_member_path is "dest_path/dest_path", which is not valid.
+                    # Actually, member.name is relative to the archive root.
+                    # So if dest_path is "/home/user" and member.name is "file.txt", then member_path is "/home/user/file.txt".
+                    # resolved_member_path is "/home/user/file.txt" (if no symlinks).
+                    # If member.name is ".", then member_path is "/home/user".
+                    # resolved_member_path is "/home/user".
+                    # If member.name is "..", then member_path is "/home".
+                    # resolved_member_path is "/home".
+                    # So we check: resolved_member_path.startswith(canonical_dest + os.sep) or resolved_member_path == canonical_dest.
+                    # But wait, if canonical_dest is "/home/user", and member.name is "file.txt", then resolved_member_path is "/home/user/file.txt".
+                    # This starts with "/home/user" + os.sep. Correct.
+                    # If member.name is ".", then resolved_member_path is "/home/user". This equals canonical_dest. Correct.
+                    # If member.name is "..", then resolved_member_path is "/home". This does not start with "/home/user". Correct.
+                    # So the condition is:
+                    if not (resolved_member_path.startswith(canonical_dest + os.sep) or resolved_member_path == canonical_dest):
+                        raise ValueError(f"Member {member.name} escapes destination: {resolved_member_path}")
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    # Normalize the link target relative to the member's path?
+                    # No, the link target is absolute or relative.
+                    # If it's relative, it's relative to the member's directory.
+                    # But we already normalized the member's path.
+                    # We need to resolve the link target relative to the member's location.
+                    # But the member's location is not known until extraction.
+                    # Instead, we can resolve the link target relative to the member's path.
+                    # But the member's path is normalized_member_path.
+                    # So if member.name is "subdir/file.txt" and link_target is "../link", then the link is relative to "subdir".
+                    # So the link path is "subdir/../link" = "link".
+                    # We need to resolve this link path.
+                    # But the link path is relative to the member's directory.
+                    # So we construct the link path relative to the member's directory.
+                    # But the member's directory is not known until extraction.
+                    # Instead, we can resolve the link target relative to the member's path.
+                    # But the member's path is normalized_member_path.
+                    # So if member.name is "subdir/file.txt", then the member's directory is "subdir".
+                    # So the link path is "subdir" + os.sep + link_target.
+                    # Then we resolve that.
+                    # But wait, if member.name is "file.txt", then the member's directory is ".".
+                    # So the link path is "." + os.sep + link_target = link_target.
+                    # So we can do:
+                    link_path = os.path.join(os.path.dirname(normalized_member_path), link_target)
+                    resolved_link_path = os.path.realpath(link_path)
+                    
+                    if not (resolved_link_path.startswith(canonical_dest + os.sep) or resolved_link_path == canonical_dest):
+                        raise ValueError(f"Symbolic link {member.name} -> {link_target} escapes destination: {resolved_link_path}")
+                
+                # Check for hard links
+                if member.islnk():
+                    # Hard links are handled similarly to symbolic links in terms of path validation.
+                    # But hard links don't have a target that is resolved.
+                    # The hard link target is the same as the member's path?
+                    # No, hard links are specified by name.
+                    # But in tar, hard links are specified by the member name and the link name.
+                    # But the link name is relative to the member's directory?
+                    # Actually, for hard links, the link name is relative to the member's directory.
+                    # So we do the same as symbolic links.
+                    link_path = os.path.join(os.path.dirname(normalized_member_path), member.linkname)
+                    resolved_link_path = os.path.realpath(link_path)
+                    
+                    if not (resolved_link_path.startswith(canonical_dest + os.sep) or resolved_link_path == canonical_dest):
+                        raise ValueError(f"Hard link {member.name} -> {member.linkname} escapes destination: {resolved_link_path}")
+                
+                # Now that validation passes, we can extract the member
+                # We extract to the normalized_member_path
+                # But we need to extract to the member's directory if it's a directory
+                # If the member is a directory, we extract to the member's directory.
+                # If the member is a file, we extract to the member's path.
+                # But we already normalized the member's path.
+                # So we can extract to the normalized_member_path.
+                # But we need to handle the case where the member is a directory.
+                # If the member is a directory, we extract

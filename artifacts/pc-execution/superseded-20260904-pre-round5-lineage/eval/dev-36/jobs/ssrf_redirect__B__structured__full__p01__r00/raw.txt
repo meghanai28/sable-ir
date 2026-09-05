@@ -1,0 +1,66 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    hostname = parsed.hostname
+    port = parsed.port or (443 if scheme == 'https' else 80)
+    
+    resolved_ips = resolve_host(hostname)
+    if not resolved_ips:
+        raise ValueError("DNS resolution failed")
+    
+    current_url = url
+    max_hops = 5
+    
+    while True:
+        if current_url != url:
+            current_parsed = urllib.parse.urlparse(current_url)
+            if current_parsed.scheme != scheme:
+                raise ValueError("Scheme mismatch")
+            if current_parsed.port != port:
+                raise ValueError("Port mismatch")
+            current_parsed = urllib.parse.urlparse(current_url)
+            if current_parsed.hostname not in resolved_ips:
+                raise ValueError("DNS mismatch")
+            current_parsed = urllib.parse.urlparse(current_url)
+            if current_parsed.hostname != hostname:
+                raise ValueError("Hostname mismatch")
+            current_parsed = urllib.parse.urlparse(current_url)
+            if current_parsed.username or current_parsed.password:
+                raise ValueError("Credential mismatch")
+            current_parsed = urllib.parse.urlparse(current_url)
+            if current_parsed.hostname != hostname:
+                raise ValueError("DNS mismatch")
+        
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status, headers, body = response
+        
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        location_header = headers.get('Location')
+        if location_header:
+            new_url = urllib.parse.urljoin(current_url, location_header)
+            if new_url.startswith(('file://', 'data://', 'javascript:', 'vbscript:')):
+                raise ValueError("Disallowed protocol in Location")
+            if not new_url.startswith(('http://', 'https://')):
+                raise ValueError("Location must be HTTP or HTTPS")
+            current_url = new_url
+            max_hops -= 1
+            if max_hops <= 0:
+                raise ValueError("Maximum Location hops exceeded")
+        else:
+            break
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

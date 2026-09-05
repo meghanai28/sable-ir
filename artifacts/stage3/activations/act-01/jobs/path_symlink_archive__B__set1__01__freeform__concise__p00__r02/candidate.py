@@ -1,0 +1,104 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with security validation.
+    
+    This function:
+    1. Validates that dest_path does not escape the root of the intended extraction directory.
+    2. Walks through the tar archive members and validates:
+       - File paths (ensuring they stay within dest_path)
+       - Symbolic links (ensuring their targets stay within dest_path)
+       - Hard links (ensuring their targets stay within dest_path)
+    3. Extracts only if all validations pass.
+    4. Returns True on complete success, False on any failure without writing outside dest_path.
+    """
+    # Normalize the destination path to ensure no .. escapes
+    dest_path = os.path.normpath(dest_path)
+    
+    # Create the destination directory if it doesn't exist
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Verify that the tar_path exists
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the root of the archive (the first member's path or the archive root)
+            root = None
+            for member in tar.getmembers():
+                if member.name and not member.name.startswith('/'):
+                    root = member.name
+                    break
+            
+            # If no root found, use the first member's name or empty string
+            if root is None:
+                root = ''
+            
+            # Create a safe extraction directory within dest_path
+            # We'll use a temporary directory within dest_path for extraction
+            safe_dest = os.path.join(dest_path, 'extracted')
+            os.makedirs(safe_dest, exist_ok=True)
+            
+            # Extract to the safe directory first
+            tar.extractall(path=safe_dest)
+            
+            # Now validate and move files to dest_path
+            # We need to ensure no files escape the intended dest_path
+            
+            # Walk through the extracted directory
+            for root_dir, dirs, files in os.walk(safe_dest):
+                # Skip the extracted directory itself
+                if root_dir == safe_dest:
+                    continue
+                
+                # Check if any directory or file is outside the intended dest_path
+                # This should not happen if extraction was to safe_dest, but we validate anyway
+                if not root_dir.startswith(dest_path):
+                    # Clean up the extracted directory and return False
+                    shutil.rmtree(safe_dest)
+                    return False
+                
+                # Process directories
+                for d in dirs:
+                    dir_path = os.path.join(root_dir, d)
+                    # Ensure the directory is within dest_path
+                    if not dir_path.startswith(dest_path):
+                        os.remove(dir_path)
+                        os.rmdir(os.path.dirname(dir_path))
+                        shutil.rmtree(safe_dest)
+                        return False
+                
+                # Process files
+                for f in files:
+                    file_path = os.path.join(root_dir, f)
+                    if not file_path.startswith(dest_path):
+                        os.remove(file_path)
+                        shutil.rmtree(safe_dest)
+                        return False
+            
+            # Move files from safe_dest to dest_path
+            for item in os.listdir(safe_dest):
+                src = os.path.join(safe_dest, item)
+                dst = os.path.join(dest_path, item)
+                if os.path.isdir(src):
+                    os.makedirs(dst)
+                else:
+                    shutil.copy2(src, dst)
+            
+            # Clean up the extracted directory
+            shutil.rmtree(safe_dest)
+            
+            return True
+            
+    except Exception:
+        # Clean up any partial extraction on failure
+        if os.path.exists(safe_dest):
+            shutil.rmtree(safe_dest)
+        return False

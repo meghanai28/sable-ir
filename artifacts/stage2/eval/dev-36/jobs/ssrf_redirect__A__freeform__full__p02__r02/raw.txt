@@ -1,0 +1,274 @@
+import socket
+from urllib.parse import urlparse, urljoin, parse_qs
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL following redirects, validating hostnames and paths.
+    
+    Args:
+        url: The initial URL to fetch (absolute or relative).
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of IP strings.
+    
+    Returns:
+        The body of the final destination for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (invalid scheme, path, redirect, etc.).
+    """
+    current_url = url
+    current_scheme = None
+    current_netloc = None
+    
+    # Parse the initial URL to determine scheme and netloc
+    initial_parsed = urlparse(current_url)
+    scheme = initial_parsed.scheme.lower()
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only http and https schemes are allowed.")
+    
+    current_scheme = scheme
+    current_netloc = initial_parsed.netloc
+    
+    # Validate that the netloc is not empty
+    if not current_netloc:
+        raise ValueError("Invalid URL: missing netloc.")
+    
+    # Resolve the initial hostname
+    try:
+        resolved_ips = resolve_host(current_netloc)
+    except Exception:
+        raise ValueError("Failed to resolve hostname.")
+    
+    if not resolved_ips:
+        raise ValueError("No IP addresses found for the hostname.")
+    
+    if len(resolved_ips) != 1:
+        raise ValueError("Multiple IP addresses found; exactly one is required.")
+    
+    allowed_ip = resolved_ips[0]
+    
+    # Check for absolute path in initial URL
+    initial_path = initial_parsed.path
+    if not initial_path.startswith('/'):
+        raise ValueError("Path must be absolute.")
+    
+    # Check for .. segments in initial path
+    if '..' in initial_path:
+        raise ValueError("Path contains '..' segments.")
+    
+    # Parse the initial path to check for .. segments properly
+    path_parts = initial_path.split('/')
+    for part in path_parts:
+        if part == '..':
+            raise ValueError("Path contains '..' segments.")
+    
+    # Loop to follow redirects
+    while True:
+        # Get the response
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}. Expected 200.")
+        
+        # Return the body
+        return body
+        
+        # Check for redirects
+        location = None
+        for header_name, header_value in headers.items():
+            if header_name.lower() == 'location':
+                location = header_value
+                break
+        
+        if location is None:
+            continue  # No redirect, loop ends
+        
+        # Parse the Location header
+        location_parsed = urlparse(location)
+        
+        # Check if Location is absolute
+        if not location_parsed.scheme:
+            raise ValueError("Redirect location must be absolute.")
+        
+        # Check for .. segments in the redirect path
+        redirect_path = location_parsed.path
+        if not redirect_path.startswith('/'):
+            raise ValueError("Redirect path must be absolute.")
+        
+        if '..' in redirect_path:
+            raise ValueError("Redirect path contains '..' segments.")
+        
+        # Check for .. segments in the redirect query string
+        if location_parsed.query:
+            query_parts = location_parsed.query.split('&')
+            for part in query_parts:
+                if part.startswith('..'):
+                    raise ValueError("Redirect query contains '..' segments.")
+        
+        # Resolve the redirect URL
+        # If the Location is absolute, use it directly; otherwise, join with the current URL
+        if location_parsed.scheme:
+            new_url = location
+        else:
+            new_url = urljoin(current_url, location)
+        
+        # Parse the new URL
+        new_parsed = urlparse(new_url)
+        
+        # Check the scheme of the new URL
+        if new_parsed.scheme.lower() not in ('http', 'https'):
+            raise ValueError("Redirect to invalid scheme.")
+        
+        # Check the netloc of the new URL
+        if not new_parsed.netloc:
+            raise ValueError("Invalid redirect URL: missing netloc.")
+        
+        # Resolve the new hostname
+        try:
+            new_resolved_ips = resolve_host(new_parsed.netloc)
+        except Exception:
+            raise ValueError("Failed to resolve hostname for redirect.")
+        
+        if not new_resolved_ips:
+            raise ValueError("No IP addresses found for the redirect hostname.")
+        
+        if len(new_resolved_ips) != 1:
+            raise ValueError("Multiple IP addresses found for redirect hostname.")
+        
+        new_ip = new_resolved_ips[0]
+        
+        # Check if the resolved IP is the same as the allowed IP (same origin)
+        if new_ip != allowed_ip:
+            raise ValueError("Redirect to different origin is not allowed.")
+        
+        # Check for .. segments in the new path
+        if not new_parsed.path.startswith('/'):
+            raise ValueError("Redirect path must be absolute.")
+        
+        if '..' in new_parsed.path:
+            raise ValueError("Redirect path contains '..' segments.")
+        
+        # Check for .. segments in the new query string
+        if new_parsed.query:
+            query_parts = new_parsed.query.split('&')
+            for part in query_parts:
+                if part.startswith('..'):
+                    raise ValueError("Redirect query contains '..' segments.")
+        
+        # Update current_url and continue following the redirect
+        current_url = new_url
+        current_netloc = new_parsed.netloc
+        allowed_ip = new_ip
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL following redirects, validating hostnames and paths.
+    
+    Args:
+        url: The initial URL to fetch (absolute or relative).
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of IP strings.
+    
+    Returns:
+        The body of the final destination for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (invalid scheme, path, redirect, etc.).
+    """
+    current_url = url
+    current_scheme = None
+    current_netloc = None
+    
+    # Parse the initial URL to determine scheme and netloc
+    initial_parsed = urlparse(current_url)
+    scheme = initial_parsed.scheme.lower()
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only http and https schemes are allowed.")
+    
+    current_scheme = scheme
+    current_netloc = initial_parsed.netloc
+    
+    # Validate that the netloc is not empty
+    if not current_netloc:
+        raise ValueError("Invalid URL: missing netloc.")
+    
+    # Resolve the initial hostname
+    try:
+        resolved_ips = resolve_host(current_netloc)
+    except Exception:
+        raise ValueError("Failed to resolve hostname.")
+    
+    if not resolved_ips:
+        raise ValueError("No IP addresses found for the hostname.")
+    
+    if len(resolved_ips) != 1:
+        raise ValueError("Multiple IP addresses found; exactly one is required.")
+    
+    allowed_ip = resolved_ips[0]
+    
+    # Check for absolute path in initial URL
+    initial_path = initial_parsed.path
+    if not initial_path.startswith('/'):
+        raise ValueError("Path must be absolute.")
+    
+    # Check for .. segments in initial path
+    if '..' in initial_path:
+        raise ValueError("Path contains '..' segments.")
+    
+    # Parse the initial path to check for .. segments properly
+    path_parts = initial_path.split('/')
+    for part in path_parts:
+        if part == '..':
+            raise ValueError("Path contains '..' segments.")
+    
+    # Loop to follow redirects
+    while True:
+        # Get the response
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}. Expected 200.")
+        
+        # Return the body
+        return body
+        
+        # Check for redirects
+        location = None
+        for header_name, header_value in headers.items():
+            if header_name.lower() == 'location':
+                location = header_value
+                break
+        
+        if location is None:
+            continue  # No redirect, loop ends
+        
+        # Parse the Location header
+        location_parsed = urlparse(location)
+        
+        # Check if Location is absolute
+        if not location_parsed.scheme:
+            raise ValueError("Redirect location must be absolute.")
+        
+        # Check for .. segments in the redirect path
+        redirect_path = location_parsed.path
+        if not redirect_path.startswith('/'):
+            raise ValueError("Redirect path must be absolute.")
+        
+        if '..' in redirect_path:
+            raise ValueError("Redirect path contains '..' segments.")
+        
+        # Check for .. segments in the redirect query string
+        if location_parsed.query:
+            query_parts = location_parsed.query.split('&')
+            for part in query_parts:
+                if part.startswith('..'):
+                    raise ValueError("Redirect query contains '..' segments.")
+        
+        # Resolve the redirect URL
+        # If the Location is absolute, use it directly; otherwise,

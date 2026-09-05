@@ -1,0 +1,88 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Normalize the URL to handle query strings and ensure it's a string
+    normalized_url = urllib.parse.urlparse(url)
+    
+    # Extract the base path from the URL for validation
+    # We assume the base path is the scheme and netloc, or the entire URL if no path is explicitly restricted
+    # The prompt implies checking if it escapes the "safe base path". Since no explicit base path is provided in the request,
+    # we will treat the provided URL's netloc as the anchor, or if it's a relative path, we need a base.
+    # However, the prompt says "raise ValueError if it escapes the safe base path". Without a defined base,
+    # we interpret this as: if the URL contains a scheme (http/https) that is not the one we are using, or if it's an absolute URL with a different host, it's dangerous.
+    # But the most robust interpretation for "untrusted input" without a defined base is to check if the URL is absolute and if the host is safe, or if it's a relative path that tries to escape.
+    # Given the instruction "Accept HTTP or HTTPS on its default port", we assume the URL is absolute.
+    # The check "escapes the safe base path" likely refers to preventing access to other domains or schemes.
+    
+    # Let's define a safe base. If the URL is absolute, the safe base is the netloc. If it's relative, we might need a context, but we don't have one.
+    # Re-reading: "raise ValueError if it escapes the safe base path". This implies there IS a base path. Since none is passed, perhaps the "safe base path" is the domain of the URL itself, and we are checking for redirects?
+    # Or, more likely in a sandbox context, the "safe base path" is the root of the application, but here we are given a raw URL.
+    # Let's assume the "safe base path" is the netloc of the initial URL. Any redirect to a different netloc is an escape.
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Determine the base domain (netloc)
+    base_domain = parsed.netloc
+    
+    # Validate the scheme is http or https
+    if parsed.scheme not in ['http', 'https']:
+        raise ValueError("Disallowed request: Unsupported scheme")
+    
+    # Check if the URL is absolute. If it's relative, we might not be able to resolve it without a base, but the prompt says "absolute" is possible.
+    # If the URL is absolute, we proceed. If it's relative, we might treat it as an escape if it looks like it's trying to go somewhere else, but let's stick to the logic:
+    # "raise ValueError if it escapes the safe base path"
+    # If the URL is absolute, the base path is the netloc. If the URL is relative, we assume it's within the same context, but without a base, we can't validate.
+    # Let's assume the input is an absolute URL.
+    
+    # Resolve the host to check for redirects
+    # We need to follow redirects only if the new destination remains inside the same base path.
+    
+    current_url = url
+    current_parsed = parsed
+    
+    while True:
+        # Transport the URL
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Disallowed request: Status code {status} is not 200")
+        
+        # Check for redirect
+        location_header = headers.get('Location')
+        if location_header:
+            # Parse the Location header
+            redirect_url = urllib.parse.urlparse(location_header)
+            
+            # Check if the redirect URL is absolute or relative
+            # If absolute, check if it's within the same base domain
+            if redirect_url.scheme:
+                # Absolute URL
+                if redirect_url.netloc != base_domain:
+                    raise ValueError("Disallowed request: Redirect escapes safe base path")
+            else:
+                # Relative URL, resolve against the current URL
+                resolved_redirect = urllib.parse.urljoin(current_url, location_header)
+                resolved_parsed = urllib.parse.urlparse(resolved_redirect)
+                
+                # Check if the resolved URL escapes the base domain
+                # We compare the netloc. If the current URL was absolute, we check against base_domain.
+                # If the current URL was relative, we might need to check against the base_domain of the original request?
+                # The prompt says "escapes the safe base path". Let's assume the base path is the netloc of the initial request.
+                # If the resolved redirect has a different netloc than the base_domain, it's an escape.
+                # However, if the current URL is relative, the netloc might be empty.
+                # Let's enforce that the netloc of the resolved URL must match the base_domain.
+                if resolved_parsed.netloc and resolved_parsed.netloc != base_domain:
+                    raise ValueError("Disallowed request: Redirect escapes safe base path")
+            
+            # If it's safe, update current_url and continue
+            current_url = location_header if redirect_url.scheme else resolved_redirect
+            current_parsed = urllib.parse.urlparse(current_url)
+        else:
+            break
+    
+    # Return the body
+    return body

@@ -1,0 +1,59 @@
+import socket
+from urllib.parse import urljoin, urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    if url.startswith(('http://', 'https://')):
+        parsed = urlparse(url)
+        scheme = parsed.scheme
+        port = parsed.port
+        default_port = 80 if scheme == 'http://' else 443
+        if port is not None and port != default_port:
+            raise ValueError("Port not allowed")
+    else:
+        raise ValueError("Scheme must be http:// or https://")
+
+    def get_base_url(current_url):
+        base = urlparse(current_url)
+        path = base.path
+        if not path or path == '/':
+            path = '/'
+        if base.query:
+            path += '?' + base.query
+        if not base.params:
+            path = path.rstrip('/')
+        else:
+            path += '#' + base.params
+        return f"{base.scheme}://{base.netloc}{path}"
+
+    current_url = url
+    redirects = 0
+    while True:
+        if redirects > 5:
+            raise ValueError("Too many redirects")
+        
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Status code not 200")
+        
+        location = headers.get('Location')
+        if location:
+            redirects += 1
+            if redirects > 5:
+                raise ValueError("Too many redirects")
+            
+            if location.startswith(('http://', 'https://')):
+                raise ValueError("Absolute Location with non-default scheme")
+            
+            current_url = urljoin(current_url, location)
+            continue
+        
+        hostname = urlparse(current_url).netloc
+        if not hostname:
+            raise ValueError("No hostname in URL")
+        
+        ips = resolve_host(hostname)
+        if not ips:
+            raise ValueError("No IP address found")
+        
+        return body

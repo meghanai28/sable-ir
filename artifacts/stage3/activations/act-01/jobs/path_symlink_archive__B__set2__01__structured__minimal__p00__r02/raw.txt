@@ -1,0 +1,44 @@
+import os
+import tarfile
+import stat
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Returns True on complete success, False otherwise.
+    No archive members are written outside dest_path on failure.
+    """
+    # Normalize dest_path to absolute and remove trailing slashes
+    dest_path = os.path.normpath(os.path.abspath(dest_path))
+    
+    # Validate that dest_path does not contain escape sequences
+    if ".." in dest_path or dest_path.endswith(os.sep):
+        raise ValueError("Invalid destination path format")
+    
+    # Ensure dest_path is not an absolute path with .. segments
+    if ".." in dest_path:
+        raise ValueError("Destination path contains escape sequences")
+    
+    # Create dest_path directory if it doesn't exist
+    os.makedirs(dest_path, exist_ok=True)
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Extract each member
+            for member in tar.getmembers():
+                # Resolve the destination path for this member
+                dest_member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check if the destination is within dest_path
+                if not dest_member_path.startswith(dest_path + os.sep) and dest_member_path != dest_path:
+                    raise ValueError(f"Archive member {member.name} would escape dest_path")
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+    except Exception as e:
+        return False
+    
+    return True

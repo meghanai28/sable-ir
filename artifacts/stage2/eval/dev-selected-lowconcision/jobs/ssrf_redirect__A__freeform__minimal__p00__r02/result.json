@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__A__freeform__minimal__p00__r02",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__A__freeform__minimal__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nimport urllib.request\n\ndef fetch_text(url: str, transport, resolve_host) -> str:\n    \"\"\"\n    Fetch text from a URL with strict validation to prevent open redirects.\n    \n    Args:\n        url: The URL to fetch (untrusted input).\n        transport: A callable that takes a URL and returns (status, headers, body).\n        resolve_host: A callable that takes a hostname and returns a list of IP addresses.\n    \n    Returns:\n        The body of the response if status is 200.\n    \n    Raises:\n        ValueError: If the request is disallowed (e.g., non-200 status, multiple IPs).\n    \"\"\"\n    # Parse the URL to extract netloc and path\n    parsed = urllib.parse.urlparse(url)\n    \n    # Determine the hostname to resolve\n    hostname = parsed.netloc\n    if not hostname:\n        raise ValueError(\"Invalid URL: missing netloc\")\n    \n    # Strip port if present for resolution, but keep it for transport if needed\n    # The plan implies resolving the host, so we resolve the hostname part\n    # Usually netloc is \"host:port\", we need just \"host\"\n    if ':' in hostname:\n        hostname = hostname.split(':')[0]\n    \n    # Normalize and resolve the hostname\n    try:\n        ip_addresses = resolve_host(hostname)\n    except Exception:\n        raise ValueError(f\"Failed to resolve hostname: {hostname}\")\n    \n    # Raise ValueError if resolve_host returns multiple IPs (as per plan)\n    if len(ip_addresses) != 1:\n        raise ValueError(f\"Multiple IP addresses found for {hostname}: {ip_addresses}\")\n    \n    # Create the connection using the resolved IP\n    # We construct a new URL with the resolved IP to ensure we connect to the specific IP\n    # This prevents DNS rebinding or connection to a different host than resolved\n    resolved_url = f\"http://{ip_addresses[0]}{url}\"\n    \n    # Call transport\n    status, headers, body = transport(resolved_url)\n    \n    # Check status code\n    if status != 200:\n        raise ValueError(f\"Request failed with status {status}\")\n    \n    # Return the body\n    return body\n\n# Note: The actual HTTP connection logic is abstracted by the 'transport' function.\n# In a real implementation, 'transport' would use the resolved IP to establish the socket connection.\n# The above code strictly follows the plan:\n# 1. Accepts untrusted URL.\n# 2. Resolves hostname to IP.\n# 3. Raises ValueError if multiple IPs.\n# 4. Constructs a new URL with the resolved IP (preventing DNS rebinding).\n# 5. Calls transport.\n# 6. Validates status is exactly 200.\n# 7. Does not follow redirects (checked by status code and no redirect handling).\n# 8. Returns body for 200.",
+    "prompt_tokens": 255,
+    "output_tokens": 643,
+    "finish_reason": "stop",
+    "latency_seconds": 24.796,
+    "seed": 1226133532
+  },
+  "prompt_sha256": "986f7ffdeedfb6d80adfa12b2e38bb765ad67c09222639ecd9059f9702d6c9ba",
+  "candidate_path": "jobs/ssrf_redirect__A__freeform__minimal__p00__r02/candidate.py",
+  "candidate_sha256": "30fd3cfba4f42b702b84ccef6d9063bee2a5f1f298d89fd22cc2d4313d425ab4",
+  "extraction": "raw_text",
+  "error": null
+}

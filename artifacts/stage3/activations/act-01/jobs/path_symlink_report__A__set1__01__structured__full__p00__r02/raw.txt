@@ -1,0 +1,104 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes root or contains symlinks).
+    """
+    # Resolve the root directory to a canonical absolute path
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Resolve the requested filename to an absolute path
+    requested_path = os.path.abspath(filename)
+    
+    # Construct the full path
+    full_path = os.path.join(resolved_root, requested_path)
+    
+    # Normalize the path to remove any .. or . components and resolve symlinks
+    # We need to check the path before resolving symlinks for the containment check,
+    # but the plan says to normalize and check containment.
+    # However, to detect escape attempts via .., we should normalize the path relative to root.
+    # Let's compute the relative path from root.
+    try:
+        rel_path = os.path.relpath(full_path, resolved_root)
+    except ValueError:
+        # This happens if paths are on different drives (Windows) or otherwise incompatible
+        raise ValueError("Path is outside the reports_root directory")
+    
+    # Normalize the relative path to ensure no .. escapes
+    # os.path.normpath handles .. and .
+    normalized_rel_path = os.path.normpath(rel_path)
+    
+    # Reconstruct the full path from the normalized relative path to ensure we are working with a safe path
+    safe_path = os.path.join(resolved_root, normalized_rel_path)
+    
+    # Final check: ensure the safe_path is actually within the resolved_root
+    # Using os.path.commonpath or simply checking if safe_path starts with resolved_root + os.sep
+    # But realpath on safe_path might resolve symlinks, so we must check before that.
+    # The plan says: normalize the requested path and raise ValueError if it escapes.
+    # We also need to walk each user-selected path component and raise ValueError if any is a symlink.
+    
+    # Split the normalized relative path into components
+    parts = normalized_rel_path.split(os.sep)
+    
+    # Walk through components to validate containment and check for symlinks
+    current_path = resolved_root
+    for part in parts:
+        # Check if the current directory (before resolving part) is a symlink
+        # The plan says: "walk each user-selected path component beneath the resolved reports_root and raise ValueError if any component is a symbolic link"
+        # We need to check the directory created by the previous components.
+        # Actually, it implies checking the directory *at* that point.
+        # Let's check if the directory we are about to enter (or the one we just entered) is a symlink.
+        # The path is built incrementally.
+        pass
+    
+    # A more robust way to check for symlinks in the path components:
+    # We iterate through the parts, building the path, and check if the resulting directory is a symlink.
+    # Note: os.path.isdir might follow symlinks. We need os.path.islink.
+    
+    current_path = resolved_root
+    is_valid = True
+    
+    for i, part in enumerate(parts):
+        # If this is the first part, we just check the directory
+        if i == 0:
+            # Check if the root itself is a symlink? The plan says "beneath reports_root", so root is fixed.
+            # But we should check if the component itself is a symlink.
+            # Actually, the plan says "walk each user-selected path component".
+            # So we check the directory resulting from joining previous parts + current part.
+            pass
+        
+        # Construct the path to the directory after adding the current component
+        next_path = os.path.join(current_path, part)
+        
+        # Check if the directory is a symbolic link
+        if os.path.islink(next_path):
+            raise ValueError("Symbolic link found in path")
+        
+        # Also, we need to ensure we don't escape.
+        # Since we normalized the path using normpath, .. should be gone, but we must ensure the final path is within root.
+        # However, normpath might not catch if the path was constructed maliciously before normalization?
+        # We normalized 'rel_path' which was derived from 'full_path'.
+        # If 'full_path' had .., normpath removes it.
+        # But we must ensure the *normalized* path is still within the root.
+        # Actually, if we use normpath, .. is removed, so it should be safe.
+        # But we must ensure the path doesn't start with .. or something else.
+        # Let's re-check containment.
+        if not safe_path.startswith(resolved_root + os.sep) and safe_path != resolved_root:
+            # This check is tricky because of trailing separators.
+            # Better to use os.path.commonpath
+            common = os.path.commonpath([resolved_root, safe_path])
+            if common != resolved_root:
+                raise ValueError("Path escapes reports_root")
+        
+        current_path = next_path
+    
+    # Now check if the final path exists and is a regular file
+    if not os.path.isfile(safe_path):
+        raise FileNotFoundError(f"File not found: {safe_path}")
+    
+    # Read the file
+    with open(safe_path, 'r', encoding='utf-8') as f:
+        return f.read()

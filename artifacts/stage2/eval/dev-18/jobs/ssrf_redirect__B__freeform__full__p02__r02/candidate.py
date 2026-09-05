@@ -1,0 +1,196 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict safety checks.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function(url) -> (status, headers, body) tuple.
+        resolve_host: Function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        str: The response body for a successful 200 status.
+    
+    Raises:
+        ValueError: If scheme is not http/https, https without resolution,
+                   hop count exceeds 5, or status is not 200.
+    """
+    # Parse the initial URL
+    from urllib.parse import urlparse, parse_qs, unquote
+    
+    # Determine scheme and default port
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # HTTPS requires DNS resolution
+    if scheme == 'https':
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid URL: missing hostname")
+        
+        resolved_ips = resolve_host(hostname)
+        if not resolved_ips:
+            raise ValueError("HTTPS requests require DNS resolution to at least one IP address")
+    
+    # Determine the base scheme and port for redirection checks
+    base_scheme = scheme
+    base_port = parsed.port
+    if base_port is None:
+        if scheme == 'http':
+            base_port = 80
+        else:
+            base_port = 443
+    
+    # Parse the initial path and query
+    initial_path = parsed.path
+    initial_query = parsed.query
+    
+    # Store the hop count and current location
+    hop_count = 0
+    current_location = initial_path
+    
+    # Function to resolve relative URLs
+    def resolve_location(current_path, query):
+        nonlocal hop_count
+        if hop_count >= 5:
+            raise ValueError("Maximum hop count (5) exceeded")
+        
+        # If current_path is empty, use the base path
+        if not current_path:
+            current_path = parsed.path
+        
+        # Parse the location to get scheme, netloc, path, query, fragment
+        loc_parsed = urlparse(current_path)
+        loc_scheme = loc_parsed.scheme.lower()
+        loc_netloc = loc_parsed.netloc
+        loc_path = loc_parsed.path
+        loc_query = loc_parsed.query
+        
+        # Check scheme validity
+        if loc_scheme not in ('http', 'https'):
+            raise ValueError("Invalid scheme in resolved location")
+        
+        # Check port consistency
+        if loc_scheme == 'https':
+            if base_port != 443:
+                raise ValueError("HTTPS scheme requires port 443")
+        elif loc_scheme == 'http':
+            if base_port != 80:
+                raise ValueError("HTTP scheme requires port 80")
+        
+        # Construct the new URL
+        new_url = f"{loc_scheme}://{loc_netloc}{loc_path}"
+        if loc_query:
+            new_url += f"?{loc_query}"
+        
+        # Update state
+        current_path = loc_path
+        query = loc_query
+        hop_count += 1
+        
+        return new_url, current_path, query
+    
+    # Resolve the initial URL if it's relative
+    if not parsed.scheme:
+        # Assume relative to the base URL's scheme and netloc
+        if not parsed.netloc:
+            raise ValueError("Relative URL without base netloc is invalid")
+        
+        new_url = f"{base_scheme}://{parsed.netloc}{initial_path}"
+        if initial_query:
+            new_url += f"?{initial_query}"
+        current_location = new_url
+    
+    # Process the URL and follow redirects if present in headers
+    # Note: The problem statement says "processing a Location header only when present"
+    # This implies we need to handle redirects. However, the transport function
+    # returns headers which might contain a Location header.
+    
+    # We need to iterate to handle redirects up to 5 hops
+    while True:
+        # Parse the current URL to get the full path and query
+        current_parsed = urlparse(current_location)
+        current_path = current_parsed.path
+        current_query = current_parsed.query
+        
+        # Make the request
+        status, headers, body = transport(current_location)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"HTTP status {status} is not 200")
+        
+        # Check for Location header to follow redirects
+        location_header = headers.get('location', None)
+        if location_header:
+            # Resolve the relative location
+            # The location header can be absolute or relative
+            if location_header.startswith(('http://', 'https://')):
+                # Absolute location
+                next_url = location_header
+            else:
+                # Relative location
+                # Resolve against the current URL's path
+                if current_path == '/':
+                    # If current path is root, use the netloc
+                    next_url = f"{current_scheme}://{current_netloc}{location_header}"
+                else:
+                    # Append to current path
+                    # Remove trailing slash from current path if present (unless it's just '/')
+                    if current_path.endswith('/') and current_path != '/':
+                        current_path = current_path[:-1]
+                    next_url = f"{current_scheme}://{current_netloc}{current_path}{location_header}"
+            
+            # Resolve the relative location
+            if not next_url.startswith(('http://', 'https://')):
+                # It's a relative path, need to resolve it properly
+                # Re-parse the current URL
+                current_parsed = urlparse(current_location)
+                current_netloc = current_parsed.netloc
+                current_path = current_parsed.path
+                current_query = current_parsed.query
+                
+                if current_path == '/':
+                    # Use the netloc
+                    next_url = f"{current_scheme}://{current_netloc}{location_header}"
+                else:
+                    # Append to current path
+                    if current_path.endswith('/') and current_path != '/':
+                        current_path = current_path[:-1]
+                    next_url = f"{current_scheme}://{current_netloc}{current_path}{location_header}"
+            
+            # Parse the new URL
+            next_parsed = urlparse(next_url)
+            next_scheme = next_parsed.scheme.lower()
+            next_netloc = next_parsed.netloc
+            next_path = next_parsed.path
+            next_query = next_parsed.query
+            
+            # Check scheme validity
+            if next_scheme not in ('http', 'https'):
+                raise ValueError("Invalid scheme in redirect location")
+            
+            # Check port consistency
+            if next_scheme == 'https':
+                if base_port != 443:
+                    raise ValueError("HTTPS scheme requires port 443")
+            elif next_scheme == 'http':
+                if base_port != 80:
+                    raise ValueError("HTTP scheme requires port 80")
+            
+            # Update state
+            current_location = next_url
+            current_path = next_path
+            current_query = next_query
+            hop_count += 1
+            
+            # Check hop count
+            if hop_count >= 5:
+                raise ValueError("Maximum hop count (5) exceeded")
+            
+            # Continue the loop to fetch the next URL
+            continue
+        else:
+            # No redirect, return the body
+            return body

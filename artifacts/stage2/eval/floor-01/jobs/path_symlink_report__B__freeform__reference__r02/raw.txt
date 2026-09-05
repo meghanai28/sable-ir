@@ -1,0 +1,53 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Untrusted input filename.
+        reports_root: Root directory for safe access.
+    
+    Returns:
+        The UTF-8 text of the validated report.
+    
+    Raises:
+        ValueError: If the path escapes reports_root or is a symbolic link pointing outside.
+        FileNotFoundError: If the file does not exist or is not a regular file.
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the initial candidate path
+    candidate_path = os.path.abspath(filename)
+    
+    # Check if the candidate path is absolute
+    if os.path.isabs(filename):
+        # If the user provides an absolute path, it must be within reports_root
+        if not candidate_path.startswith(resolved_root + os.sep) and candidate_path != resolved_root:
+            raise ValueError("Access denied: Absolute path escapes reports_root")
+    
+    # Normalize the path to remove .. segments and resolve any symlinks in the name
+    # We need to check containment before following symlinks for the directory part
+    # First, ensure the path is within the root without following symlinks yet
+    safe_path = os.path.normpath(os.path.join(resolved_root, filename))
+    
+    # Check if the normalized path escapes the root
+    if not (safe_path == resolved_root or safe_path.startswith(resolved_root + os.sep)):
+        raise ValueError("Access denied: Path escapes reports_root")
+    
+    # Now resolve the full target path, following symbolic links
+    # We use os.path.realpath which resolves symlinks
+    resolved_target = os.path.realpath(safe_path)
+    
+    # Check if the resolved target is still within the reports_root
+    if not (resolved_target == resolved_root or resolved_target.startswith(resolved_root + os.sep)):
+        raise ValueError("Access denied: Symbolic link escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"File not found: {resolved_target}")
+    
+    # Read the file content as UTF-8
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

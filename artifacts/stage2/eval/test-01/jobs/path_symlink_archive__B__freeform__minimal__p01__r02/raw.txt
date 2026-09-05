@@ -1,0 +1,89 @@
+import os
+import tarfile
+import stat
+
+def _validate_and_normalize_paths(tar_path: str, dest_path: str) -> bool:
+    """Validate that dest_path is within the filesystem root and normalize it."""
+    try:
+        dest_dir = os.path.realpath(dest_path)
+        # Ensure the destination is not outside the root
+        if not dest_dir.startswith(os.sep) and dest_dir != '.':
+            return False
+        return True
+    except (ValueError, OSError):
+        return False
+
+def _is_within_dest(member_name: str, dest_path: str) -> bool:
+    """Check if a member's resolved destination stays within dest_path."""
+    try:
+        # Calculate the full path where the member would be extracted
+        member_path = os.path.join(dest_path, member_name)
+        # Resolve the path to check for .. escapes
+        resolved_path = os.path.realpath(member_path)
+        return resolved_path.startswith(os.path.realpath(dest_path))
+    except (ValueError, OSError):
+        return False
+
+def _validate_member(member: tarfile.TarFileMember, dest_path: str) -> bool:
+    """Validate a specific archive member to ensure it doesn't escape dest_path."""
+    member_name = member.name
+    if not member_name:
+        return True
+
+    # For regular files and directories, check the path directly
+    if member.isfile() or member.isdir():
+        return _is_within_dest(member_name, dest_path)
+    
+    # For symlinks and hardlinks, resolve the target
+    if member.issym() or member.islnk():
+        link_target = member.linkname
+        if link_target:
+            # Resolve the link target to check for .. escapes
+            resolved_target = os.path.realpath(os.path.join(dest_path, link_target))
+            return resolved_target.startswith(os.path.realpath(dest_path))
+    
+    # For hardlinks, resolve the target
+    if member.islnk():
+        link_target = member.linkname
+        if link_target:
+            resolved_target = os.path.realpath(os.path.join(dest_path, link_target))
+            return resolved_target.startswith(os.path.realpath(dest_path))
+    
+    return True
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully with all members validated,
+        False otherwise.
+    """
+    # Validate paths first
+    if not _validate_and_normalize_paths(tar_path, dest_path):
+        return False
+    
+    try:
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Walk through members before extracting
+            for member in tar.getmembers():
+                if not _validate_member(member, dest_path):
+                    return False
+            
+            # Extract members
+            for member in tar.getmembers():
+                if not _validate_member(member, dest_path):
+                    return False
+                member.dir = os.path.dirname(member.name)
+                member.external_attr = member.external_attr >> 16
+                tar.extract(member, dest_path)
+    
+    except (tarfile.TarError, OSError):
+        return False
+    
+    return True

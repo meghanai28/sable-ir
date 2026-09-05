@@ -1,0 +1,63 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch (may be absolute, contain .. segments, or point to a redirect).
+        transport: A function(url) that returns a (status, headers, body) tuple.
+        resolve_host: A function(hostname) that returns textual IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if resolve_host returns no IP,
+                   or if any redirect is followed.
+    """
+    # Parse the URL to get scheme and netloc
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    
+    # GUARD: Check the request scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Extract the hostname
+    hostname = parsed.netloc
+    # Remove port if present for resolution (though we'll use the full host for the call)
+    # The plan says resolve_host returns IP addresses, we need to pass the hostname
+    # Typically resolve_host takes the hostname part, possibly with port stripped or handled internally.
+    # Assuming resolve_host expects the hostname string.
+    
+    # GUARD: Resolve the hostname
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("resolve_host returned no IP addresses.")
+    
+    # GUARD: Follow only the initial destination. Do not follow redirects.
+    # We must use the parsed netloc directly, ignoring any redirects.
+    # The transport function will handle the connection. We just need to ensure we don't
+    # follow redirects. The plan states "raise ValueError for every redirect response".
+    # Since we cannot inspect the body of the transport call without calling it,
+    # and the instruction is to "follow only the initial destination",
+    # we assume the transport function returns the response for the initial URL.
+    # If the transport function internally follows redirects, we are in trouble,
+    # but the specification says "raise ValueError for every redirect response".
+    # This implies we should check the status code of the response returned by transport.
+    # If status is 3xx, we raise ValueError.
+    
+    status, headers, body = transport(url)
+    
+    # GUARD: Check for redirects. The plan says "raise ValueError for every redirect response".
+    # HTTP redirects are typically 301, 302, 303, 307, 308.
+    # We check the status code.
+    if 300 <= status < 400:
+        raise ValueError("Redirects are not allowed.")
+    
+    # EFFECT: Return the response body for status 200
+    if status != 200:
+        raise ValueError("Only status 200 responses are allowed.")
+    
+    return body

@@ -1,0 +1,22 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    # Resolve the target directory to a canonical path
+    target_dir = os.path.realpath(reports_root)
+    
+    # Resolve the requested file path to a canonical path, following symlinks
+    # os.path.realpath resolves the filename relative to reports_root if it's not absolute
+    # and then canonicalizes the resulting path.
+    target_path = os.path.realpath(os.path.join(reports_root, filename))
+    
+    # Check if the resolved path escapes the reports_root directory
+    if not target_path.startswith(target_dir + os.sep) and target_path != target_dir:
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"The file '{filename}' does not exist or is not a regular file")
+    
+    # Read the file content
+    with open(target_path, 'r', encoding='utf-8') as f:
+        return f.read()

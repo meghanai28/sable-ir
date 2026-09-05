@@ -1,0 +1,63 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    Rejects symbolic links and hard links. Returns True on success, False on failure.
+    """
+    try:
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extracting
+            members = tar.getmembers()
+            
+            for member in members:
+                # Skip directories to avoid creating them unnecessarily, 
+                # but we need to check file paths for safety.
+                # Actually, we need to extract files and directories, just not links.
+                pass
+            
+            # Extract members with safety checks
+            for member in members:
+                # Skip symbolic links and hard links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Get the full target path
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Resolve the target path to ensure it's within dest_path
+                # We need to handle the case where member.name might have .. or absolute paths
+                # However, tarfile.getmembers() names are relative to the archive root
+                # We must ensure the resolved path is under dest_path
+                
+                # Get the directory of the target
+                target_dir = os.path.dirname(target_path)
+                
+                # Check if the target directory is within dest_path
+                # Use os.path.commonpath to check if target_dir is under dest_path
+                # But we must be careful with .. components
+                try:
+                    common_path = os.path.commonpath([dest_path, target_dir])
+                    if common_path != dest_path:
+                        return False
+                except ValueError:
+                    # This can happen if paths are on different drives (Windows) or invalid
+                    return False
+                
+                # Extract the member
+                try:
+                    tar.extract(member, dest_path)
+                except Exception:
+                    return False
+            
+            return True
+            
+    except Exception:
+        return False

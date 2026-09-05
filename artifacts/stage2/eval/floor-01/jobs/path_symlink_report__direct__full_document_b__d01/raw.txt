@@ -1,0 +1,53 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagates FileNotFoundError for a missing ordinary file and raises ValueError when the request is disallowed.
+    """
+    # Construct the full path
+    full_path = os.path.join(reports_root, filename)
+    
+    # Resolve the complete target path to check for symlinks
+    resolved_path = os.path.realpath(full_path)
+    
+    # Confirm the resolved target remains inside the approved root
+    if not resolved_path.startswith(reports_root.rstrip(os.sep)):
+        raise ValueError("Access denied: resolved path is outside the approved root.")
+    
+    # Check if the path exists
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(f"The file {filename} does not exist.")
+    
+    # Check if it is a directory
+    if os.path.isdir(full_path):
+        raise ValueError("Access denied: the path is a directory.")
+    
+    # Check if it is a symbolic link (even if resolved, verify it points to a valid file within root)
+    # The realpath check above handles the symlink target, but we also ensure it's not a broken link
+    if not os.path.islink(full_path):
+        pass  # It's a real file or a symlink to a real file (covered by realpath)
+    else:
+        # If it's a symlink, we already checked the resolved path, but we should ensure it's a valid file type
+        if not os.path.isfile(resolved_path):
+            raise ValueError("Access denied: symbolic link points to a non-file.")
+    
+    # Ensure it's a regular file (not a device file, FIFO, socket, etc.)
+    try:
+        file_stat = os.stat(full_path)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("Access denied: not a regular file.")
+    except OSError as e:
+        raise FileNotFoundError(f"Cannot access file: {e}") from e
+    
+    # Read the file content as UTF-8
+    try:
+        with open(full_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except UnicodeDecodeError:
+        raise ValueError("File encoding is not valid UTF-8.")
+    except PermissionError:
+        raise ValueError("Permission denied.")
+    except Exception as e:
+        raise ValueError(f"Error reading file: {e}")

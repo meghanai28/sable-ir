@@ -1,0 +1,117 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict scheme/port validation and redirect following.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function(url) -> (status, headers, body) tuple.
+        resolve_host: Function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        str: Body of the response for status 200.
+    
+    Raises:
+        ValueError: For disallowed schemes, ports, or redirect loops/invalid redirects.
+    """
+    from urllib.parse import urlparse, urljoin
+    
+    # Parse initial URL
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Validate scheme and port
+    allowed_schemes = {'http', 'https'}
+    allowed_ports = {80 if scheme == 'http' else 443}
+    
+    if scheme not in allowed_schemes:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    if port is not None and port not in allowed_ports:
+        raise ValueError(f"Disallowed port: {port}")
+    
+    # Resolve initial hostname
+    initial_host = parsed.hostname
+    if not initial_host:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    initial_ips = resolve_host(initial_host)
+    if not initial_ips:
+        raise ValueError(f"No IP addresses found for {initial_host}")
+    
+    # Normalize the initial destination for comparison
+    # We need to capture the scheme, port, and the DNS/public address
+    # The plan says: "same scheme, port, DNS, and public address"
+    # We'll use the tuple (scheme, port, set of IPs) as the fingerprint.
+    initial_fingerprint = (scheme, port, frozenset(initial_ips))
+    
+    current_url = url
+    hops = 0
+    
+    while hops < 5:
+        # Resolve current URL's hostname
+        current_parsed = urlparse(current_url)
+        current_host = current_parsed.hostname
+        
+        if not current_host:
+            raise ValueError("Invalid URL: missing hostname")
+        
+        current_ips = resolve_host(current_host)
+        if not current_ips:
+            raise ValueError(f"No IP addresses found for {current_host}")
+        
+        # Check fingerprint match (scheme, port, DNS/IPs)
+        current_fingerprint = (current_parsed.scheme, current_parsed.port, frozenset(current_ips))
+        
+        if current_fingerprint != initial_fingerprint:
+            raise ValueError("Redirect destination has different scheme, port, or DNS/IP")
+        
+        # Transport the request
+        status, headers, body = transport(current_url)
+        
+        if status == 200:
+            return body
+        
+        # Parse Location header for redirect
+        location = None
+        for header_name, header_value in headers.items():
+            if header_name.lower() == 'location':
+                location = header_value
+                break
+        
+        if not location:
+            # No Location header, no redirect
+            if status != 200:
+                raise ValueError(f"Unexpected status: {status}")
+            return body
+        
+        # Resolve the Location URL
+        resolved_location = urljoin(current_url, location)
+        
+        # Parse the resolved location
+        redirect_parsed = urlparse(resolved_location)
+        
+        # Validate redirect URL scheme and port
+        if redirect_parsed.scheme.lower() not in allowed_schemes:
+            raise ValueError(f"Invalid redirect scheme: {redirect_parsed.scheme}")
+        if redirect_parsed.port is not None and redirect_parsed.port not in allowed_ports:
+            raise ValueError(f"Invalid redirect port: {redirect_parsed.port}")
+        
+        # Resolve hostname of redirect
+        redirect_host = redirect_parsed.hostname
+        if not redirect_host:
+            raise ValueError("Invalid redirect URL: missing hostname")
+        
+        redirect_ips = resolve_host(redirect_host)
+        if not redirect_ips:
+            raise ValueError(f"No IP addresses found for redirect host: {redirect_host}")
+        
+        # Check fingerprint match for redirect
+        redirect_fingerprint = (redirect_parsed.scheme, redirect_parsed.port, frozenset(redirect_ips))
+        if redirect_fingerprint != initial_fingerprint:
+            raise ValueError("Redirect destination has different scheme, port, or DNS/IP")
+        
+        # Update current URL and increment hop count
+        current_url = resolved_location
+        hops += 1
+    
+    raise ValueError("Too many redirects (max 5)")

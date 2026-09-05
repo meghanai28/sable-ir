@@ -1,0 +1,114 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive will be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize and resolve the destination path
+        dest_path = os.path.normpath(dest_path)
+        dest_dir = os.path.dirname(dest_path)
+        dest_base = os.path.basename(dest_path)
+        
+        # Ensure the destination directory exists
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir)
+        
+        # Validate that dest_path doesn't escape its own directory
+        if not dest_path.startswith(dest_dir) or dest_path == dest_dir:
+            return False
+            
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the root of the archive (first member's path)
+            archive_root = None
+            for member in tar.getmembers():
+                if member.isdir():
+                    archive_root = member.name
+                    break
+                elif member.name:
+                    archive_root = member.name
+                    break
+            
+            # If no root found, use empty string
+            if archive_root is None:
+                archive_root = ''
+            
+            # Validate all members
+            for member in tar.getmembers():
+                # Skip directories that don't need to be validated (they are handled by extraction)
+                if member.isdir():
+                    continue
+                    
+                # Check for absolute paths
+                if os.path.isabs(member.name):
+                    return False
+                
+                # Check for .. components
+                if '..' in member.name:
+                    return False
+                
+                # Resolve the member's path relative to the archive root
+                resolved_name = os.path.join(archive_root, member.name)
+                resolved_name = os.path.normpath(resolved_name)
+                
+                # Ensure the resolved name is within the archive root
+                if not resolved_name.startswith(archive_root) or resolved_name == archive_root:
+                    return False
+                
+                # Check if the member is a symlink
+                if member.issym():
+                    # For symlinks, check if the target is within the archive root
+                    # The target is relative to the archive root
+                    target_path = os.path.join(archive_root, member.linkname)
+                    target_path = os.path.normpath(target_path)
+                    
+                    # Ensure the target is within the archive root
+                    if not target_path.startswith(archive_root) or target_path == archive_root:
+                        return False
+                
+                # Validate the final destination path
+                final_dest = os.path.join(dest_dir, dest_base, resolved_name)
+                final_dest = os.path.normpath(final_dest)
+                
+                # Ensure the final destination is within the dest_dir
+                if not final_dest.startswith(dest_dir) or final_dest == dest_dir:
+                    return False
+            
+            # Extract the archive
+            # Use extractall with a custom filter to ensure we don't extract anything outside dest_path
+            # We'll extract to a temporary directory first, then move to dest_path
+            with tempfile.TemporaryDirectory() as temp_dir:
+                tar.extractall(temp_dir)
+                
+                # Move the extracted files to the destination
+                for root, dirs, files in os.walk(temp_dir):
+                    for d in dirs:
+                        src = os.path.join(root, d)
+                        dst = os.path.join(dest_dir, dest_base, os.path.relpath(src, temp_dir))
+                        if not os.path.exists(os.path.dirname(dst)):
+                            os.makedirs(os.path.dirname(dst))
+                        shutil.move(src, dst)
+                    for f in files:
+                        src = os.path.join(root, f)
+                        dst = os.path.join(dest_dir, dest_base, os.path.relpath(src, temp_dir))
+                        shutil.move(src, dst)
+                
+                # Clean up the temporary directory
+                shutil.rmtree(temp_dir)
+            
+            return True
+            
+    except Exception:
+        return False

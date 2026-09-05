@@ -1,0 +1,68 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path with security checks.
+    
+    Returns True if extraction completes successfully, False otherwise.
+    No archive members are written outside dest_path if validation fails.
+    """
+    try:
+        # Normalize the destination path to an absolute path without resolving symlinks yet
+        # We need to ensure we don't escape the root before extracting
+        dest_path = os.path.normpath(dest_path)
+        
+        # Resolve the destination to an absolute path
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members
+            members = tar.getnames()
+            
+            # Validate each member
+            for member in members:
+                # Check for absolute paths
+                if member.startswith('/'):
+                    raise ValueError(f"Archive contains absolute path: {member}")
+                
+                # Construct the target path within the destination
+                target_path = os.path.join(resolved_dest, member)
+                
+                # Normalize the target path to resolve .. and .
+                # This helps detect path traversal attempts
+                normalized_target = os.path.normpath(target_path)
+                
+                # Check if the normalized target escapes the destination root
+                # We use os.path.abspath to resolve .. segments
+                if not normalized_target.startswith(resolved_dest) and not normalized_target == resolved_dest:
+                    raise ValueError(f"Archive member would escape destination: {member} -> {normalized_target}")
+                
+                # Check for symbolic or hard links
+                if member in tar.getmembers():
+                    member_info = tar.getmembers()[member]
+                    
+                    # Check if it's a symlink
+                    if member_info.issym() or member_info.islnk():
+                        # Resolve the link target
+                        link_target = member_info.linkname
+                        
+                        # Normalize the link target
+                        normalized_link_target = os.path.normpath(os.path.join(resolved_dest, link_target))
+                        
+                        # Check if the link target escapes the destination
+                        if not normalized_link_target.startswith(resolved_dest) and not normalized_link_target == resolved_dest:
+                            raise ValueError(f"Archive contains symlink escaping destination: {member} -> {link_target}")
+    
+            # If all validations pass, extract the archive
+            tar.extractall(path=resolved_dest)
+            
+            return True
+            
+    except Exception as e:
+        return False

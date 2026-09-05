@@ -1,0 +1,131 @@
+import socket
+import urllib.parse
+from typing import Tuple, List, Optional
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL following HTTP/HTTPS redirects.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A function that takes a (host, port) tuple and returns a (status, headers, body) tuple.
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, status is not 200, or validation fails.
+    """
+    current_url = url
+    hop_count = 0
+    max_hops = 5
+    
+    while hop_count <= max_hops:
+        # Parse current URL
+        parsed = urllib.parse.urlparse(current_url)
+        
+        # Validate scheme
+        if parsed.scheme not in ['http', 'https']:
+            raise ValueError("Only HTTP and HTTPS schemes are allowed")
+        
+        # Determine default port
+        default_port = 80 if parsed.scheme == 'http' else 443
+        
+        # Resolve hostname
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid URL: missing hostname")
+            
+        ip_addresses = resolve_host(hostname)
+        if not ip_addresses:
+            raise ValueError(f"DNS resolution failed for {hostname}")
+        
+        # Select first IP address for connection (or all if needed by transport logic)
+        # The spec says "bind to the default port", implying a single connection per hop
+        # We'll use the first resolved IP
+        target_host = ip_addresses[0]
+        target_port = default_port
+        
+        # Attempt to establish connection and get response
+        try:
+            status, headers, body = transport((target_host, target_port))
+        except Exception as e:
+            raise ValueError(f"Connection failed: {str(e)}")
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Parse Location header if present
+        location_header = headers.get('Location')
+        if location_header:
+            hop_count += 1
+            if hop_count > max_hops:
+                raise ValueError("Maximum redirect hops exceeded")
+            
+            # Parse Location header
+            try:
+                location_parsed = urllib.parse.urlparse(location_header)
+            except Exception:
+                raise ValueError(f"Invalid Location header format: {location_header}")
+            
+            # Validation checks for Location
+            # 1. Same scheme
+            if location_parsed.scheme != parsed.scheme:
+                raise ValueError(f"Location scheme mismatch: {location_parsed.scheme} != {parsed.scheme}")
+            
+            # 2. Same port (default or explicit)
+            current_port = parsed.port or default_port
+            location_port = location_parsed.port or default_port
+            
+            if current_port != location_port:
+                raise ValueError(f"Location port mismatch: {location_port} != {current_port}")
+            
+            # 3. Host must be resolvable
+            new_hostname = location_parsed.hostname
+            if not new_hostname:
+                raise ValueError(f"Invalid hostname in Location: {location_parsed.netloc}")
+            
+            resolved_ips = resolve_host(new_hostname)
+            if not resolved_ips:
+                raise ValueError(f"DNS resolution failed for Location host: {new_hostname}")
+            
+            # 4. Update current URL to Location
+            current_url = location_header
+            continue
+        
+        # No redirect or end of redirects
+        break
+    
+    return body
+
+def resolve_host(hostname: str) -> List[str]:
+    """
+    Resolve a hostname to its IP addresses.
+    This is a placeholder implementation.
+    """
+    try:
+        ip = socket.gethostbyname(hostname)
+        return [ip]
+    except socket.gaierror:
+        return []
+
+def transport(url_tuple: Tuple[str, int]) -> Tuple[int, dict, str]:
+    """
+    Transport function that simulates a TCP connection.
+    This is a placeholder implementation.
+    """
+    host, port = url_tuple
+    
+    # Create a dummy socket connection (non-blocking for safety in this context)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        sock.connect((host, port))
+        sock.close()
+    except Exception as e:
+        return (400, {}, f"Connection error: {str(e)}")
+    
+    # Simulate a response
+    return (200, {'Location': 'http://example.com'}, 'Hello World')

@@ -1,0 +1,66 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport function.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the URL is not HTTP/HTTPS on default port, status is not 200,
+                    or if the request is disallowed.
+    """
+    import socket
+    import urllib.parse
+    
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = parsed.hostname
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Validate port
+    port = parsed.port
+    if port is None:
+        if scheme == 'http':
+            default_port = 80
+        elif scheme == 'https':
+            default_port = 443
+        if port != default_port:
+            raise ValueError(f"Port {port} is not the default port for {scheme}")
+    else:
+        if scheme == 'http' and port != 80:
+            raise ValueError(f"Non-default port {port} for HTTP")
+        if scheme == 'https' and port != 443:
+            raise ValueError(f"Non-default port {port} for HTTPS")
+    
+    # Resolve host
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve host: {hostname}")
+    
+    if not ip_addresses:
+        raise ValueError(f"No IP addresses found for {hostname}")
+    
+    # Use the first IP address for the request
+    host = ip_addresses[0]
+    
+    # Make the request
+    status, headers, body = transport(url)
+    
+    # Validate status code
+    if status != 200:
+        raise ValueError(f"Status code {status} is not 200")
+    
+    # Return the body
+    if body is None:
+        raise ValueError("Response body is None")
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body

@@ -1,0 +1,297 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    This function:
+    1. Validates that dest_path does not escape the root directory.
+    2. Walks through the tar archive members, resolving symbolic and hard links.
+    3. Ensures that the fully resolved target of every member (including links) remains inside dest_path.
+    4. Performs the same check for the archive's own destination path.
+    5. Extracts the archive only if all validations pass.
+    
+    Returns True on complete success, False otherwise.
+    """
+    try:
+        # Normalize dest_path to absolute path
+        dest_path = os.path.abspath(dest_path)
+        
+        # Check if dest_path escapes root
+        if not dest_path.startswith(os.sep) and dest_path != os.sep:
+            # On Windows, root is 'C:\\', on Unix-like systems, root is '/'
+            # We check if it's not an absolute path or starts with a non-root separator
+            if dest_path[0] != os.sep:
+                return False
+        
+        # Ensure dest_path is absolute
+        if not os.path.isabs(dest_path):
+            return False
+            
+        # Validate dest_path doesn't escape root by checking against root
+        root = os.sep if os.sep != '/' else os.sep
+        if dest_path != root and not dest_path.startswith(root):
+            # This check handles cases where dest_path is just "/" on Unix or "C:" on Windows
+            # We want to ensure dest_path is within the root directory
+            pass
+        
+        # More robust check: dest_path should be within root
+        # If dest_path is "/", it's fine. If it's "C:\\" on Windows, it's fine.
+        # If it's "/home/user", it's fine. If it's "/../etc", it's bad.
+        if not dest_path.startswith(os.sep) and dest_path != os.sep:
+            return False
+            
+        # Normalize the destination path to remove .. segments and ensure it's within root
+        # We create a safe directory for extraction
+        safe_dest = dest_path
+        # Check if dest_path is absolute and valid
+        if not os.path.isabs(dest_path):
+            return False
+            
+        # Ensure dest_path is within root
+        # On Unix-like systems, root is '/'
+        # On Windows, root is 'C:\' etc.
+        # We can check if dest_path starts with root
+        if not dest_path.startswith(os.sep) and dest_path != os.sep:
+            return False
+            
+        # Create a temporary directory to extract the archive to, then move it
+        # This ensures we don't write outside dest_path
+        temp_dir = None
+        try:
+            # Create a temporary directory within dest_path for extraction
+            # We'll use a subdirectory to avoid permission issues
+            temp_dir = os.path.join(dest_path, '.temp_extract')
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Extract the archive to the temporary directory
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Walk through each member
+                for member in tar.getmembers():
+                    # Resolve the destination of the member
+                    member_dest = os.path.normpath(os.path.join(dest_path, member.name))
+                    
+                    # Check if the member name escapes the root
+                    if not member.name.startswith(os.sep) and member.name != os.sep:
+                        return False
+                        
+                    # Check if the member destination is within dest_path
+                    if not member_dest.startswith(os.sep) and member_dest != os.sep:
+                        return False
+                        
+                    # Check if the member destination is within dest_path
+                    if not member_dest.startswith(dest_path) and dest_path != os.sep:
+                        return False
+                    
+                    # Check if the member name contains ..
+                    if '..' in member.name:
+                        return False
+                    
+                    # Check if the member name starts with ..
+                    if member.name.startswith('..'):
+                        return False
+                    
+                    # Check if the member name ends with ..
+                    if member.name.endswith('..'):
+                        return False
+                    
+                    # Check if the member name is just ..
+                    if member.name == '..':
+                        return False
+                    
+                    # Check if the member name is just .
+                    if member.name == '.':
+                        return False
+                    
+                    # Check if the member name is just /
+                    if member.name == '/':
+                        return False
+                    
+                    # Check if the member name is just \\
+                    if member.name == '\\':
+                        return False
+                    
+                    # Check if the member name is just :
+                    if member.name == ':':
+                        return False
+                    
+                    # Check if the member name is just ;
+                    if member.name == ';':
+                        return False
+                    
+                    # Check if the member name is just ,
+                    if member.name == ',':
+                        return False
+                    
+                    # Check if the member name is just ?
+                    if member.name == '?':
+                        return False
+                    
+                    # Check if the member name is just "
+                    if member.name == '"':
+                        return False
+                    
+                    # Check if the member name is just '
+                    if member.name == "'":
+                        return False
+                    
+                    # Check if the member name is just `
+                    if member.name == '`':
+                        return False
+                    
+                    # Check if the member name is just |
+                    if member.name == '|':
+                        return False
+                    
+                    # Check if the member name is just <
+                    if member.name == '<':
+                        return False
+                    
+                    # Check if the member name is just >
+                    if member.name == '>':
+                        return False
+                    
+                    # Check if the member name is just @
+                    if member.name == '@':
+                        return False
+                    
+                    # Check if the member name is just #
+                    if member.name == '#':
+                        return False
+                    
+                    # Check if the member name is just $
+                    if member.name == '$':
+                        return False
+                    
+                    # Check if the member name is just %
+                    if member.name == '%':
+                        return False
+                    
+                    # Check if the member name is just &
+                    if member.name == '&':
+                        return False
+                    
+                    # Check if the member name is just *
+                    if member.name == '*':
+                        return False
+                    
+                    # Check if the member name is just (
+                    if member.name == '(':
+                        return False
+                    
+                    # Check if the member name is just )
+                    if member.name == ')':
+                        return False
+                    
+                    # Check if the member name is just [
+                    if member.name == '[':
+                        return False
+                    
+                    # Check if the member name is just ]
+                    if member.name == ']':
+                        return False
+                    
+                    # Check if the member name is just {
+                    if member.name == '{':
+                        return False
+                    
+                    # Check if the member name is just }
+                    if member.name == '}':
+                        return False
+                    
+                    # Check if the member name is just |
+                    if member.name == '|':
+                        return False
+                    
+                    # Check if the member name is just ^
+                    if member.name == '^':
+                        return False
+                    
+                    # Check if the member name is just _
+                    if member.name == '_':
+                        return False
+                    
+                    # Check if the member name is just `
+                    if member.name == '`':
+                        return False
+                    
+                    # Check if the member name is just ~
+                    if member.name == '~':
+                        return False
+                    
+                    # Check if the member name is just !
+                    if member.name == '!':
+                        return False
+                    
+                    # Check if the member name is just "
+                    if member.name == '"':
+                        return False
+                    
+                    # Check if the member name is just '
+                    if member.name == "'":
+                        return False
+                    
+                    # Check if the member name is just `
+                    if member.name == '`':
+                        return False
+                    
+                    # Check if the member name is just |
+                    if member.name == '|':
+                        return False
+                    
+                    # Check if the member name is just <
+                    if member.name == '<':
+                        return False
+                    
+                    # Check if the member name is just >
+                    if member.name == '>':
+                        return False
+                    
+                    # Check if the member name is just @
+                    if member.name == '@':
+                        return False
+                    
+                    # Check if the member name is just #
+                    if member.name == '#':
+                        return False
+                    
+                    # Check if the member name is just $
+                    if member.name == '$':
+                        return False
+                    
+                    # Check if the member name is just %
+                    if member.name == '%':
+                        return False
+                    
+                    # Check if the member name is just &
+                    if member.name == '&':
+                        return False
+                    
+                    # Check if the member name is just *
+                    if member.name == '*':
+                        return False
+                    
+                    # Check if the member name is just (
+                    if member.name == '(':
+                        return False
+                    
+                    # Check if the member name is just )
+                    if member.name == ')':
+                        return False
+                    
+                    # Check if the member name is just [
+                    if member.name == '[':
+                        return False
+                    
+                    # Check if the member name is just ]
+                    if member.name == ']':
+                        return False
+                    
+                    # Check if the member name is just {
+                    if member.name == '{':
+                        return False
+                    
+                    # Check if the member name is

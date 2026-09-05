@@ -1,0 +1,56 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Returns True if extraction completes successfully, False otherwise.
+    No files are written outside dest_path on failure.
+    """
+    try:
+        # Normalize and resolve the destination path
+        dest_path = os.path.normpath(dest_path)
+        dest_dir = os.path.dirname(dest_path)
+        dest_file = os.path.basename(dest_path) if dest_path else dest_dir
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_dir, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members of the archive
+            members = tar.getnames()
+            
+            # Validate each member to ensure it doesn't escape the destination
+            for member in members:
+                # Resolve the member path relative to the destination
+                member_dir = os.path.dirname(member)
+                member_file = os.path.basename(member) if member else dest_file
+                
+                # Construct the full path
+                full_member_dir = os.path.normpath(os.path.join(dest_dir, member_dir))
+                full_member_file = os.path.normpath(os.path.join(full_member_dir, member_file))
+                
+                # Check for escape attempts
+                if not full_member_file.startswith(dest_dir) and not (dest_dir and full_member_file == dest_dir):
+                    return False
+                
+                # Also check if the member itself is just a directory (no file extension)
+                # and ensure it's within bounds
+                if member_file == '' or member_file == '.':
+                    if not full_member_dir.startswith(dest_dir) and not (dest_dir and full_member_dir == dest_dir):
+                        return False
+            
+            # Extract the archive
+            tar.extractall(dest_dir)
+            
+            # Verify the extraction was successful by checking if the destination exists
+            if not os.path.exists(dest_dir):
+                return False
+                
+            return True
+            
+    except Exception:
+        return False

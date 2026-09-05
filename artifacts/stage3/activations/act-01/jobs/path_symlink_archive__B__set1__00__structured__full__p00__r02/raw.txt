@@ -1,0 +1,94 @@
+import os
+import tarfile
+import stat
+import shutil
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    This function ensures that no file or directory is extracted outside of dest_path,
+    even if the tar archive contains absolute paths, relative paths with '..' segments,
+    or symbolic links pointing outside the destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully and safely, False otherwise.
+    """
+    try:
+        # Resolve the canonical path of the destination directory to prevent
+        # path traversal attacks via symlinks or '..' in the archive.
+        dest_dir = os.path.realpath(dest_path)
+        
+        # Ensure the destination directory exists
+        if not os.path.isdir(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Calculate the target path for the member
+                target_path = os.path.join(dest_dir, member.name)
+                
+                # Resolve the canonical path of the target to detect escapes
+                try:
+                    # Use realpath to resolve symlinks and normalize the path
+                    # This catches cases where member.name contains '..' or is an absolute path
+                    canonical_target = os.path.realpath(target_path)
+                except (ValueError, OSError):
+                    return False
+                
+                # Check if the canonical target is within the destination directory
+                if not canonical_target.startswith(dest_dir + os.sep) and canonical_target != dest_dir:
+                    return False
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    # Create the directory if it doesn't exist
+                    if not os.path.exists(canonical_target):
+                        os.makedirs(canonical_target)
+                else:
+                    # For non-directory members, check if the directory exists first
+                    if not os.path.exists(os.path.dirname(canonical_target)):
+                        os.makedirs(os.path.dirname(canonical_target))
+                    
+                    # Extract the file
+                    tar.extract(member, dest_dir)
+                
+                # Check for symbolic links and validate their targets
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    
+                    # Resolve the canonical path of the link target
+                    try:
+                        # Construct the full path to the link target
+                        link_target_path = os.path.join(dest_dir, member.name)
+                        canonical_link_target = os.path.realpath(link_target_path)
+                    except (ValueError, OSError):
+                        return False
+                    
+                    # Check if the resolved link target is within the destination directory
+                    if not canonical_link_target.startswith(dest_dir + os.sep) and canonical_link_target != dest_dir:
+                        return False
+                    
+                    # Create the symbolic link only if the target is safe
+                    if os.path.exists(canonical_link_target) or os.path.islink(canonical_link_target):
+                        os.symlink(link_target, link_target_path)
+                    else:
+                        # If the target doesn't exist, we still create the symlink
+                        # but we must ensure the link itself doesn't escape
+                        if canonical_link_target.startswith(dest_dir + os.sep) or canonical_link_target == dest_dir:
+                            os.symlink(link_target, link_target_path)
+                        else:
+                            return False
+        
+        return True
+    
+    except Exception:
+        return False

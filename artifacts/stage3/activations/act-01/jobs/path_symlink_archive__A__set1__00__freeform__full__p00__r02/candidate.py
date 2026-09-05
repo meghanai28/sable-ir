@@ -1,0 +1,52 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Returns:
+        bool: True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve the root directory for validation
+        dest_path = os.path.realpath(dest_path)
+        root = os.path.dirname(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Skip directories to avoid creating them, only extract files
+                if member.isdir():
+                    continue
+                
+                # Resolve the target path for the member
+                target_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the target path to prevent path traversal
+                target_path = os.path.normpath(target_path)
+                
+                # Ensure the target path is within the root directory
+                if not target_path.startswith(root + os.sep) and target_path != root:
+                    return False
+                
+                # Check if the member is a symbolic link
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Check if the member is a hard link
+                if member.islnk():
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+                
+    except Exception:
+        return False
+    
+    return True

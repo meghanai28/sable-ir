@@ -1,0 +1,140 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The body of the HTTP response if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not http or https, or if a redirect leads to an untrusted destination.
+    """
+    # Parse the initial URL
+    from urllib.parse import urlparse, parse_qs
+    
+    parsed_url = urlparse(url)
+    
+    # Validate scheme
+    if parsed_url.scheme.lower() not in ('http', 'https'):
+        raise ValueError("Only http and https schemes are allowed")
+    
+    # Validate port
+    default_port = {'http': 80, 'https': 444}[parsed_url.scheme.lower()]
+    if parsed_url.port is not None and parsed_url.port != default_port:
+        raise ValueError("Only default ports are allowed")
+    
+    # Resolve initial hostname
+    current_host = parsed_url.hostname
+    if current_host is None:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    resolved_ips = resolve_host(current_host)
+    if not resolved_ips:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Validate DNS resolution
+    for ip in resolved_ips:
+        if not is_valid_public_address(ip):
+            raise ValueError("DNS resolution failed: invalid address")
+    
+    # Current URL for redirect following
+    current_url = parsed_url
+    
+    # Follow redirects (max 5)
+    for _ in range(5):
+        status, headers, body = transport(current_url.geturl())
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+        
+        # Handle redirects
+        if 'location' in headers:
+            redirect_url = headers['location']
+            current_url = parse_redirect_url(current_url, redirect_url)
+            if current_url is None:
+                raise ValueError("Invalid redirect URL")
+            
+            # Resolve redirect hostname
+            redirect_host = current_url.hostname
+            if redirect_host is None:
+                raise ValueError("Invalid redirect URL: missing hostname")
+            
+            # Validate redirect hostname
+            if redirect_host.lower() not in current_host.lower():
+                raise ValueError("Redirect to untrusted hostname")
+            
+            # Resolve redirect DNS
+            resolved_ips = resolve_host(redirect_host)
+            if not resolved_ips:
+                raise ValueError("Failed to resolve redirect hostname")
+            
+            for ip in resolved_ips:
+                if not is_valid_public_address(ip):
+                    raise ValueError("DNS resolution failed: invalid address")
+            
+            # Validate port
+            if current_url.port is not None and current_url.port != default_port:
+                raise ValueError("Redirect to non-default port not allowed")
+    
+    raise ValueError("Too many redirects")
+
+
+def parse_redirect_url(current_url: urlparse, redirect_url: str) -> urlparse:
+    """
+    Parse a redirect URL and update the current URL.
+    
+    Args:
+        current_url: The current URL.
+        redirect_url: The Location header value.
+    
+    Returns:
+        The updated URL or None if invalid.
+    """
+    # Parse the redirect URL
+    redirect_parsed = urlparse(redirect_url)
+    
+    # If no scheme, assume same scheme as current URL
+    if not redirect_parsed.scheme:
+        redirect_parsed = current_url._replace(scheme=current_url.scheme, netloc=current_url.netloc, path=redirect_url)
+    
+    # Validate path
+    if not redirect_parsed.path:
+        return None
+    
+    # Validate query
+    if redirect_parsed.query:
+        try:
+            parse_qs(redirect_parsed.query)
+        except ValueError:
+            return None
+    
+    # Validate fragment
+    if redirect_parsed.fragment:
+        return None
+    
+    return redirect_parsed
+
+
+def is_valid_public_address(ip: str) -> bool:
+    """
+    Validate that an IP address is public and valid.
+    
+    Args:
+        ip: The IP address string.
+    
+    Returns:
+        True if valid, False otherwise.
+    """
+    try:
+        # Check if it's a valid IPv4 or IPv6 address
+        import socket
+        socket.inet_aton(ip) if ':' not in ip else socket.inet_pton(socket.AF_INET6, ip)
+        return True
+    except (socket.error, ValueError):
+        return False

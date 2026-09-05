@@ -1,0 +1,190 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize paths to remove trailing slashes and resolve relative components
+        # We must ensure dest_path is absolute and safe before any operations
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Check if dest_path escapes the root directory
+        real_dest = os.path.realpath(dest_path)
+        if not real_dest.startswith(os.path.realpath('/')):
+            # On Windows, this check needs adjustment, but for Linux/Unix-like systems,
+            # checking if it starts with the root is sufficient.
+            # More robustly, we check if it's outside the current working directory's parent
+            # However, the spec says "escapes the root", implying / on Unix.
+            # Let's use a safer approach: ensure it's not a symlink to something outside /
+            if os.path.islink(dest_path):
+                real_dest = os.path.realpath(dest_path)
+            if not real_dest.startswith('/'):
+                return False
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        # Create a temporary directory for safe extraction if needed, 
+        # but the spec says "without writing any archive member outside dest_path".
+        # The safest approach is to extract to a temp dir, validate all paths, then move.
+        # However, the spec implies we can extract directly if we validate beforehand.
+        # To be absolutely safe against race conditions or symlink attacks, 
+        # we will extract to a temp location, validate, then copy/move.
+        
+        # Actually, the most secure way without writing outside dest_path during validation:
+        # 1. Open tar.
+        # 2. Iterate members.
+        # 3. For each member, resolve the target path (if link) and check if it's under dest_path.
+        # 4. If valid, extract to a temp subdirectory within dest_path? No, that complicates.
+        # 5. Standard safe extraction: Extract to a temp dir, validate all resolved paths, then move to dest.
+        # But the spec says "without writing any archive member outside dest_path".
+        # If we extract to temp, we are writing outside dest_path temporarily.
+        # The spec likely means "do not leave data outside dest_path after completion" or "fail immediately if any member would escape".
+        # "Do all of this validation before extracting any archive content" suggests we validate first.
+        # "return False if validation or extraction fails, without writing any archive member outside dest_path"
+        # This implies if we fail, we shouldn't have written anything.
+        # So: Validate first. If valid, extract. If invalid, do nothing.
+        
+        # Let's implement strict validation first.
+        
+        # Check if tar_path is safe (basic check, assuming tarfile handles it)
+        if not os.path.isfile(tar_path):
+            return False
+            
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members
+            members = tar.getmembers()
+            
+            # Validate each member
+            for member in members:
+                # Resolve the destination path for this member
+                dest_member = os.path.join(dest_path, member.name)
+                
+                # If it's a symlink or hardlink, we need to resolve the target
+                if member.issym() or member.islnk():
+                    # For symlinks, the target is stored in the tar
+                    # We need to resolve the target relative to dest_path
+                    # tarfile member.name is the name in the archive.
+                    # If it's a symlink, member.linkname is the target.
+                    # We must resolve linkname relative to dest_path.
+                    
+                    # Check if the linkname itself escapes dest_path
+                    # If linkname is absolute, it's dangerous
+                    if os.path.isabs(member.linkname):
+                        # Absolute linkname is dangerous if it points outside dest_path
+                        # But we only care if it points outside dest_path
+                        # Resolve it
+                        resolved_link = os.path.normpath(os.path.join(dest_path, member.linkname))
+                        if not resolved_link.startswith(os.path.realpath('/')):
+                            # On Unix, if it doesn't start with /, it might be relative to current dir
+                            # We should normalize it
+                            resolved_link = os.path.normpath(resolved_link)
+                            if not resolved_link.startswith(os.path.realpath('/')):
+                                # It might be safe if it's under dest_path?
+                                # No, if it's absolute, it's checked. If relative, we join with dest_path.
+                                pass
+                    
+                    # Actually, the safest check:
+                    # If the member is a symlink, the target is member.linkname.
+                    # We must ensure that resolving member.linkname relative to dest_path doesn't escape.
+                    # But wait, if the member is a symlink, the extraction creates a symlink pointing to linkname.
+                    # The target of the symlink is linkname.
+                    # We need to check if linkname resolves to something outside dest_path.
+                    
+                    # Let's resolve the target relative to dest_path
+                    # If member.linkname is absolute, it's a problem if it's not under dest_path
+                    # If relative, join with dest_path
+                    
+                    # Normalize the linkname
+                    linkname = member.linkname
+                    
+                    # If absolute, check if it's under dest_path
+                    if os.path.isabs(linkname):
+                        resolved_target = linkname
+                    else:
+                        resolved_target = os.path.normpath(os.path.join(dest_path, linkname))
+                    
+                    # Check if resolved_target escapes root
+                    if not resolved_target.startswith(os.path.realpath('/')):
+                        # This is a bit tricky on Windows, but for Linux:
+                        # If it doesn't start with /, it's relative to current dir.
+                        # We should ensure it's under dest_path.
+                        # But the spec says "escapes the root".
+                        # Let's assume root is /
+                        # If resolved_target is not under /, it's invalid?
+                        # No, if it's relative, it's relative to current dir.
+                        # We must ensure it's under dest_path.
+                        # But the spec says "escapes the root".
+                        # Let's assume we are on a Unix-like system where root is /.
+                        # If resolved_target starts with /, check if it's under dest_path.
+                        # If not, return False.
+                        pass
+                    
+                    # Check if resolved_target is under dest_path
+                    # Use os.path.commonpath or simple prefix check
+                    # Normalize both
+                    real_dest = os.path.realpath(dest_path)
+                    real_target = os.path.realpath(resolved_target)
+                    
+                    if not real_target.startswith(real_dest + os.sep) and real_target != real_dest:
+                        # It escapes or is outside
+                        return False
+                    
+                    # Also check for .. in the linkname itself
+                    if '..' in linkname.split(os.sep):
+                        return False
+                        
+                else:
+                    # Regular file
+                    # Check if the member name contains ..
+                    if '..' in member.name.split(os.sep):
+                        return False
+                    
+                    # Check if the member name is absolute (shouldn't be in tar, but safe to check)
+                    if os.path.isabs(member.name):
+                        return False
+                    
+                    # Check if the resolved path escapes
+                    real_member = os.path.normpath(os.path.join(dest_path, member.name))
+                    real_dest = os.path.realpath(dest_path)
+                    
+                    if not real_member.startswith(real_dest + os.sep) and real_member != real_dest:
+                        return False
+            
+            # Validation passed, now extract
+            # To be safe, extract to a temp dir, validate, then move?
+            # The spec says "without writing any archive member outside dest_path".
+            # If we extract to temp, we are writing outside dest_path.
+            # But the spec says "Do all of this validation before extracting any archive content".
+            # So we validate first. Then extract.
+            # If we extract to dest_path directly, we might fail if a symlink points to a non-existent file?
+            # No, tarfile handles that.
+            # But what if a symlink points to a file that gets created later?
+            # We assume the archive is static.
+            
+            # Let's extract to dest_path directly.
+            # But wait, if we have a symlink, we extract the symlink.
+            # If we have a hardlink, we create the hardlink.
+            # The spec says "a symbolic-link or hard-link whose resolved target stays inside dest_path may be extracted".
+            
+            # So we can extract directly.
+            for member in members:
+                member_dir = os.path.dirname(member.name)
+                if member_dir:
+                    os.makedirs(os.path.join(dest_path, member_dir), exist_ok=True)
+                
+                if member.isdir():
+                    os.makedirs(os.path.join(dest_path, member.name), exist_ok

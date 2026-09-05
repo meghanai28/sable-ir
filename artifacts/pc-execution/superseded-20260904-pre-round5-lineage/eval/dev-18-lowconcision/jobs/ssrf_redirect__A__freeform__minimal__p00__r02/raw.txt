@@ -1,0 +1,30 @@
+import socket
+from urllib.parse import urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    parsed = urlparse(url)
+    
+    # Reject absolute URLs
+    if parsed.scheme in ('http', 'https'):
+        raise ValueError("Absolute URLs are disallowed")
+    
+    # Resolve hostname and validate
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    
+    # Determine the port based on scheme
+    default_port = 80 if parsed.scheme == 'http' else 443
+    
+    # Call transport to establish connection and get response
+    status, headers, body = transport(url)
+    
+    # Validate status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

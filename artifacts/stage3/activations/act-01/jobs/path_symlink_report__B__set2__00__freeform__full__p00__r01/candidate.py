@@ -1,0 +1,45 @@
+import os
+import sys
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file to read.
+        reports_root: The root directory containing reports.
+    
+    Returns:
+        The UTF-8 text of the report.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the filename is disallowed (e.g., escapes reports_root).
+    """
+    # Normalize the root to an absolute path to prevent path traversal via relative paths
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the full path by joining the root and the filename
+    # We use os.path.join to keep the path components together, but we must handle the filename carefully
+    requested_path = os.path.abspath(os.path.join(resolved_root, filename))
+    
+    # Check for path traversal attempts before resolving symlinks
+    # If the absolute path of the joined string starts with the resolved root, it's potentially safe from traversal
+    # However, we need to ensure it doesn't escape via .. even if the join looks okay
+    if not requested_path.startswith(resolved_root + os.sep) and requested_path != resolved_root:
+        raise ValueError("Path traversal attempt detected")
+    
+    # Resolve the path, following symbolic links
+    resolved_path = os.path.realpath(requested_path)
+    
+    # Check if the resolved path is still within the reports_root directory
+    if not resolved_path.startswith(resolved_root + os.sep) and resolved_path != resolved_root:
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read and return the UTF-8 text
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_report__A__set1__00__freeform__minimal__p00__r01",
+  "role": "render",
+  "plan_job_id": "path_symlink_report__A__set1__00__freeform__minimal__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import os\n\ndef read_report(filename: str, reports_root: str) -> str:\n    \"\"\"\n    Read and return the requested UTF-8 report beneath reports_root.\n    Propagate FileNotFoundError for a missing ordinary file and raise ValueError when the request is disallowed.\n    \"\"\"\n    # Resolve the root directory to ensure we work with an absolute path\n    resolved_root = os.path.abspath(reports_root)\n    \n    # Normalize the requested filename to handle .. and . segments\n    # We resolve it relative to the root first, then check if it's absolute\n    if os.path.isabs(filename):\n        requested_path = os.path.normpath(filename)\n    else:\n        requested_path = os.path.normpath(os.path.join(reports_root, filename))\n    \n    # Resolve the target path to check for escapes\n    resolved_target = os.path.normpath(os.path.abspath(requested_path))\n    \n    # Security Check 1: Ensure the resolved path is within the reports_root\n    # We use os.path.commonpath to verify the path structure, or simply check prefix\n    # A robust check ensures the resolved path starts with the root plus a separator (or is the root itself)\n    if not (resolved_target == resolved_root or resolved_target.startswith(resolved_root + os.sep)):\n        raise ValueError(\"Path escapes the reports_root directory.\")\n    \n    # Security Check 2: Walk each user-selected path component beneath the resolved reports_root\n    # and raise ValueError if any component is a symbolic link.\n    # We split the path into components and check each one.\n    parts = os.path.normpath(requested_path).split(os.sep)\n    current_path = resolved_root\n    \n    for part in parts:\n        if part == '' or part == '.':\n            continue\n        if part == '..':\n            # This should not happen after normpath on the final path, but if it did,\n            # we need to ensure we don't traverse up. However, normpath handles .. in the final string.\n            # The instruction says \"walk each user-selected path component\", implying we check the components of the normalized path.\n            pass\n        \n        # Check if the current directory (or the link we are about to follow) is a symlink\n        # We check the directory we are entering. If it's a symlink, disallow.\n        if os.path.islink(current_path):\n            raise ValueError(\"Symbolic link found in path components.\")\n        \n        # Move into the component\n        current_path = os.path.join(current_path, part)\n    \n    # After walking components, check the final target again for symlinks (in case the file itself is a symlink)\n    if os.path.islink(resolved_target):\n        raise ValueError(\"Symbolic link found in requested path.\")\n    \n    # Final validation: Ensure the file exists and is a regular file\n    if not os.path.isfile(resolved_target):\n        raise FileNotFoundError(f\"The file {filename} does not exist or is not a regular file.\")\n    \n    # Read the file\n    with open(resolved_target, 'r', encoding='utf-8') as f:\n        return f.read()",
+    "prompt_tokens": 236,
+    "output_tokens": 668,
+    "finish_reason": "stop",
+    "latency_seconds": 31.628,
+    "seed": 372526339
+  },
+  "prompt_sha256": "e0cc5e776388649b856afe0c36a0096db0e3617c9467b0e9728f2ccc7fed358f",
+  "candidate_path": "jobs/path_symlink_report__A__set1__00__freeform__minimal__p00__r01/candidate.py",
+  "candidate_sha256": "3c947663e7b496a8ba472a4469f96c615c943b5e5c609c91e879175db486df15",
+  "extraction": "raw_text",
+  "error": null
+}

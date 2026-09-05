@@ -1,0 +1,71 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with security validations.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    # Create a temporary directory for the extraction process
+    # This ensures we never write outside the intended destination
+    with tempfile.TemporaryDirectory() as temp_extract_dir:
+        try:
+            # Copy the tar file to the temporary directory to ensure we're working with a local copy
+            # This prevents any path traversal attacks via the tar_path argument
+            temp_tar_path = os.path.join(temp_extract_dir, os.path.basename(tar_path))
+            shutil.copy2(tar_path, temp_tar_path)
+            
+            # Open the tar file in read-only mode
+            with tarfile.open(temp_tar_path, 'r:*') as tar:
+                # Get the original destination path
+                original_dest = dest_path
+                
+                # Create the destination directory if it doesn't exist
+                os.makedirs(dest_path, exist_ok=True)
+                
+                # Extract the archive to the temporary directory
+                tar.extractall(temp_extract_dir)
+                
+                # Validate all extracted members before moving them to the destination
+                for member in tar.getnames():
+                    # Resolve the full path of the member
+                    member_path = os.path.join(temp_extract_dir, member)
+                    
+                    # Check if the member is a symbolic link or hard link
+                    if os.path.islink(member_path) or os.path.islink(member_path):
+                        return False
+                    
+                    # Check if the member is a directory
+                    if os.path.isdir(member_path):
+                        # Create the directory in the destination
+                        dest_dir = os.path.join(dest_path, member)
+                        os.makedirs(dest_dir, exist_ok=True)
+                    else:
+                        # Check if the member is a regular file
+                        if os.path.isfile(member_path):
+                            # Create the directory structure in the destination
+                            dest_dir = os.path.join(dest_path, member)
+                            os.makedirs(os.path.dirname(dest_dir), exist_ok=True)
+                            
+                            # Copy the file to the destination
+                            shutil.copy2(member_path, dest_dir)
+                        
+                        # Check if the member is a symlink (even though we checked earlier, this is a safety check)
+                        elif os.path.islink(member_path):
+                            return False
+                        
+                # Clean up the temporary directory
+                shutil.rmtree(temp_extract_dir)
+                
+                return True
+                
+        except Exception:
+            return False

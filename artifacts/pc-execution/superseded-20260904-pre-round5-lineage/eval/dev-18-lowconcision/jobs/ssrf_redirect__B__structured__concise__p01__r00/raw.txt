@@ -1,0 +1,75 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Reject absolute URLs
+    if url.startswith(('http://', 'https://')):
+        raise ValueError("Absolute URLs are disallowed")
+    
+    # Resolve the hostname
+    try:
+        hostname = resolve_host(url)
+    except ValueError:
+        raise ValueError("Hostname resolution failed")
+    
+    if not hostname:
+        raise ValueError("Hostname did not resolve to a finite IP address")
+    
+    # Parse the URL components
+    parsed = parse_url(url)
+    if parsed is None:
+        raise ValueError("Invalid URL format")
+    
+    # Validate scheme and port
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Scheme must be http or https")
+    
+    default_port = {'http': 80, 'https': 444}[parsed.scheme]
+    if parsed.port != default_port:
+        raise ValueError("Port must be the default port for the scheme")
+    
+    # Resolve relative URLs if necessary
+    if not parsed.is_absolute:
+        current_url = url
+        for _ in range(5):
+            if parsed.is_relative:
+                current_url = resolve_relative(current_url, parsed)
+                if not current_url:
+                    raise ValueError("Failed to resolve relative URL")
+                parsed = parse_url(current_url)
+                if parsed is None:
+                    raise ValueError("Invalid resolved URL format")
+            else:
+                break
+    
+    # Validate final resolved destination
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Final resolved scheme must be http or https")
+    
+    default_port = {'http': 80, 'https': 444}[parsed.scheme]
+    if parsed.port != default_port:
+        raise ValueError("Final resolved port must be the default port")
+    
+    # Make the request
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    return body
+
+def parse_url(url: str) -> dict:
+    """Parse a URL and return its components."""
+    try:
+        if url.startswith(('http://', 'https://')):
+            return {'scheme': url[:5], 'path': url[5:], 'is_absolute': True}
+        else:
+            return {'scheme': '', 'path': url, 'is_absolute': False}
+    except:
+        return None
+
+def resolve_relative(current_url: str, parsed: dict) -> str:
+    """Resolve a relative URL against the current URL."""
+    if not parsed['is_absolute']:
+        return None
+    if not current_url.endswith('/'):
+        current_url += '/'
+    return current_url + parsed['path']

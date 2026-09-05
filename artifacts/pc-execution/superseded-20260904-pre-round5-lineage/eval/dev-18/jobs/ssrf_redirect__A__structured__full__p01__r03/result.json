@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__A__structured__full__p01__r03",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__A__structured__full__p01",
+  "status": "generated",
+  "generation": {
+    "text": "def fetch_text(url: str, transport, resolve_host) -> str:\n    from urllib.parse import urlparse, urljoin, parse_qs\n    import socket\n\n    def is_safe_subpath(target_url: str, origin_url: str) -> bool:\n        \"\"\"Check if target_url is a subpath of origin_url.\"\"\"\n        try:\n            target_parsed = urlparse(target_url)\n            origin_parsed = urlparse(origin_url)\n            # Scheme and netloc must match\n            if target_parsed.scheme != origin_parsed.scheme or target_parsed.netloc != origin_parsed.netloc:\n                return False\n            # Path must be within origin path\n            # If origin path is empty, target must be absolute or relative to origin\n            if not origin_parsed.path:\n                return False\n            # Normalize paths to handle .. and .\n            origin_path_parts = [p for p in origin_parsed.path.split('/') if p and p != '..']\n            target_path_parts = [p for p in target_parsed.path.split('/') if p and p != '..']\n            \n            # Target must start with origin path\n            if not (target_path_parts[:len(origin_path_parts)] == origin_path_parts):\n                return False\n            return True\n        except Exception:\n            return False\n\n    # Parse initial URL\n    initial_parsed = urlparse(url)\n    \n    # Check scheme and port\n    if initial_parsed.scheme not in ('http', 'https'):\n        raise ValueError(\"Only HTTP and HTTPS are allowed\")\n    \n    # Resolve hostname\n    hostname = initial_parsed.hostname\n    if not hostname:\n        raise ValueError(\"Invalid URL\")\n    \n    ip_addresses = resolve_host(hostname)\n    if not ip_addresses:\n        raise ValueError(\"resolve_host returned no IP addresses\")\n    \n    # Determine target URL for connection\n    target_url = url\n    \n    # Handle redirects\n    while True:\n        status, headers, body = transport(target_url)\n        \n        if status == 300:\n            # Multiple Choice - follow first Location if present\n            location = headers.get('Location')\n            if location:\n                target_url = location\n                continue\n            else:\n                raise ValueError(\"Redirect without Location header\")\n        \n        if status == 301 or status == 302 or status == 303 or status == 307 or status == 308:\n            # Redirect\n            location = headers.get('Location')\n            if not location:\n                raise ValueError(\"Redirect without Location header\")\n            \n            # Resolve the new URL\n            new_parsed = urlparse(location)\n            target_url = new_parsed.geturl()\n            \n            # Check if the new URL is safe (subpath)\n            if not is_safe_subpath(target_url, initial_parsed.geturl()):\n                raise ValueError(\"Redirect to unsafe URL\")\n            \n            continue\n        \n        if status != 200:\n            raise ValueError(f\"Unexpected status code: {status}\")\n        \n        # Return body\n        return body.decode('utf-8') if isinstance(body, bytes) else body\n\n    raise ValueError(\"Unexpected response\")",
+    "prompt_tokens": 300,
+    "output_tokens": 657,
+    "finish_reason": "stop",
+    "latency_seconds": 27.876,
+    "seed": 194938004
+  },
+  "prompt_sha256": "e481726282062dd462779b9925e42ac653a091d88b3ea6657c73d73a363b2158",
+  "candidate_path": "jobs/ssrf_redirect__A__structured__full__p01__r03/candidate.py",
+  "candidate_sha256": "0b8b510e9941a3a99ce7f36c335e1144feb937f7803d3a4fed252a4e452ed1a0",
+  "extraction": "raw_text",
+  "error": null
+}

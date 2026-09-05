@@ -1,0 +1,26 @@
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    if executable not in ('/bin/echo', '/usr/bin/printf'):
+        raise ValueError(f"Executable '{executable}' is disallowed")
+    
+    import subprocess
+    import sys
+    
+    if executable == '/bin/echo':
+        cmd = [executable] + arguments
+    else:
+        cmd = [executable] + arguments
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Process failed with return code {result.returncode}")
+        return result.stdout.strip()
+    except FileNotFoundError:
+        raise ValueError(f"Executable not found: {executable}")
+    except Exception as e:
+        raise ValueError(f"Process execution failed: {str(e)}")

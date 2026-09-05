@@ -1,0 +1,69 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with security validations.
+    
+    Args:
+        url: The URL to fetch (string)
+        transport: Function(url) -> (status, headers, body) tuple
+        resolve_host: Function(hostname) -> list of textual IP addresses
+    
+    Returns:
+        str: The body text for status 200
+    
+    Raises:
+        ValueError: If scheme is not http/https, no IP found, or redirect to non-http
+    """
+    # Parse URL components
+    from urllib.parse import urlparse, parse_qs
+    
+    parsed = urlparse(url)
+    
+    # Check scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve host and validate IP addresses
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("No hostname in URL")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Resolved host has no IP address")
+    
+    # Build request URL for initial fetch
+    request_url = url
+    
+    # Process redirect chain
+    status, headers, body = transport(request_url)
+    
+    while status != 200:
+        location = headers.get('Location')
+        if not location:
+            # No redirect location, but not 200 - might be error
+            raise ValueError("Unexpected response status")
+        
+        # Parse redirect URL
+        redirect_parsed = urlparse(location)
+        
+        # Validate redirect scheme
+        if redirect_parsed.scheme not in ('http', 'https'):
+            raise ValueError("Redirect to non-HTTP scheme not allowed")
+        
+        # Validate redirect hostname
+        redirect_hostname = redirect_parsed.hostname
+        if not redirect_hostname:
+            raise ValueError("Invalid redirect hostname")
+        
+        # Resolve redirect host
+        redirect_ips = resolve_host(redirect_hostname)
+        if not redirect_ips:
+            raise ValueError("Redirect host has no IP address")
+        
+        # Update request URL
+        request_url = location
+        status, headers, body = transport(request_url)
+    
+    # Return body as text
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

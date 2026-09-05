@@ -1,0 +1,45 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: Untrusted input filename.
+        reports_root: Root directory where the report should be located.
+        
+    Returns:
+        The UTF-8 text of the validated report.
+        
+    Raises:
+        FileNotFoundError: If the file does not exist or is not an ordinary file.
+        ValueError: If the resolved path escapes the reports_root.
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Join the filename with the root directory
+    requested_path = os.path.join(resolved_root, filename)
+    
+    # Resolve the requested path, following symbolic links
+    resolved_path = os.path.realpath(requested_path)
+    
+    # Check if the resolved path is within the reports_root
+    # We need to ensure the resolved_path starts with the resolved_root,
+    # possibly followed by a separator to avoid issues with trailing separators
+    if not (resolved_path == resolved_root or resolved_path.startswith(os.path.sep + resolved_root + os.path.sep)):
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Check if the file exists and is an ordinary file (not a directory, symlink to directory, etc.)
+    try:
+        file_stat = os.stat(resolved_path)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise FileNotFoundError(f"File is not an ordinary file: {filename}")
+    
+    # Read and return the UTF-8 text
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

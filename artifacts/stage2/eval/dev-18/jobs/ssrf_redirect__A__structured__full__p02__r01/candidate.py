@@ -1,0 +1,53 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolution functions.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the HTTP response as a string if the status code is 200.
+    
+    Raises:
+        ValueError: If the scheme is not 'http' or 'https', or if the resolved host has no IP address.
+    """
+    from urllib.parse import urlparse, parse_qs
+    
+    # Parse the URL to get scheme, netloc, and path
+    parsed = urlparse(url)
+    
+    # Check if the scheme is http or https
+    if parsed.scheme.lower() not in ['http', 'https']:
+        raise ValueError("Only http and https schemes are allowed.")
+    
+    # Resolve the host to get IP addresses
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("No host provided in the URL.")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("The resolved host has no IP address.")
+    
+    # Determine the port based on the scheme
+    port = parsed.port
+    if port is None:
+        if parsed.scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Construct the request URL with the resolved host and port
+    request_url = f"{parsed.scheme}://{hostname}:{port}{parsed.path}"
+    
+    # Make the request
+    status, headers, body = transport(request_url)
+    
+    # Check if the status code is 200
+    if status != 200:
+        raise ValueError(f"HTTP status code is not 200: {status}")
+    
+    # Return the body
+    return body

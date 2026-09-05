@@ -1,0 +1,194 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict scheme/port validation and redirect handling.
+    
+    Args:
+        url: The URL to fetch (untrusted input).
+        transport: A callable that returns (status, headers, body) for a given URL.
+        resolve_host: A callable that returns a list of textual IP addresses for a hostname.
+    
+    Returns:
+        The response body as a string if status is 200.
+    
+    Raises:
+        ValueError: If the scheme/port is invalid, redirects are unsafe, or status is not 200.
+    """
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    valid_schemes = ('http', 'https')
+    valid_ports = {'http': 80, 'https': 443}
+    
+    if parsed.scheme not in valid_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed.scheme}")
+    
+    scheme = parsed.scheme
+    port = parsed.port
+    default_port = valid_ports[scheme]
+    
+    if port is None:
+        port = default_port
+    elif port != default_port:
+        raise ValueError(f"Port {port} not allowed for scheme {scheme}")
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    
+    # Build initial connection URL for transport
+    # We need to construct a URL that transport can use to reach the resolved IPs
+    # However, the transport function likely takes the original URL or a constructed one.
+    # Based on the plan "transport(url) returns...", we assume transport expects the original URL string
+    # but we must ensure the underlying connection logic (if any) uses the resolved IPs.
+    # Since we don't have control over the internal implementation of 'transport', we pass the URL.
+    # The plan says "opening and reading an HTTP response on the specified scheme and port".
+    # We assume 'transport' handles the actual network call. We just validate the result.
+    
+    # Attempt to fetch
+    status, headers, body = transport(url)
+    
+    # Validate status
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Handle redirects
+    location = headers.get('location')
+    max_redirects = 5
+    redirects_count = 0
+    
+    while location and redirects_count < max_redirects:
+        redirects_count += 1
+        
+        # Parse the Location header
+        try:
+            redirect_url = urllib.parse.urlparse(location)
+        except Exception:
+            raise ValueError(f"Invalid redirect URL: {location}")
+        
+        # Check if the redirect URL is absolute
+        if redirect_url.scheme:
+            # Absolute URL
+            if redirect_url.scheme != scheme:
+                raise ValueError(f"Redirect scheme mismatch: {redirect_url.scheme} vs {scheme}")
+            if redirect_url.port is not None and redirect_url.port != port:
+                raise ValueError(f"Redirect port mismatch: {redirect_url.port} vs {port}")
+            # For absolute URLs, credentials are usually preserved if present in the new URL,
+            # but the plan says "same scheme, port, credentials, and DNS/public-address".
+            # We check credentials explicitly if present in either.
+            # Note: If the original URL had credentials and the redirect doesn't, it might be considered different.
+            # The plan implies strict equality.
+            if parsed.username and not redirect_url.username:
+                raise ValueError("Credentials mismatch in redirect URL")
+            if parsed.password and not redirect_url.password:
+                raise ValueError("Credentials mismatch in redirect URL")
+            if redirect_url.username and not parsed.username:
+                raise ValueError("Credentials mismatch in redirect URL")
+            if redirect_url.password and not parsed.password:
+                raise ValueError("Credentials mismatch in redirect URL")
+            
+            # Check DNS resolution (we can't fully validate DNS without resolving, but we check if the host resolves)
+            # The plan says "must have the same ... DNS/public-address". This implies we should verify the resolved IPs match or are consistent.
+            # However, resolving the new hostname might yield different IPs (e.g. load balancing).
+            # A strict interpretation suggests we should only follow redirects to the exact same resolved IP(s) or at least the same hostname.
+            # But typically, "same DNS" means the same hostname. Let's assume we check the hostname resolution.
+            new_hostnames = resolve_host(redirect_url.hostname)
+            if not new_hostnames:
+                raise ValueError(f"Failed to resolve redirect hostname: {redirect_url.hostname}")
+            
+            # Check if the set of resolved IPs is identical to the initial ones
+            if set(new_hostnames) != set(ip_addresses):
+                raise ValueError(f"DNS/IP mismatch in redirect: {redirect_url.hostname}")
+        else:
+            # Relative URL
+            base = urllib.parse.urlunparse(parsed._replace(scheme=scheme, netloc=f"{scheme}:{port}", path=urlparse.urlparse(url).path, params=urlparse.urlparse(url).params, query=urlparse.urlparse(url).query))
+            # Actually, simpler to use urljoin
+            full_redirect = urllib.parse.urljoin(parsed._replace(netloc=f"{scheme}:{port}").geturl(), location)
+            redirect_url = urllib.parse.urlparse(full_redirect)
+            
+            if redirect_url.scheme != scheme:
+                raise ValueError(f"Redirect scheme mismatch in relative URL")
+            if redirect_url.port is not None and redirect_url.port != port:
+                raise ValueError(f"Redirect port mismatch in relative URL")
+            
+            # Check credentials
+            if parsed.username and not redirect_url.username:
+                raise ValueError("Credentials mismatch in relative redirect")
+            if parsed.password and not redirect_url.password:
+                raise ValueError("Credentials mismatch in relative redirect")
+            if redirect_url.username and not parsed.username:
+                raise ValueError("Credentials mismatch in relative redirect")
+            if redirect_url.password and not parsed.password:
+                raise ValueError("Credentials mismatch in relative redirect")
+            
+            # Check DNS
+            new_hostnames = resolve_host(redirect_url.hostname)
+            if not new_hostnames:
+                raise ValueError(f"Failed to resolve redirect hostname: {redirect_url.hostname}")
+            
+            if set(new_hostnames) != set(ip_addresses):
+                raise ValueError(f"DNS/IP mismatch in relative redirect: {redirect_url.hostname}")
+        
+        # Update current URL
+        url = redirect_url.geturl()
+        location = headers.get('location') # Re-fetch or use the parsed one? 
+        # The plan says "follow... each Location header must be resolved". 
+        # Usually we use the Location header value.
+        # We need to parse the new URL to get the headers/body for the next step?
+        # No, the loop is about validating the redirect target.
+        # We need to call transport again on the new URL.
+        # But wait, the plan says "follow at most five HTTP redirects".
+        # So we update url and loop.
+        # We need to re-parse the headers for the new location? No, the location is the target.
+        # We need to call transport on the new URL to get the response.
+        # But we are inside a loop checking the *current* location.
+        # The structure should be:
+        # 1. Fetch.
+        # 2. If Location, check it, then fetch again.
+        
+        # Let's restructure the loop logic properly.
+        pass
+    
+    # Re-evaluating the loop logic based on standard redirect following:
+    # We have the current URL. We fetch. If status 200, return body.
+    # If status 301/302/303/307 with Location, we validate the Location, then fetch the new URL.
+    # We repeat this up to 5 times.
+    
+    # Corrected flow:
+    # 1. Validate initial URL scheme/port.
+    # 2. Resolve initial hostname.
+    # 3. Loop:
+    #    a. Call transport(current_url).
+    #    b. Check status. If not 200, raise.
+    #    c. If status is redirect (3xx) and has Location:
+    #        i. Validate Location (scheme, port, credentials, DNS).
+    #        ii. Update current_url.
+    #        iii. Increment redirect count.
+    #        iv. If count >= 5, raise.
+    #    d. Else, break loop.
+    
+    # We need to handle the redirect loop carefully.
+    # The 'transport' function is stateless per call.
+    
+    # Let's restart the logic with a clean loop.
+    
+    current_url = url
+    redirect_count = 0
+    
+    while True:
+        status, headers, body = transport(current_url)
+        
+        if status == 200:
+            return body
+        
+        # Check for redirect status codes (301, 302, 303, 307, 308)
+        if 300 <= status < 400:

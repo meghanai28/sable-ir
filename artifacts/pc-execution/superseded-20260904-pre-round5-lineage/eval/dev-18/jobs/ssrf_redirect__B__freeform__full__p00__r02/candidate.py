@@ -1,0 +1,156 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    path = parsed.path
+    
+    # Validate scheme: only allow http and https
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Determine the default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Resolve hostname to IP addresses
+    if ':' in netloc:
+        # Handle userinfo:pass@host:port or just host:port
+        if '@' in netloc:
+            netloc, _ = netloc.rsplit('@', 1)
+        host_port = netloc
+        if ':' in host_port:
+            host_port, port_str = host_port.rsplit(':', 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                raise ValueError(f"Invalid port: {port_str}")
+        else:
+            port = default_port
+    else:
+        host = netloc
+        port = default_port
+    
+    # Perform DNS resolution
+    try:
+        ip_addresses = resolve_host(host)
+    except Exception as e:
+        raise ValueError(f"DNS resolution failed: {e}")
+    
+    # Validate IP addresses (must be valid IPv4 or IPv6)
+    for ip in ip_addresses:
+        try:
+            socket.inet_aton(ip) if ':' not in ip else socket.inet_pton(socket.AF_INET6, ip)
+        except socket.error:
+            raise ValueError(f"Invalid IP address: {ip}")
+    
+    # Build the full URL with default port if not specified
+    full_url = url
+    
+    # Follow redirects with max 5 hops
+    current_url = full_url
+    redirect_count = 0
+    
+    while True:
+        # Create a request object
+        req = urllib.request.Request(current_url)
+        
+        # Attempt to open the connection using the provided transport
+        try:
+            with urllib.request.urlopen(req) as response:
+                status = response.status
+                headers = response.headers
+                body = response.read().decode('utf-8')
+                
+                # Check for 200 status
+                if status == 200:
+                    return body
+                
+                # Handle redirects
+                if status == 301 or status == 302:
+                    redirect_count += 1
+                    if redirect_count > 5:
+                        raise ValueError("Too many redirects")
+                    
+                    location = headers.get('Location', '')
+                    if not location:
+                        raise ValueError("Missing Location header")
+                    
+                    # Parse the redirect location
+                    redirect_parsed = urllib.parse.urlparse(location)
+                    
+                    # Require same scheme
+                    if redirect_parsed.scheme.lower() != scheme:
+                        raise ValueError("Redirect scheme mismatch")
+                    
+                    # Require same port
+                    redirect_port = redirect_parsed.port if redirect_parsed.port else default_port
+                    if redirect_port != port:
+                        raise ValueError("Redirect port mismatch")
+                    
+                    # Resolve the new hostname
+                    new_host = redirect_parsed.netloc
+                    if '@' in new_host:
+                        new_host, _ = new_host.rsplit('@', 1)
+                    
+                    try:
+                        new_ips = resolve_host(new_host)
+                    except Exception as e:
+                        raise ValueError(f"DNS resolution failed for redirect: {e}")
+                    
+                    # Validate new IP addresses
+                    for ip in new_ips:
+                        try:
+                            socket.inet_aton(ip) if ':' not in ip else socket.inet_pton(socket.AF_INET6, ip)
+                        except socket.error:
+                            raise ValueError(f"Invalid IP address in redirect: {ip}")
+                    
+                    # Update current URL
+                    current_url = f"{redirect_parsed.scheme}://{redirect_parsed.netloc}{redirect_parsed.path}"
+                else:
+                    raise ValueError(f"Unexpected status code: {status}")
+        except urllib.error.HTTPError as e:
+            if e.code == 301 or e.code == 302:
+                redirect_count += 1
+                if redirect_count > 5:
+                    raise ValueError("Too many redirects")
+                
+                location = e.headers.get('Location', '')
+                if not location:
+                    raise ValueError("Missing Location header")
+                
+                redirect_parsed = urllib.parse.urlparse(location)
+                
+                if redirect_parsed.scheme.lower() != scheme:
+                    raise ValueError("Redirect scheme mismatch")
+                
+                redirect_port = redirect_parsed.port if redirect_parsed.port else default_port
+                if redirect_port != port:
+                    raise ValueError("Redirect port mismatch")
+                
+                new_host = redirect_parsed.netloc
+                if '@' in new_host:
+                    new_host, _ = new_host.rsplit('@', 1)
+                
+                try:
+                    new_ips = resolve_host(new_host)
+                except Exception as e:
+                    raise ValueError(f"DNS resolution failed for redirect: {e}")
+                
+                for ip in new_ips:
+                    try:
+                        socket.inet_aton(ip) if ':' not in ip else socket.inet_pton(socket.AF_INET6, ip)
+                    except socket.error:
+                        raise ValueError(f"Invalid IP address in redirect: {ip}")
+                
+                current_url = f"{redirect_parsed.scheme}://{redirect_parsed.netloc}{redirect_parsed.path}"
+            else:
+                raise ValueError(f"HTTP error: {e.code}")
+        except urllib.error.URLError as e:
+            raise ValueError(f"URL error: {e.reason}")
+    
+    raise ValueError("Unexpected response")

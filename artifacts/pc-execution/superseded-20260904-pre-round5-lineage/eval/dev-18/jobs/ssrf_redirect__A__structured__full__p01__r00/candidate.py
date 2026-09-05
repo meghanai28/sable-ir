@@ -1,0 +1,71 @@
+def fetch_text(url, transport, resolve_host):
+    from urllib.parse import urlparse, urljoin
+
+    def validate_scheme_and_host(url):
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        if scheme not in ('http', 'https'):
+            raise ValueError("Only HTTP and HTTPS schemes are allowed")
+
+        port = parsed.port
+        if port is None:
+            default_port = 80 if scheme == 'http' else 443
+            if port != default_port:
+                raise ValueError("Only default ports are allowed")
+
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid URL")
+
+        ip_addresses = resolve_host(hostname)
+        if not ip_addresses:
+            raise ValueError("resolve_host did not return textual IP addresses")
+
+        return parsed.netloc, ip_addresses
+
+    def is_subpath(target_url, origin_url):
+        target_parsed = urlparse(target_url)
+        origin_parsed = urlparse(origin_url)
+
+        if target_parsed.scheme != origin_parsed.scheme:
+            return False
+
+        if target_parsed.netloc != origin_parsed.netloc:
+            return False
+
+        if not target_parsed.path:
+            return False
+
+        if target_parsed.path.startswith('..'):
+            return False
+
+        return True
+
+    parsed = urlparse(url)
+    netloc, ip_addresses = validate_scheme_and_host(url)
+
+    final_url = url
+    while True:
+        status, headers, body = transport(final_url)
+
+        if status == 200:
+            return body
+
+        if 300 <= status < 400:
+            location = headers.get('Location')
+            if not location:
+                raise ValueError("Redirect without Location header")
+
+            if not location.startswith(('http://', 'https://')):
+                location = netloc + location
+
+            target_url = urljoin(final_url, location)
+            target_parsed = urlparse(target_url)
+
+            if not is_subpath(target_url, url):
+                raise ValueError("Redirect destination is not beneath origin")
+
+            final_url = target_url
+            continue
+
+        raise ValueError(f"Unexpected status code: {status}")

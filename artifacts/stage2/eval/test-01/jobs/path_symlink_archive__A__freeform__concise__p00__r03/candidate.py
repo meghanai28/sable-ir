@@ -1,0 +1,128 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def _is_safe_path(member_name: str, dest_path: str) -> bool:
+    """
+    Check if a tar member name is safe to extract into dest_path.
+    Returns True if the member is safe, False otherwise.
+    """
+    try:
+        # Resolve the member name relative to dest_path
+        # We need to check if the resulting path escapes the root or dest_path
+        dest_path = os.path.normpath(dest_path)
+        
+        # If member_name is absolute, it's unsafe
+        if os.path.isabs(member_name):
+            return False
+        
+        # Construct the potential target path
+        target_path = os.path.join(dest_path, member_name)
+        target_path = os.path.normpath(target_path)
+        
+        # Check if the target escapes the root directory
+        if not target_path.startswith(os.sep) and target_path != os.sep:
+            # On Windows, this check needs to be careful about drive letters
+            # but generally, we want to ensure we don't go above root
+            if target_path.startswith(os.sep):
+                pass  # Safe, inside root
+            else:
+                return False
+        
+        # Check if the target escapes the dest_path
+        # We need to compare the normalized paths
+        if not target_path.startswith(dest_path + os.sep) and target_path != dest_path:
+            return False
+            
+        return True
+    except Exception:
+        return False
+
+def _validate_member(member: tarfile.TarFileMember, dest_path: str) -> bool:
+    """
+    Validate a tar member for safety before extraction.
+    Checks for absolute paths, path traversal, and symbolic/hard link targets.
+    """
+    member_name = member.name
+    member_type = member.type
+    
+    # Check if member name is unsafe
+    if not _is_safe_path(member_name, dest_path):
+        return False
+    
+    # Check for symbolic links
+    if member_type == tarfile.SYMTYPE:
+        linkname = member.linkname
+        # Resolve the link target
+        try:
+            link_target = os.path.normpath(os.path.join(dest_path, linkname))
+            # Check if link target escapes dest_path
+            if not link_target.startswith(dest_path + os.sep) and link_target != dest_path:
+                return False
+        except Exception:
+            return False
+    # Check for hard links
+    elif member_type == tarfile.LINKTYPE:
+        linkname = member.linkname
+        # Resolve the link target
+        try:
+            link_target = os.path.normpath(os.path.join(dest_path, linkname))
+            # Check if link target escapes dest_path
+            if not link_target.startswith(dest_path + os.sep) and link_target != dest_path:
+                return False
+        except Exception:
+            return False
+    
+    return True
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with safety checks.
+    Returns True on complete success, False on any validation or extraction failure.
+    """
+    try:
+        # Normalize and validate dest_path
+        dest_path = os.path.normpath(dest_path)
+        
+        # Check if dest_path escapes the root directory
+        if not dest_path.startswith(os.sep) and dest_path != os.sep:
+            return False
+        
+        # Ensure dest_path is a directory
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of all members
+            members = tar.getmembers()
+            
+            # Validate all members before extraction
+            for member in members:
+                if not _validate_member(member, dest_path):
+                    return False
+            
+            # Extract members
+            for member in members:
+                try:
+                    if member.isdir():
+                        os.makedirs(os.path.join(dest_path, member.name), exist_ok=True)
+                    elif member.issym() or member.islnk():
+                        # Handle symbolic and hard links
+                        if member.issym():
+                            os.symlink(member.linkname, os.path.join(dest_path, member.name))
+                        elif member.islnk():
+                            os.symlink(member.linkname, os.path.join(dest_path, member.name))
+                    else:
+                        # Extract regular files
+                        member_path = os.path.join(dest_path, member.name)
+                        os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                        tar.extract(member, path=dest_path)
+                except Exception:
+                    return False
+            
+            return True
+            
+    except Exception:
+        return False

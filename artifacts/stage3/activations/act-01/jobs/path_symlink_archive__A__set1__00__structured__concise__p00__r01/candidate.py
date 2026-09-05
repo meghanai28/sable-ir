@@ -1,0 +1,55 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Returns True only if extraction completes successfully without writing
+    outside the destination directory. Returns False if validation or extraction fails.
+    """
+    try:
+        # Normalize paths to resolve relative components and symlinks
+        dest_path = os.path.normpath(dest_path)
+        tar_path = os.path.normpath(tar_path)
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # List all members
+            members = tar.getnames()
+            
+            for member in members:
+                # Resolve the member's path relative to the destination
+                member_path = os.path.join(dest_path, member)
+                
+                # Check for symbolic links or hard links
+                if member.isfile():
+                    # Get the actual target path for symlinks
+                    if member.issym() or member.islnk():
+                        # Resolve the target
+                        target = os.path.normpath(member.linkname)
+                        # Check if target escapes the destination
+                        if not target.startswith(os.path.normpath(dest_path)) and not target == os.path.normpath(dest_path):
+                            return False
+                elif member.isdir():
+                    continue
+                else:
+                    # For regular files, check if the path escapes the destination
+                    if not member_path.startswith(os.path.normpath(dest_path)) and not member_path == os.path.normpath(dest_path):
+                        return False
+                
+                # Extract the member
+                tar.extract(member, dest_path, set_attrs=True)
+            
+            return True
+            
+    except Exception as e:
+        return False

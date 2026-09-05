@@ -1,0 +1,19 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    scheme = url.split("://")[0]
+    if scheme not in ("http", "https"):
+        raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    hostname = url.split("://")[1].split("/")[0]
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Failed to resolve hostname")
+    
+    default_port = 80 if scheme == "http" else 443
+    full_url = url
+    
+    status, headers, body = transport(full_url)
+    
+    if status != 200:
+        raise ValueError(f"Request failed with status {status}")
+    
+    return body.decode("utf-8") if isinstance(body, bytes) else body

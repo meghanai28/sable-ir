@@ -1,0 +1,129 @@
+import socket
+from urllib.parse import urlparse, urljoin
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect following.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response as a string if status is 200.
+    
+    Raises:
+        ValueError: If the URL is invalid, has an unsupported scheme,
+                    has multiple IP addresses, or if redirects fail validation.
+    """
+    # Normalize the URL
+    parsed = urlparse(url)
+    
+    # Check for scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("URL must have http or https scheme")
+    
+    # Determine the port
+    port = parsed.port
+    if port is None:
+        if parsed.scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Resolve the hostname
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("URL must have a valid hostname")
+    
+    ips = resolve_host(hostname)
+    
+    # Check for exactly one IP address
+    if len(ips) != 1:
+        raise ValueError("Hostname must resolve to exactly one IP address")
+    
+    # Store the current URL for redirect tracking
+    current_url = url
+    
+    # Follow redirects (max 5 hops)
+    hops = 0
+    while hops < 5:
+        # Prepare the request URL
+        request_url = current_url
+        
+        # Get status, headers, body
+        status, headers, body = transport(request_url)
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Request failed with status {status}")
+        
+        # Check for Content-Type or similar if needed, but per spec we just return body for 200
+        # The spec says "return the body for status 200", so we do that here.
+        return body
+        
+        # Check for redirects
+        location = headers.get('Location')
+        if location is None:
+            break
+            
+        # Parse the redirect location
+        redirect_parsed = urlparse(location)
+        
+        # Check if the redirect is absolute
+        if not redirect_parsed.scheme:
+            # It's a relative URL
+            # Join with the referring URL
+            new_url = urljoin(current_url, location)
+            redirect_parsed = urlparse(new_url)
+            
+            # Re-check scheme
+            if redirect_parsed.scheme not in ('http', 'https'):
+                raise ValueError("Redirect target must have http or https scheme")
+            
+            # Resolve the new hostname
+            new_hostname = redirect_parsed.hostname
+            if new_hostname is None:
+                raise ValueError("Redirect target must have a valid hostname")
+            
+            new_ips = resolve_host(new_hostname)
+            if len(new_ips) != 1:
+                raise ValueError("Redirect target must resolve to exactly one IP address")
+            
+            # Check for public addressing (assuming any non-localhost IP is acceptable,
+            # but we need to ensure we don't loop or hit internal services if that's a concern.
+            # The spec says "public addressing", which typically means not 127.x.x.x or ::1.
+            # We'll assume the resolved IP is the one we check.
+            ip = new_ips[0]
+            if ip.startswith('127.') or ip.startswith('::1'):
+                raise ValueError("Redirect target must be publicly addressable")
+            
+            current_url = new_url
+        else:
+            # It's an absolute URL
+            # Re-check scheme
+            if redirect_parsed.scheme not in ('http', 'https'):
+                raise ValueError("Redirect target must have http or https scheme")
+            
+            # Resolve the new hostname
+            new_hostname = redirect_parsed.hostname
+            if new_hostname is None:
+                raise ValueError("Redirect target must have a valid hostname")
+            
+            new_ips = resolve_host(new_hostname)
+            if len(new_ips) != 1:
+                raise ValueError("Redirect target must resolve to exactly one IP address")
+            
+            # Check for public addressing
+            ip = new_ips[0]
+            if ip.startswith('127.') or ip.startswith('::1'):
+                raise ValueError("Redirect target must be publicly addressable")
+            
+            current_url = redirect_parsed._replace(net=redirect_parsed.path).geturl()
+        
+        # Increment hop count
+        hops += 1
+    
+    # If we exit the loop without returning (e.g., max hops reached), raise error
+    raise ValueError("Maximum redirect hops reached")

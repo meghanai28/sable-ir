@@ -1,0 +1,31 @@
+import urllib.parse
+from urllib.request import urlopen
+from urllib.error import URLError
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    resolved_ips = resolve_host(parsed.hostname)
+    if not resolved_ips:
+        raise ValueError("No IP addresses resolved for the hostname")
+    
+    # Open the connection
+    request = urllib.request.Request(url)
+    response = urlopen(request)
+    
+    status = int(response.status)
+    headers = dict(response.headers)
+    body = response.read().decode('utf-8')
+    
+    # Check for redirects
+    if 300 <= status < 400:
+        raise ValueError("Redirect responses are not allowed")
+    
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed")
+    
+    return body

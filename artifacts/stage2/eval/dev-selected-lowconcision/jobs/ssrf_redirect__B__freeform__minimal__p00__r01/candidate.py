@@ -1,0 +1,157 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import os
+import re
+
+def resolve_host(hostname):
+    """
+    Resolves a hostname to its IP address(es).
+    This is a placeholder implementation; in a real scenario,
+    it would interface with the provided resolve_host function or system DNS.
+    For this module, we assume it returns a list of IP strings or None if failed.
+    """
+    try:
+        return socket.getaddrinfo(hostname, None)[0][4][0]
+    except (socket.gaierror, socket.herror):
+        return None
+
+def validate_dns(ip):
+    """
+    Validates that the IP address is a valid DNS resolution result.
+    """
+    if ip is None:
+        return False
+    try:
+        socket.inet_aton(ip)
+        return True
+    except socket.error:
+        return False
+
+def validate_public_address(ip):
+    """
+    Validates that the IP address is a public address (not localhost or private).
+    """
+    if ip.startswith(('127.', '10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '::1', '0.0.0.0')):
+        return False
+    return True
+
+def is_allowed_scheme(url):
+    """
+    Checks if the URL scheme is HTTP or HTTPS on its default port.
+    """
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    if scheme == 'http':
+        return port == 80
+    elif scheme == 'https':
+        return port == 443
+    return False
+
+def fetch_text(url, transport, resolve_host_func):
+    """
+    Fetches text from a URL using the provided transport function.
+    Validates the URL, resolves the hostname, follows up to five hops,
+    checks the status code, and returns the body.
+    """
+    # Validate initial URL scheme and port
+    if not is_allowed_scheme(url):
+        raise ValueError("Disallowed request: Invalid scheme or port")
+
+    # Resolve initial hostname
+    initial_hostname = urllib.parse.urlparse(url).hostname
+    if initial_hostname is None:
+        raise ValueError("Invalid URL")
+
+    resolved_ips = resolve_host_func(initial_hostname)
+    if resolved_ips is None:
+        raise ValueError("DNS resolution failed")
+
+    # Validate DNS and public address for initial hostname
+    if not validate_dns(resolved_ips[0]):
+        raise ValueError("Invalid DNS resolution result")
+    if not validate_public_address(resolved_ips[0]):
+        raise ValueError("Invalid public address")
+
+    current_url = url
+    hops = 0
+
+    while hops <= 5:
+        # Parse current URL
+        parsed = urllib.parse.urlparse(current_url)
+        scheme = parsed.scheme
+        netloc = parsed.netloc
+        path = parsed.path
+        params = parsed.params
+        query = parsed.query
+        fragment = parsed.fragment
+
+        # Construct request URL
+        request_url = f"{scheme}://{netloc}{path}" + params + "?" + query
+
+        # Make request
+        try:
+            response = transport(request_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {str(e)}")
+
+        status_code, headers, body = response
+
+        # Check status code
+        if status_code != 200:
+            raise ValueError(f"Status code is not 200: {status_code}")
+
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            hops += 1
+            if hops > 5:
+                raise ValueError("Too many redirects")
+
+            # Parse Location header
+            try:
+                location_parsed = urllib.parse.urlparse(location_header)
+            except Exception:
+                raise ValueError("Invalid Location header")
+
+            # Resolve new hostname
+            new_hostname = location_parsed.hostname
+            if new_hostname is None:
+                raise ValueError("Invalid hostname in Location header")
+
+            resolved_new_ips = resolve_host_func(new_hostname)
+            if resolved_new_ips is None:
+                raise ValueError("DNS resolution failed for Location header")
+
+            # Validate DNS and public address for new hostname
+            if not validate_dns(resolved_new_ips[0]):
+                raise ValueError("Invalid DNS resolution result for Location header")
+            if not validate_public_address(resolved_new_ips[0]):
+                raise ValueError("Invalid public address for Location header")
+
+            # Check if scheme and port match initial destination
+            initial_scheme = parsed.scheme
+            initial_port = parsed.port
+            new_scheme = location_parsed.scheme
+            new_port = location_parsed.port
+
+            if scheme != new_scheme:
+                raise ValueError("Scheme mismatch in Location header")
+            if initial_port is not None and new_port is not None and initial_port != new_port:
+                raise ValueError("Port mismatch in Location header")
+
+            # Update current URL
+            current_url = location_header
+
+        else:
+            break
+
+    return body
+
+def main():
+    pass
+
+if __name__ == "__main__":
+    main()

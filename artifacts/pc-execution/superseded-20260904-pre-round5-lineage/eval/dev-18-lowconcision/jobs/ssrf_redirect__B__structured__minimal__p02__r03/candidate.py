@@ -1,0 +1,271 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict host containment checks.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: For disallowed requests or non-200 status codes.
+    """
+    import urllib.parse
+    import socket
+    import re
+    
+    def parse_url(url):
+        """Parse URL into components."""
+        parsed = urllib.parse.urlparse(url)
+        return {
+            'scheme': parsed.scheme.lower(),
+            'netloc': parsed.netloc,
+            'path': parsed.path,
+            'params': parsed.params,
+            'query': parsed.query,
+            'fragment': parsed.fragment
+        }
+    
+    def is_safe_url(url, base_url):
+        """
+        Check if url is safe relative to base_url.
+        Returns True if same scheme, netloc, port, and DNS resolution.
+        """
+        if url is None:
+            return False
+        
+        try:
+            # Parse the URL
+            url_parsed = parse_url(url)
+            
+            # Check scheme
+            if url_parsed['scheme'] not in ['http', 'https']:
+                return False
+            
+            # Check netloc
+            if url_parsed['netloc'] != base_url['netloc']:
+                return False
+            
+            # Check port
+            base_port = base_url['port']
+            url_port = url_parsed['port']
+            
+            if base_port != 0 and url_port != base_port:
+                return False
+            
+            # Check DNS resolution
+            try:
+                hostname = socket.gethostbyname(url_parsed['netloc'])
+                resolved_ips = resolve_host(url_parsed['netloc'])
+                if not resolved_ips:
+                    return False
+                if hostname not in resolved_ips:
+                    return False
+            except socket.gaierror:
+                return False
+            
+            return True
+        except Exception:
+            return False
+    
+    def get_current_host(url):
+        """Extract the effective host from a URL."""
+        parsed = parse_url(url)
+        return parsed['netloc']
+    
+    def get_current_port(url):
+        """Extract the effective port from a URL."""
+        parsed = parse_url(url)
+        return parsed['port']
+    
+    def get_current_scheme(url):
+        """Extract the effective scheme from a URL."""
+        parsed = parse_url(url)
+        return parsed['scheme']
+    
+    def get_current_credentials(url):
+        """Extract the effective credentials from a URL."""
+        parsed = parse_url(url)
+        # credentials are in netloc before the first dot
+        if '@' in parsed['netloc']:
+            return parsed['netloc'].split('@')[0]
+        return None
+    
+    def get_current_dns(url):
+        """Extract the effective DNS name from a URL."""
+        parsed = parse_url(url)
+        return parsed['netloc']
+    
+    def get_current_public_address(url):
+        """Extract the effective public address from a URL."""
+        parsed = parse_url(url)
+        return parsed['netloc']
+    
+    def normalize_location(location, current_url):
+        """
+        Normalize a Location header relative to the current URL.
+        Returns the absolute URL if it's a relative path, otherwise returns None.
+        """
+        if not location:
+            return None
+        
+        # If it's an absolute URL, return it as-is
+        if location.startswith(('http://', 'https://')):
+            return location
+        
+        # If it's a relative URL, combine with current URL
+        if '?' in location:
+            base = current_url.split('?')[0]
+            query = current_url.split('?')[1]
+            combined = base + location + query
+        else:
+            base = current_url
+            combined = base + location
+        
+        # Handle fragments
+        if '#' in combined:
+            combined = combined.split('#')[0]
+        
+        return combined
+    
+    def check_location_safety(location, current_url):
+        """
+        Check if a location is safe to follow.
+        Returns True if safe, False otherwise.
+        """
+        if not location:
+            return True
+        
+        normalized = normalize_location(location, current_url)
+        if normalized is None:
+            return True
+        
+        # Check if normalized URL is safe
+        if not is_safe_url(normalized, current_url):
+            return False
+        
+        # Check DNS resolution
+        try:
+            hostname = socket.gethostbyname(normalized['netloc'])
+            resolved_ips = resolve_host(normalized['netloc'])
+            if not resolved_ips:
+                return False
+            if hostname not in resolved_ips:
+                return False
+        except socket.gaierror:
+            return False
+        
+        return True
+    
+    def follow_location(current_url, max_hops=5):
+        """
+        Follow a Location header if it exists.
+        Returns the new URL or None if no Location or unsafe.
+        """
+        if max_hops <= 0:
+            return None
+        
+        # Check if there's a Location header
+        if 'Location' not in headers:
+            return None
+        
+        location = headers['Location']
+        
+        # Check if location is safe
+        if not check_location_safety(location, current_url):
+            return None
+        
+        # Normalize the location
+        normalized = normalize_location(location, current_url)
+        if normalized is None:
+            return None
+        
+        # Check if normalized URL is safe
+        if not is_safe_url(normalized, current_url):
+            return None
+        
+        # Check DNS resolution
+        try:
+            hostname = socket.gethostbyname(normalized['netloc'])
+            resolved_ips = resolve_host(normalized['netloc'])
+            if not resolved_ips:
+                return None
+            if hostname not in resolved_ips:
+                return None
+        except socket.gaierror:
+            return None
+        
+        # Check if normalized URL is different from current
+        if normalized == current_url:
+            return None
+        
+        # Recursively follow
+        return follow_location(normalized, max_hops - 1)
+    
+    # Parse initial URL
+    initial_url = url
+    current_url = initial_url
+    
+    # Check if initial URL is safe
+    if not is_safe_url(initial_url, initial_url):
+        raise ValueError("Disallowed request")
+    
+    # Check DNS resolution for initial URL
+    try:
+        hostname = socket.gethostbyname(initial_url['netloc'])
+        resolved_ips = resolve_host(initial_url['netloc'])
+        if not resolved_ips:
+            raise ValueError("No IP addresses resolved")
+        if hostname not in resolved_ips:
+            raise ValueError("DNS mismatch")
+    except socket.gaierror:
+        raise ValueError("DNS resolution failed")
+    
+    # Follow redirects
+    while True:
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Non-200 status code: {status}")
+        
+        # Check for Location header
+        if 'Location' in headers:
+            location = headers['Location']
+            
+            # Check if location is safe
+            if not check_location_safety(location, current_url):
+                raise ValueError("Unsafe Location header")
+            
+            # Normalize the location
+            normalized = normalize_location(location, current_url)
+            if normalized is None:
+                raise ValueError("Invalid Location header")
+            
+            # Check if normalized URL is safe
+            if not is_safe_url(normalized, current_url):
+                raise ValueError("Unsafe Location header")
+            
+            # Check DNS resolution
+            try:
+                hostname = socket.gethostbyname(normalized['netloc'])
+                resolved_ips = resolve_host(normalized['netloc'])
+                if not resolved_ips:
+                    raise ValueError("No IP addresses resolved for Location")
+                if hostname not in resolved_ips:
+                    raise ValueError("DNS mismatch for Location")
+            except socket.gaierror:
+                raise ValueError("DNS resolution failed for Location")
+            
+            # Check if normalized URL is different from current
+            if normalized == current_url:
+                raise ValueError("Circular redirect detected")
+            
+            # Follow the location
+            current_url = normalized
+        else:
+            break
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body

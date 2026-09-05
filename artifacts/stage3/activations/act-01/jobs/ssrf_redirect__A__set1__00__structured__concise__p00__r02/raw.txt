@@ -1,0 +1,63 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL, validating the destination and response status.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns a tuple (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of textual IP addresses.
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If the URL is not HTTP/HTTPS on its default port, or if the status is not 200.
+    """
+    # Validate the initial public HTTP destination
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Check if the scheme is HTTP or HTTPS
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Check if the port is the default port for the scheme
+    if scheme == 'http' and port != 80:
+        raise ValueError("Only HTTP on port 80 is allowed.")
+    if scheme == 'https' and port != 443:
+        raise ValueError("Only HTTPS on port 443 is allowed.")
+    
+    # Resolve the hostname to get IP addresses
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname.")
+    
+    # Call the transport function
+    status, headers, body = transport(url)
+    
+    # Check the status code
+    if status != 200:
+        raise ValueError("Status code is not 200.")
+    
+    # Return the response body
+    return body.decode('utf-8') if isinstance(body, bytes) else body
+
+
+def urlparse(url):
+    """
+    Parse a URL into its components.
+    
+    Args:
+        url (str): The URL to parse.
+    
+    Returns:
+        dict: A dictionary containing the parsed URL components.
+    """
+    from urllib.parse import urlparse as _urlparse
+    return _urlparse(url)

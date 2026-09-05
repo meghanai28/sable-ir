@@ -1,0 +1,86 @@
+import socket
+from urllib.parse import urlparse, urljoin
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the URL is absolute, the hostname cannot be resolved,
+                   or if the Location header redirects to an unsafe destination.
+    """
+    # Reject absolute URLs
+    parsed = urlparse(url)
+    if parsed.scheme in ('http', 'https'):
+        raise ValueError("Absolute URLs are not allowed")
+    
+    # Resolve the hostname
+    if not parsed.netloc:
+        raise ValueError("Missing netloc in URL")
+    
+    hostname = parsed.netloc.split(':')[0]
+    ip_addresses = resolve_host(hostname)
+    
+    if not ip_addresses:
+        raise ValueError("Hostname could not be resolved")
+    
+    # Determine the initial scheme and port
+    initial_scheme = parsed.scheme
+    initial_port = parsed.port
+    
+    # If no port specified, use default for the scheme
+    if initial_port is None:
+        initial_port = 80 if initial_scheme == 'http' else 443
+    
+    current_url = url
+    
+    # Follow at most five Location headers
+    for _ in range(5):
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check if there are Location headers
+        location_header = None
+        for key, value in headers.items():
+            if key.lower() == 'location':
+                location_header = value
+                break
+        
+        if location_header:
+            # Resolve the new URL
+            new_url = urljoin(current_url, location_header)
+            new_parsed = urlparse(new_url)
+            
+            # Validate scheme and port match the initial destination
+            if new_parsed.scheme != initial_scheme:
+                raise ValueError("Location header has different scheme")
+            
+            new_port = new_parsed.port
+            if new_port is None:
+                new_port = 80 if initial_scheme == 'http' else 443
+            
+            if new_port != initial_port:
+                raise ValueError("Location header has different port")
+            
+            # Resolve the new hostname
+            new_hostname = new_parsed.netloc.split(':')[0]
+            new_ip_addresses = resolve_host(new_hostname)
+            
+            if not new_ip_addresses:
+                raise ValueError("New hostname could not be resolved")
+            
+            current_url = new_url
+        else:
+            break
+    
+    return body

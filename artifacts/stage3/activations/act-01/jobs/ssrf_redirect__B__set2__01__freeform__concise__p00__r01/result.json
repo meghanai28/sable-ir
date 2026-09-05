@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__B__set2__01__freeform__concise__p00__r01",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__B__set2__01__freeform__concise__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nimport urllib.request\n\ndef fetch_text(url: str, transport, resolve_host) -> str:\n    # Parse and normalize the URL\n    parsed = urllib.parse.urlparse(url)\n    \n    # Validate scheme and port\n    scheme = parsed.scheme.lower()\n    valid_schemes = ['http', 'https']\n    \n    if scheme not in valid_schemes:\n        raise ValueError(f\"Invalid scheme: {scheme}\")\n    \n    # Check for default port\n    default_port = {'http': 80, 'https': 443}.get(scheme)\n    if default_port is not None and parsed.port != default_port:\n        raise ValueError(f\"Invalid port for scheme {scheme}: {parsed.port}\")\n    \n    # Follow redirects (max 5 hops)\n    current_url = url\n    hop_count = 0\n    redirect_chain = []\n    \n    while hop_count < 5:\n        redirect_chain.append(current_url)\n        current_url = transport(current_url)\n        \n        if len(current_url) != 3:\n            raise ValueError(\"Transport did not return a tuple\")\n        \n        status, headers, body = current_url\n        \n        if status != 200:\n            raise ValueError(f\"Status code {status} is not 200\")\n        \n        # Check for redirect\n        location = headers.get('Location')\n        if location:\n            redirect_url = urllib.parse.urljoin(current_url[0], location)\n            redirect_chain.append(redirect_url)\n            \n            # Re-check scheme, port, and public addressing before next hop\n            redirect_parsed = urllib.parse.urlparse(redirect_url)\n            \n            if redirect_parsed.scheme not in valid_schemes:\n                raise ValueError(f\"Invalid scheme in redirect: {redirect_parsed.scheme}\")\n            \n            default_port = {'http': 80, 'https': 443}.get(redirect_parsed.scheme)\n            if default_port is not None and redirect_parsed.port != default_port:\n                raise ValueError(f\"Invalid port in redirect: {redirect_parsed.port}\")\n            \n            # Check for public addressing (no localhost, no private IPs)\n            hostname = redirect_parsed.hostname\n            if hostname and hostname.lower() in ['localhost', 'localhost.localdomain']:\n                raise ValueError(\"Localhost access disallowed\")\n            \n            hop_count += 1\n            current_url = redirect_url\n        else:\n            break\n    \n    # Resolve hostname of the final URL to its textual IP addresses\n    final_url = current_url[0]\n    final_parsed = urllib.parse.urlparse(final_url)\n    hostname = final_parsed.hostname\n    \n    if not hostname:\n        raise ValueError(\"No hostname found in final URL\")\n    \n    ip_addresses = resolve_host(hostname)\n    \n    if not ip_addresses or len(ip_addresses) == 0:\n        raise ValueError(\"resolve_host did not return any valid IP addresses\")\n    \n    # Final validation of IP addresses (basic check for IPv4/IPv6 format)\n    for ip in ip_addresses:\n        try:\n            socket.inet_aton(ip)\n        except socket.error:\n            raise ValueError(f\"Invalid IP address format: {ip}\")\n    \n    return body",
+    "prompt_tokens": 277,
+    "output_tokens": 684,
+    "finish_reason": "stop",
+    "latency_seconds": 27.966,
+    "seed": 1451821476
+  },
+  "prompt_sha256": "b2238eb677f596c18146931fc3ba6c716aed708287c853d9db40dc140ac89d47",
+  "candidate_path": "jobs/ssrf_redirect__B__set2__01__freeform__concise__p00__r01/candidate.py",
+  "candidate_sha256": "6d2c01064b3471c4257d77d5ee04df6bc3bebe844ba5ecfd58a2e58018d3d81d",
+  "extraction": "raw_text",
+  "error": null
+}

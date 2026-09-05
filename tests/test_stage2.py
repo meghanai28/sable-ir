@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import json
+import platform
 import re
 import shutil
 import tomllib
@@ -13,7 +16,7 @@ from typing import Any
 import pytest
 
 from sable_ir.harness import UnsafeLocalSandbox
-from sable_ir.schema import PolicyValue, Stage1PlanFormat
+from sable_ir.schema import PolicyValue, Stage0Condition, Stage1PlanFormat
 from sable_ir.stage1_analysis import AuditConfidence, ClauseSelection, PolicyVisibility
 from sable_ir.stage2 import (
     ReferencePlanDecisions,
@@ -29,16 +32,22 @@ from sable_ir.stage2 import (
     freeze_stage2_dataset,
     freeze_stage2_split,
     load_frozen_rows,
+    load_human_attestation,
     load_stage2_config,
+    package_versions,
     prepare_stage2_reference_audit,
     validate_reference_plan_text,
     validate_stage2_reference_audit,
 )
 from sable_ir.stage2_local import (
     EvalKind,
+    GenerationStatus,
     LocalGeneration,
+    RawOutcome,
     Role,
+    Stage1Concision,
     Stage2PlanAudit,
+    _cell_metrics,
     build_stage2_eval_report,
     evaluate_stage2_eval,
     load_eval_manifest,
@@ -163,7 +172,8 @@ class TestConfigAndPlans:
         assert config.sandbox.platform == "linux/amd64"
         assert "language_model" in config.qlora.target_modules_regex
         assert config.model.active_model_id == "Qwen/Qwen3.5-4B"
-        assert config.hardware.operating_system == "Windows"
+        # Both hosts are supported by the schema; this run executes on WSL2 Linux.
+        assert config.hardware.operating_system in {"Windows", "Linux"}
 
     def test_full_design_requires_twelve_six_six(self, tmp_path: Path) -> None:
         with pytest.raises(Exception, match="full design requires"):
@@ -602,7 +612,7 @@ class TestLocalEval:
         assert failed.stage1_gate is Stage1GateStatus.FAILED
         assert failed.stage2_status == "exploratory_stage1_failed"
 
-    def test_model_floor_run_covers_every_split_and_flags_incomplete(self, tmp_path: Path) -> None:
+    def test_model_floor_covers_train_and_dev_only(self, tmp_path: Path) -> None:
         root, config_path = _copy_repo(tmp_path)
         freeze_stage2_split(config_path, root)
         run_dir = root / "artifacts" / "stage2" / "eval" / "floor"
@@ -615,10 +625,14 @@ class TestLocalEval:
             adapter_directory=None,
             training_result_path=None,
         )
-        assert len(manifest.tasks) == 5 and manifest.planner_adapter is None
-        assert len(manifest.plan_jobs) == 5 * 2 * 2 * 3 * 3
-        assert len(manifest.render_jobs) == len(manifest.plan_jobs) * 4
-        assert len(manifest.direct_jobs) == 5 * 6 * 4
+        # Train + dev only: the floor sets model selection, so the test task stays held out.
+        assert len(manifest.tasks) == 4 and manifest.planner_adapter is None
+        assert SplitName.TEST not in {task.split for task in manifest.tasks}
+        # Planner-independent arms only.
+        assert manifest.plan_jobs == ()
+        assert manifest.render_jobs == ()
+        assert len(manifest.direct_jobs) == 4 * 2 * 4
+        assert len(manifest.reference_render_jobs) == 4 * 2 * 2 * 4
         assert load_eval_manifest(run_dir / "manifest.json") == manifest
         report = build_stage2_eval_report(run_dir / "manifest.json", root, run_dir / "r.json")
         assert not report.complete
@@ -626,3 +640,295 @@ class TestLocalEval:
         training_result = _fake_training_result(root, "train-02", (18,))
         with pytest.raises(Stage2Error, match="dev_selection reports only"):
             select_stage2_checkpoint([run_dir / "r.json"], training_result, tmp_path / "sel.json")
+
+
+def test_dataset_freeze_refuses_a_split_frozen_under_another_config(
+    tmp_path: Path,
+) -> None:
+    """A Stage 2 config change must invalidate the frozen split, not pass silently."""
+    root = Path.cwd()
+    config_path = root / "config/stage2.toml"
+    split = json.loads((root / "data/stage2/split.json").read_text())
+    assert split["config_sha256"] == hashlib.sha256(config_path.read_bytes()).hexdigest()
+
+    mutated = tmp_path / "stage2-mutated.toml"
+    mutated.write_text(
+        config_path.read_text().replace('min_total_vram_gib = 15.0', 'min_total_vram_gib = 14.0')
+    )
+    with pytest.raises(Stage2Error, match="records a different Stage 2 config"):
+        freeze_stage2_dataset(mutated, root, tmp_path / "dataset")
+
+
+def test_training_version_guard_round_trips_non_distribution_keys() -> None:
+    """package_versions records the interpreter, which is not a distribution name.
+
+    The training guard must verify with the same function that froze the manifest; re-deriving
+    each recorded key via importlib.metadata reports "absent" for `python` and aborts every run.
+    """
+    versions = package_versions()
+    assert versions["python"] == platform.python_version()
+    assert versions == package_versions()
+    with pytest.raises(importlib.metadata.PackageNotFoundError):
+        importlib.metadata.version("python")
+
+
+def test_model_floor_gate_is_independent_of_the_trained_planner() -> None:
+    """Proposal II.B.6: both floor arms must be planner-independent.
+
+    Arm 2 is the audited reference plan into the adapter-disabled renderer. Feeding
+    trained-planner plans in would conflate planner quality with renderer capability, which
+    II.B.6.3 warns against ("do not interpret a weak renderer as evidence that the intermediate
+    language failed"). A perfect trained planner must not rescue a failing reference arm.
+    """
+    passed, recommendation, rationale = model_floor_recommendation(0.9, 0.1, 0.30)
+    assert passed is False
+    assert recommendation == "stop_or_pivot"
+    assert "reference plan" in rationale
+    assert "plan channel" in rationale
+
+    # Direct below the floor selects the larger model regardless of the plan arm.
+    passed, recommendation, _ = model_floor_recommendation(0.1, 0.9, 0.30)
+    assert recommendation == "move_to_fallback_model"
+
+    passed, recommendation, _ = model_floor_recommendation(0.5, 0.5, 0.30)
+    assert passed is True and recommendation == "continue_with_primary_model"
+
+
+def test_model_floor_never_touches_the_held_out_test_task(tmp_path: Path) -> None:
+    """The floor sets the 4B-vs-9B decision, so the test task must not appear in it.
+
+    It must also carry no trained-planner jobs: those are checkpoint-selection diagnostics.
+    """
+    root = Path.cwd()
+    run_directory = tmp_path / "floor-clean"
+    manifest = prepare_stage2_eval(
+        root / "config/stage2.toml",
+        root,
+        run_directory,
+        "floor-clean",
+        EvalKind.MODEL_FLOOR,
+        adapter_directory=None,
+        training_result_path=None,
+    )
+    splits = {task.split for task in manifest.tasks}
+    assert SplitName.TEST not in splits
+    assert splits == {SplitName.TRAIN, SplitName.DEV}
+    assert "path_symlink_archive" not in {task.task_id for task in manifest.tasks}
+
+    # planner-independent only
+    assert manifest.plan_jobs == ()
+    assert manifest.render_jobs == ()
+    # 4 tasks x 2 policies x 4 renders
+    assert len(manifest.direct_jobs) == 32
+    assert {j.condition for j in manifest.direct_jobs} == {
+        Stage0Condition.FULL_DOCUMENT_A,
+        Stage0Condition.FULL_DOCUMENT_B,
+    }
+    # 4 tasks x 2 policies x 2 formats x 4 renders
+    assert len(manifest.reference_render_jobs) == 64
+
+
+class TestFloorDenominatorRule:
+    """A truncated completed output is a model failure; a missing job is incompleteness."""
+
+    @staticmethod
+    def _ref_row(fmt: Stage1PlanFormat, *, attempted: bool, evaluated: bool, passed: bool):
+        from sable_ir.stage2_local import ReferenceRenderRow
+
+        outcome = RawOutcome.PASS if passed else RawOutcome.NOT_RUN
+        return ReferenceRenderRow(
+            job_id=f"t__A__{fmt.value}__reference__r00",
+            task_id="t",
+            split=SplitName.TRAIN,
+            assigned_policy=PolicyValue.A,
+            plan_format=fmt,
+            render_index=0,
+            status=(
+                GenerationStatus.GENERATED
+                if evaluated
+                else GenerationStatus.LENGTH
+                if attempted
+                else GenerationStatus.SKIPPED_MALFORMED_PLAN
+            ),
+            attempted=attempted,
+            evaluated=evaluated,
+            compilation=outcome,
+            functionality=outcome,
+            policy_a=outcome,
+            policy_b=RawOutcome.NOT_RUN,
+            original_security=RawOutcome.NOT_RUN,
+            functional=passed,
+            assigned_policy_and_functional=passed,
+        )
+
+    def test_truncated_completed_output_counts_as_failure_in_the_denominator(self) -> None:
+        rows = [
+            self._ref_row(Stage1PlanFormat.STRUCTURED, attempted=True, evaluated=True, passed=True)
+            for _ in range(19)
+        ]
+        # three truncations: generated a completed outcome, produced no candidate
+        rows += [
+            self._ref_row(
+                Stage1PlanFormat.STRUCTURED, attempted=True, evaluated=False, passed=False
+            )
+            for _ in range(3)
+        ]
+        scored = [bool(r.assigned_policy_and_functional) for r in rows if r.attempted]
+        assert len(scored) == 22, "truncations must stay in the denominator"
+        assert sum(scored) == 19
+        # Excluding them would inflate 19/22 to 19/19.
+        inflated = [bool(r.assigned_policy_and_functional) for r in rows if r.evaluated]
+        assert len(inflated) == 19
+        assert sum(scored) / len(scored) < sum(inflated) / len(inflated)
+
+    def test_missing_job_is_incompleteness_not_a_failure(self) -> None:
+        rows = [
+            self._ref_row(Stage1PlanFormat.STRUCTURED, attempted=True, evaluated=True, passed=True),
+            # no result file at all: never attempted
+            self._ref_row(
+                Stage1PlanFormat.STRUCTURED, attempted=False, evaluated=False, passed=False
+            ),
+        ]
+        scored = [bool(r.assigned_policy_and_functional) for r in rows if r.attempted]
+        assert len(scored) == 1, "a missing job must not be scored as a failure"
+
+
+class TestMetricSpecificDenominators:
+    """Truncations count against unconditional metrics but not conditional ones."""
+
+    @staticmethod
+    def _row(*, attempted: bool, functional: bool, policy_pass: bool, visible: bool | None = None):
+        from sable_ir.stage2_local import RenderRow
+
+        ok = RawOutcome.PASS
+        no = RawOutcome.FAIL if attempted else RawOutcome.NOT_RUN
+        return RenderRow(
+            job_id="j",
+            plan_job_id="p",
+            task_id="t",
+            split=SplitName.TRAIN,
+            assigned_policy=PolicyValue.A,
+            plan_format=Stage1PlanFormat.STRUCTURED,
+            concision=Stage1Concision.FULL,
+            plan_sample_index=0,
+            render_index=0,
+            plan_status=GenerationStatus.GENERATED,
+            plan_tokens=100,
+            document_tokens=400,
+            length_bin="64-128",
+            render_status=GenerationStatus.GENERATED if functional else GenerationStatus.LENGTH,
+            attempted=attempted,
+            evaluated=attempted and functional,
+            compilation=ok if functional else no,
+            functionality=ok if functional else no,
+            policy_a=ok if policy_pass else no,
+            policy_b=no,
+            original_security=no,
+            functional=functional,
+            assigned_policy_pass=policy_pass,
+            assigned_policy_and_functional=functional and policy_pass,
+            opposite_policy_and_functional=False,
+            passes_both_policies=False,
+            visible_policy_retained=visible,
+            clause_selection=None,
+            false_certificate=None,
+            confident_wrong_clause_and_assigned_failure=None,
+        )
+
+    def test_truncations_cannot_inflate_unconditional_frontier_values(self) -> None:
+        good = [self._row(attempted=True, functional=True, policy_pass=True) for _ in range(6)]
+        trunc = [self._row(attempted=True, functional=False, policy_pass=False) for _ in range(6)]
+        clean = _cell_metrics(good)
+        mixed = _cell_metrics(good + trunc)
+        assert clean.functional_rate == 1.0
+        assert mixed.functional_rate == 0.5, "truncations must halve the functional rate"
+        assert mixed.assigned_policy_and_functional_rate == 0.5
+        assert mixed.attempted_rows == 12 and mixed.evaluated_rows == 6
+
+    def test_heavy_truncation_cannot_look_equal_to_complete_yield(self) -> None:
+        complete = _cell_metrics(
+            [self._row(attempted=True, functional=True, policy_pass=True) for _ in range(8)]
+        )
+        truncating = _cell_metrics(
+            [self._row(attempted=True, functional=True, policy_pass=True) for _ in range(2)]
+            + [self._row(attempted=True, functional=False, policy_pass=False) for _ in range(6)]
+        )
+        assert complete.assigned_policy_and_functional_rate == 1.0
+        assert truncating.assigned_policy_and_functional_rate == 0.25
+        assert (
+            truncating.assigned_policy_and_functional_rate
+            < complete.assigned_policy_and_functional_rate
+        )
+
+    def test_conditional_metrics_keep_their_conditioning(self) -> None:
+        rows = [
+            self._row(attempted=True, functional=True, policy_pass=True),
+            self._row(attempted=True, functional=True, policy_pass=False),
+            # truncated: not functional, so it must not enter conditional compliance
+            self._row(attempted=True, functional=False, policy_pass=False),
+        ]
+        m = _cell_metrics(rows)
+        assert m.assigned_policy_pass_rate == 0.5, "conditioned on the 2 functional outputs"
+        assert m.assigned_policy_and_functional_rate == pytest.approx(1 / 3, abs=1e-4), (
+            "unconditional: rates are rounded to 4dp"
+        )
+        assert m.functional_rows == 2 and m.attempted_rows == 3
+
+    def test_plan_visibility_is_independent_of_rendering(self) -> None:
+        rows = [
+            self._row(attempted=True, functional=True, policy_pass=True, visible=True),
+            # audited plan whose render truncated: visibility is still a property of the plan
+            self._row(attempted=True, functional=False, policy_pass=False, visible=True),
+        ]
+        assert _cell_metrics(rows).visible_retention_rate == 1.0
+
+
+class TestHumanAttestation:
+    """Human sign-off is append-only: it binds audited bytes without rewriting provenance."""
+
+    def test_attestation_binds_the_exact_audited_bytes(self) -> None:
+        root = Path.cwd()
+        attestation = load_human_attestation(
+            root / "data/stage2/reference-audit.human-attestation.json", root
+        )
+        assert attestation.reviewer == "Meghana Indukuri"
+        # Claude's preliminary provenance survives alongside the human sign-off.
+        assert "Claude" in attestation.preliminary_reviewer
+        audit = json.loads((root / "data/stage2/reference-audit.json").read_text())
+        assert "PRELIMINARY" in audit["reviewer"] and "Claude" in audit["reviewer"]
+
+    def test_changed_audit_content_invalidates_the_attestation(self, tmp_path: Path) -> None:
+        """Approving unchanged data is metadata; changing the data must void the sign-off."""
+        root = tmp_path / "repo"
+        shutil.copytree(Path.cwd() / "data", root / "data")
+        # the attestation also binds the frozen dataset manifest; copy it so this test isolates
+        # the audit-bytes binding rather than tripping on a missing artifact
+        dataset = root / "artifacts/stage2/dataset"
+        dataset.mkdir(parents=True)
+        shutil.copy(
+            Path.cwd() / "artifacts/stage2/dataset/manifest.json", dataset / "manifest.json"
+        )
+        att_path = root / "data/stage2/reference-audit.human-attestation.json"
+        audit_path = root / "data/stage2/reference-audit.json"
+        # unchanged content: the attestation still binds
+        load_human_attestation(att_path, root)
+        # a single changed audit decision voids it
+        audit = json.loads(audit_path.read_text())
+        flag = "inferable_from_visible_inputs_only"
+        audit["rows"][0][flag] = not audit["rows"][0][flag]
+        audit_path.write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+        with pytest.raises(Stage2Error, match="different audit bytes"):
+            load_human_attestation(att_path, root)
+
+
+def test_pending_attestation_does_not_satisfy_a_human_review_gate(tmp_path: Path) -> None:
+    """A named reviewer who has not inspected the current bytes is not completed review."""
+    root = Path.cwd()
+    path = root / "data/stage2/reference-audit.human-attestation.json"
+    attestation = load_human_attestation(path, root)
+    pending = attestation.model_copy(update={"decision": "pending_human_review"})
+    approved = attestation.model_copy(update={"decision": "approved_after_applied_corrections"})
+    assert pending.approved is False
+    assert approved.approved is True
+    # the reviewer name is still recorded either way; only the decision gates
+    assert pending.reviewer == approved.reviewer

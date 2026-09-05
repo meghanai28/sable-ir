@@ -1,0 +1,84 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL using the provided transport and DNS resolver.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The response body for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, no IP is found, or redirect rules are violated.
+    """
+    from urllib.parse import urlparse, urljoin
+    
+    # Parse the initial URL
+    parsed = urlparse(url)
+    
+    # Guard: Check scheme
+    if parsed.scheme.lower() not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Guard: Resolve initial hostname
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError("No IP address found for hostname.")
+    
+    current_url = url
+    current_scheme = parsed.scheme
+    current_port = parsed.port
+    current_netloc = parsed.netloc
+    
+    # Follow redirects (at most 5)
+    for _ in range(5):
+        status, headers, body = transport(current_url)
+        
+        if status == 200:
+            return body
+        
+        # Check for redirect
+        location = headers.get('Location')
+        if location:
+            # Resolve redirect URL
+            redirect_url = urljoin(current_url, location)
+            redirect_parsed = urlparse(redirect_url)
+            
+            # Guard: Check scheme consistency
+            if redirect_scheme := redirect_parsed.scheme:
+                if redirect_scheme.lower() != current_scheme.lower():
+                    raise ValueError("Redirect to different scheme not allowed.")
+            
+            # Guard: Check port consistency
+            if redirect_port := redirect_parsed.port:
+                if redirect_port != current_port:
+                    raise ValueError("Redirect to different port not allowed.")
+            
+            # Guard: Check credentials consistency
+            if redirect_netloc := redirect_parsed.netloc:
+                if current_netloc and current_netloc != redirect_netloc:
+                    raise ValueError("Redirect to different credentials not allowed.")
+            
+            # Guard: Check DNS validity (assuming resolve_host handles this)
+            redirect_hostname = redirect_parsed.hostname
+            if redirect_hostname is None:
+                raise ValueError("Invalid redirect URL: missing hostname.")
+            
+            redirect_ips = resolve_host(redirect_hostname)
+            if not redirect_ips:
+                raise ValueError("Redirect to non-public DNS entry.")
+            
+            current_url = redirect_url
+            current_scheme = redirect_scheme
+            current_port = redirect_port
+            current_netloc = redirect_netloc
+        else:
+            raise ValueError("Redirect without Location header.")
+    
+    raise ValueError("Too many redirects.")

@@ -1,0 +1,89 @@
+import os
+import stat
+from pathlib import Path
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The requested filename/path (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        FileNotFoundError: If the requested file does not exist or is not a regular file.
+        ValueError: If the requested path escapes reports_root or if any component is a symbolic link.
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = Path(reports_root).resolve()
+    
+    # Construct the target path
+    target_path = Path(filename)
+    
+    # Resolve the target path to an absolute path
+    # This handles relative paths and .. segments
+    resolved_target = target_path.resolve()
+    
+    # Check if the resolved path starts with the resolved root
+    # We need to ensure the resolved_target is within the reports_root
+    # Using os.path.commonpath or string comparison on the resolved strings
+    try:
+        common_path = os.path.commonpath([resolved_root, resolved_target])
+        if common_path != resolved_root:
+            raise ValueError("Path escapes reports_root")
+    except ValueError:
+        # This can happen if the paths are on different drives (Windows) or other issues
+        raise ValueError("Path escapes reports_root")
+    
+    # Check for symbolic links in the path components
+    # We need to walk each user-selected path component beneath the resolved reports_root
+    # and raise ValueError if any component is a symbolic link, even one that currently points inside the root.
+    
+    # Normalize the path components to check for symlinks
+    # We split the path into components relative to the root
+    relative_parts = resolved_target.relative_to(resolved_root).parts
+    
+    # Check if the file exists and is a regular file before checking for symlinks in the path
+    if not resolved_target.exists() or not resolved_target.is_file():
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Check for symlinks in the path components
+    # We need to check each component of the path, including the final file
+    # The requirement says "even one that currently points inside the root"
+    # So we check the resolved target and all its parent components relative to the root
+    
+    # Check the final resolved target
+    if resolved_target.is_symlink():
+        raise ValueError("Symbolic link detected in path")
+    
+    # Check each component in the path
+    full_path_parts = [resolved_root] + list(relative_parts)
+    
+    for part in full_path_parts:
+        # We need to check if any part is a symbolic link
+        # Note: resolved_root is the base, we don't expect it to be a symlink based on the description
+        # But we should check the components relative to the root
+        if part != resolved_root:
+            # Check if the part itself is a symlink
+            # We need to resolve the part relative to the root to check for symlinks
+            # However, the requirement says "walk each user-selected path component beneath the resolved reports_root"
+            # So we check the components as they are in the path
+            if resolved_target.is_symlink():
+                raise ValueError("Symbolic link detected in path")
+            # We also need to check intermediate components if the path has multiple segments
+            # But the resolved_target already includes all segments.
+            # The requirement implies we should check each segment of the path.
+            # Let's check the parent directories of the resolved_target
+            current_path = resolved_root
+            for segment in relative_parts:
+                next_path = current_path / segment
+                if next_path.is_symlink():
+                    raise ValueError("Symbolic link detected in path")
+                current_path = next_path
+    
+    # Now we can safely read the file
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

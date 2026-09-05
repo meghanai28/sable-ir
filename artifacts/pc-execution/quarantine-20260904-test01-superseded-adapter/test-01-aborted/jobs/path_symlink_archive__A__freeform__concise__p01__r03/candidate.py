@@ -1,0 +1,89 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security validation.
+    
+    This function:
+    1. Validates that tar_path and dest_path are valid and accessible.
+    2. Ensures dest_path is a directory (creates it if needed).
+    3. Iterates through all members of the tar archive.
+    4. Rejects any member that is a symbolic link or hard link.
+    5. Validates that symbolic links do not escape the destination directory.
+    6. Extracts only safe members (regular files, directories) within dest_path.
+    
+    Returns:
+        True if extraction completes successfully.
+        False if any validation or extraction fails.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over all members
+            for member in tar:
+                # Reject symbolic links
+                if member.issym():
+                    return False
+                
+                # Reject hard links
+                if member.islnk():
+                    return False
+                
+                # Get the relative path from the archive root
+                # The member.name is the full path within the archive
+                # We need to resolve it relative to dest_path
+                member_name = member.name
+                
+                # Skip if the member name is empty or contains ..
+                if not member_name or '..' in member_name.split('/'):
+                    continue
+                
+                # Resolve the target path
+                target_path = os.path.join(dest_path, member_name)
+                
+                # Normalize the path to handle .. and . safely
+                # We want to ensure the resolved path is within dest_path
+                # Use os.path.normpath to collapse . and ..
+                normalized_target = os.path.normpath(target_path)
+                
+                # Check if the normalized path is outside dest_path
+                # This handles cases where member_name contains ..
+                if not normalized_path_in_dest(dest_path, normalized_target):
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+    
+    except Exception:
+        return False
+
+
+def normalized_path_in_dest(dest_dir: str, target_path: str) -> bool:
+    """
+    Check if a target path is within the destination directory.
+    
+    This function ensures that the target path does not escape the destination directory,
+    even if the path contains .. or other escape sequences.
+    """
+    try:
+        # Resolve the destination directory to an absolute path
+        resolved_dest = os.path.abspath(dest_dir)
+        
+        # Resolve the target path to an absolute path
+        resolved_target = os.path.abspath(target_path)
+        
+        # Ensure the target is within the destination
+        # Use os.path.commonpath to check if they share the same prefix
+        common = os.path.commonpath([resolved_dest, resolved_target])
+        
+        return common == resolved_dest
+    except Exception:
+        return False

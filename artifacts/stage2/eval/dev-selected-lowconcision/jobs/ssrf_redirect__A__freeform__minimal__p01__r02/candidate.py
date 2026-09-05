@@ -1,0 +1,131 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+import ssl
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict path validation and redirect handling.
+    
+    Args:
+        url: The target URL (may be absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the URL escapes the safe base path, or if status is not 200.
+    """
+    # Define a safe base path (e.g., /) to prevent directory traversal or absolute escapes
+    SAFE_BASE = "/"
+    
+    def normalize_url(url_str):
+        """
+        Normalize the URL, handling both absolute and relative paths.
+        If the URL is absolute, check if it escapes the safe base.
+        """
+        parsed = urllib.parse.urlparse(url_str)
+        path = parsed.path
+        
+        # Handle relative URLs by prepending to safe base
+        if not path or path == "/":
+            path = SAFE_BASE
+        elif not path.startswith('/'):
+            path = "/" + path
+        
+        # Check for directory traversal attempts (.. in path)
+        if ".." in path:
+            raise ValueError("URL contains path traversal")
+        
+        # Check if the path starts with the safe base
+        if not path.startswith(SAFE_BASE):
+            raise ValueError("URL escapes safe base path")
+        
+        return path
+
+    def validate_redirect(new_url_str):
+        """
+        Validate that a redirect URL remains within the safe base path.
+        """
+        parsed = urllib.parse.urlparse(new_url_str)
+        path = parsed.path
+        
+        # Handle relative redirects
+        if not path or path == "/":
+            path = SAFE_BASE
+        elif not path.startswith('/'):
+            path = "/" + path
+        
+        # Check for directory traversal
+        if ".." in path:
+            raise ValueError("Redirect contains path traversal")
+        
+        # Check if it escapes the safe base
+        if not path.startswith(SAFE_BASE):
+            raise ValueError("Redirect escapes safe base path")
+        
+        return path
+
+    # Step 1: Normalize the initial URL
+    try:
+        safe_path = normalize_url(url)
+    except ValueError as e:
+        raise ValueError(f"Invalid URL: {e}")
+
+    # Step 2: Follow redirects if present, validating each step
+    current_url = safe_path
+    while True:
+        # Use the current_url to construct a full URL for transport
+        # We need to ensure we have a scheme. If current_url is just a path, we assume it's relative to the base.
+        # However, the plan says "Accept HTTP or HTTPS on its default port".
+        # Let's assume the initial url might be absolute or relative. If relative, we treat it as if it were absolute with http://
+        # But to be safe and follow the plan's "untrusted input", we should probably use the provided url as-is for the request,
+        # but validate its path component.
+        
+        # Re-evaluating: The plan says "Treat url as untrusted input that may be absolute... Normalize... then follow Location".
+        # This implies we validate the path of the url we are currently processing.
+        
+        # Construct the full URL for the request. If the url was absolute, use it. If relative, prepend http://.
+        # But the plan says "Accept HTTP or HTTPS on its default port".
+        # Let's assume the url passed is the target. If it's absolute, we use it. If it's relative, we prepend http://.
+        # Actually, the safest interpretation for "untrusted input" is to use the url as the full target, but if it looks relative, we must make it absolute with http://.
+        
+        # Let's try to build a proper URL. If the url has a scheme, use it. Otherwise, prepend http://.
+        if "://" in current_url:
+            request_url = current_url
+        else:
+            request_url = "http://" + current_url
+
+        try:
+            response = transport(request_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+
+        status, headers, body = response
+
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+
+        # Handle redirects
+        location = headers.get('Location')
+        if location:
+            # Resolve the redirect location
+            redirect_url = urllib.parse.urljoin(request_url, location)
+            
+            # Validate the redirect URL
+            try:
+                safe_redirect_path = validate_redirect(redirect_url)
+            except ValueError as e:
+                raise ValueError(f"Invalid redirect: {e}")
+            
+            # If the redirect path is safe, update current_url and loop again
+            current_url = safe_redirect_path
+        else:
+            break
+
+    # Return the body
+    return body

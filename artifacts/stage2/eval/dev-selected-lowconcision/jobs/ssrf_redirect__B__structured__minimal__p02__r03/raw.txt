@@ -1,0 +1,85 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    netloc = parsed.netloc
+    path = parsed.path
+    
+    if netloc:
+        ip_addresses = resolve_host(netloc)
+        if not ip_addresses:
+            raise ValueError("Could not resolve hostname")
+    else:
+        raise ValueError("Invalid URL")
+    
+    def get_url_with_query_and_fragment(url_str):
+        return url_str
+    
+    def resolve_redirect_location(location):
+        if not location.startswith(('http://', 'https://')):
+            current_parsed = urllib.parse.urlparse(url)
+            new_parsed = urllib.parse.urljoin(current_parsed.geturl(), location)
+        else:
+            new_parsed = location
+        
+        new_parsed = urllib.parse.urlparse(new_parsed)
+        
+        if new_parsed.scheme != scheme:
+            raise ValueError("Redirect changes scheme")
+        if new_parsed.port != parsed.port:
+            raise ValueError("Redirect changes port")
+        if new_parsed.netloc != netloc:
+            raise ValueError("Redirect changes host")
+        
+        return new_parsed.geturl()
+    
+    current_url = url
+    redirect_count = 0
+    
+    while True:
+        if redirect_count > 5:
+            raise ValueError("Maximum redirect limit exceeded")
+        
+        if not current_url.startswith(('http://', 'https://')):
+            raise ValueError("Invalid URL scheme")
+        
+        current_parsed = urllib.parse.urlparse(current_url)
+        netloc = current_parsed.netloc
+        path = current_parsed.path
+        
+        if netloc:
+            ip_addresses = resolve_host(netloc)
+            if not ip_addresses:
+                raise ValueError("Could not resolve hostname")
+        else:
+            raise ValueError("Invalid URL")
+        
+        try:
+            req = urllib.request.Request(current_url, method='GET')
+            response = urllib.request.urlopen(req)
+            
+            if response.status != 200:
+                raise ValueError("Non-200 status code")
+            
+            body = response.read().decode('utf-8')
+            return body
+        except urllib.error.HTTPError as e:
+            if e.code == 301 or e.code == 302 or e.code == 303 or e.code == 307 or e.code == 308:
+                if e.headers.get('Location'):
+                    location = e.headers['Location']
+                    new_url = resolve_redirect_location(location)
+                    current_url = new_url
+                    redirect_count += 1
+                else:
+                    raise ValueError("No Location header in redirect")
+            else:
+                raise ValueError("Non-redirect status code")
+        except Exception as e:
+            raise ValueError(f"Connection error: {str(e)}")

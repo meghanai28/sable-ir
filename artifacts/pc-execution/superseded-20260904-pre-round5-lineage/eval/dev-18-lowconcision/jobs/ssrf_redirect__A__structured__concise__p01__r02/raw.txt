@@ -1,0 +1,66 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): Function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): Function that takes a hostname and returns list of IP addresses.
+    
+    Returns:
+        str: The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., non-HTTP/HTTPS, non-default port, infinite IPs).
+    """
+    import socket
+    import urllib.parse
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Determine default port
+    default_port = 80 if parsed.scheme == 'http' else 443
+    
+    # Extract hostname and port
+    hostname = parsed.hostname
+    port = parsed.port
+    
+    # If port not specified, use default
+    if port is None:
+        port = default_port
+    
+    # Validate port is the default port
+    if port != default_port:
+        raise ValueError("Only default ports are allowed")
+    
+    # Resolve hostname
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Check for finite IP addresses
+    for ip in ip_addresses:
+        try:
+            socket.inet_aton(ip)
+        except socket.error:
+            raise ValueError("Invalid IP address")
+    
+    # Build the request URL (ensure port is included if needed for clarity, though logic above checks port)
+    # Since we validated port, we can use the original URL or construct a new one.
+    # We will use the original URL but ensure we don't follow redirects.
+    
+    # Make the request
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed")
+    
+    # Return the body
+    return body.decode('utf-8') if isinstance(body, bytes) else body

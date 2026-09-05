@@ -1,0 +1,124 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security guards.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If scheme is not HTTP/HTTPS on default port, 
+                    if hostname cannot be resolved, or if redirects fail validation.
+    """
+    # Parse the URL
+    from urllib.parse import urlparse, parse_qs
+    
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    path = parsed.path
+    query = parsed.query
+    credentials = parsed.username + ":" + parsed.password if parsed.username and parsed.password else ""
+    netloc = parsed.netloc
+    
+    # GUARD: Check scheme and port
+    if scheme not in ['http', 'https']:
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    default_port = 80 if scheme == 'http' else 443
+    requested_port = parsed.port
+    
+    # If no port specified, use default. If specified, check if it matches default.
+    if requested_port is None:
+        port = default_port
+    else:
+        if requested_port != default_port:
+            raise ValueError(f"Non-default port {requested_port} not allowed for {scheme}")
+    
+    # GUARD: Resolve hostname
+    hostname = netloc if not credentials else netloc.split(':')[0]
+    try:
+        ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    
+    if not ips:
+        raise ValueError(f"No IP addresses found for hostname: {hostname}")
+    
+    # Store the public address (first resolved IP) for redirect validation
+    public_address = ips[0]
+    current_scheme = scheme
+    current_port = default_port
+    current_credentials = credentials
+    current_dns = hostname
+    current_url = url
+    
+    # Follow redirects (at most 5)
+    redirect_count = 0
+    
+    while True:
+        # Make the request
+        status, headers, body = transport(current_url)
+        
+        # GUARD: Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+        
+        # Handle redirects
+        if 'location' in headers.lower():
+            redirect_url = headers['location']
+            
+            # GUARD: Check redirect count
+            if redirect_count >= 5:
+                raise ValueError("Too many redirects")
+            
+            redirect_count += 1
+            
+            # Parse redirect URL
+            try:
+                redirect_parsed = urlparse(redirect_url)
+            except Exception:
+                raise ValueError(f"Invalid redirect URL: {redirect_url}")
+            
+            # GUARD: Resolve redirect hostname
+            redirect_hostname = redirect_parsed.netloc if not redirect_parsed.username and not redirect_parsed.password else redirect_parsed.netloc.split(':')[0]
+            
+            # Check if hostname is different
+            if redirect_hostname != current_dns:
+                raise ValueError(f"Redirect hostname {redirect_hostname} differs from {current_dns}")
+            
+            # Check if port is different
+            redirect_port = redirect_parsed.port
+            if redirect_port is None:
+                redirect_port = default_port
+            if redirect_port != current_port:
+                raise ValueError(f"Redirect port {redirect_port} differs from {current_port}")
+            
+            # Check if credentials are different
+            if redirect_parsed.username or redirect_parsed.password:
+                raise ValueError(f"Redirect credentials differ from {current_credentials}")
+            
+            # Check if scheme is different
+            if redirect_parsed.scheme.lower() != current_scheme:
+                raise ValueError(f"Redirect scheme {redirect_parsed.scheme} differs from {current_scheme}")
+            
+            # Construct new URL
+            new_netloc = redirect_parsed.netloc
+            if redirect_parsed.username and redirect_parsed.password:
+                new_netloc = f"{redirect_parsed.username}:{redirect_parsed.password}@{redirect_parsed.netloc}"
+            new_url = f"{redirect_parsed.scheme}://{new_netloc}{redirect_parsed.path}"
+            if redirect_parsed.query:
+                new_url += f"?{redirect_parsed.query}"
+            
+            current_url = new_url
+            current_scheme = redirect_parsed.scheme
+            current_port = redirect_parsed.port
+            current_credentials = redirect_parsed.username + ":" + redirect_parsed.password if redirect_parsed.username and redirect_parsed.password else ""
+            current_dns = redirect_hostname
+        else:
+            raise ValueError("No Location header for redirect")

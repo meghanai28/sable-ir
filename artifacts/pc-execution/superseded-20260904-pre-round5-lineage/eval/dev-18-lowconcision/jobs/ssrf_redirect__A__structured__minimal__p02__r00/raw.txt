@@ -1,0 +1,82 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    # Parse the URL to extract scheme and netloc
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    
+    # GUARD: Accept only HTTP or HTTPS on default ports
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Default ports
+    http_port = 80
+    https_port = 443
+    
+    # Determine the port to use
+    port = None
+    if scheme == 'https':
+        port = https_port
+    else:
+        port = http_port
+    
+    # GUARD: Resolve the hostname
+    try:
+        # The resolve_host function returns textual IP addresses
+        ip_addresses = resolve_host(netloc)
+        if not ip_addresses:
+            raise ValueError(f"Failed to resolve hostname: {netloc}")
+    except Exception as e:
+        raise ValueError(f"Hostname resolution failed: {e}")
+    
+    # Construct the full URL for the request
+    # If no port is specified in the URL, we append the default port if needed for clarity,
+    # but urllib.request handles the scheme+netloc well. However, to ensure we hit the right port,
+    # we can construct the full netloc with port if necessary, though standard urlparse behavior
+    # usually omits the port if not in the input. Let's ensure the request goes to the right port.
+    # If the input url didn't have a port, we add it.
+    if port and ':' not in netloc:
+        full_netloc = f"{netloc}:{port}"
+    else:
+        full_netloc = netloc
+    
+    full_url = f"{scheme}://{full_netloc}{parsed.path}"
+    
+    # ORDER: Check scheme and resolve hostname before network request (done above)
+    # Capture initial destination (already have full_url)
+    
+    # Attempt to fetch using the provided transport
+    # transport(url) returns (status, headers, body)
+    try:
+        status, headers, body = transport(full_url)
+    except Exception as e:
+        raise ValueError(f"Network request failed: {e}")
+    
+    # GUARD: Reject every redirect response. We only follow the initial public destination.
+    # The transport function likely handles the connection. If it performs a redirect,
+    # we must ensure we don't follow it. Since we are passing the constructed URL,
+    # we rely on the transport implementation to not follow redirects automatically if possible,
+    # or we assume the transport handles the connection to the resolved IP.
+    # The plan says "follow the initial public destination but reject every redirect response".
+    # This implies we make one request to the resolved host. If the server responds with a redirect,
+    # we should not follow it. The transport function's behavior on redirects is up to it,
+    # but typically if we pass a URL without a fragment or with explicit query, it might redirect.
+    # To strictly adhere to "reject every redirect", we check the status code.
+    
+    # Note: The prompt says "transport(url) returns a (status, headers, body) tuple".
+    # It doesn't specify if transport follows redirects. Standard behavior for such functions
+    # often follows redirects. However, the requirement is to reject them.
+    # We will assume that if the status is 3xx, it is a redirect and we must raise ValueError.
+    if 300 <= status < 400:
+        raise ValueError("Redirect response detected and rejected")
+    
+    # EFFECT: Return the body for status 200
+    if status != 200:
+        raise ValueError(f"Expected status 200, got {status}")
+    
+    # Decode the body to string (assuming UTF-8)
+    return body.decode('utf-8') if isinstance(body, bytes) else body

@@ -1,0 +1,75 @@
+import os
+import tarfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Safety measures:
+    - Rejects any archive member that is a symbolic link or hard link.
+    - Rejects any member whose resolved path would escape dest_path (e.g., via '..' or absolute paths).
+    - Only regular files and directories are extracted.
+    - Validation occurs before any extraction.
+    
+    Returns True only if extraction completes successfully; otherwise returns False.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Create dest_path if it doesn't exist (but ensure it's under expected root if needed)
+        # However, per spec, we validate members within dest_path. We assume dest_path is the root.
+        
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Collect all members for validation before any extraction
+            members = tar.getmembers()
+            
+            for member in members:
+                # Skip directories? No, spec says "regular files and directories may still be extracted"
+                # But we must reject symlinks and hardlinks
+                
+                # Check if it's a symlink or hardlink
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Calculate the target path for the member
+                # For files and dirs, the target is the member.name relative to dest_path
+                # We need to resolve the path and check if it stays within dest_path
+                
+                # Get the full path where the member would be extracted
+                member_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the path to resolve '..' and absolute paths
+                # We must ensure the normalized path is still under dest_path
+                # Use os.path.normpath to handle '..'
+                normalized_member_path = os.path.normpath(member_path)
+                
+                # Check if the normalized path starts with dest_path (or is equal to it)
+                # We need to be careful with trailing slashes
+                dest_path_normalized = os.path.normpath(dest_path)
+                
+                if not (normalized_member_path.startswith(dest_path_normalized + os.sep) or normalized_member_path == dest_path_normalized):
+                    return False
+                
+                # Additional check: if the member is a directory, we need to ensure we don't extract it if it's outside
+                # But the above check should cover it.
+                
+                # Also, check if the member name is absolute
+                if member.name.startswith('/'):
+                    return False
+            
+            # If all members pass validation, extract them
+            for member in members:
+                if member.isdir():
+                    # Create directory
+                    os.makedirs(member_path, exist_ok=True)
+                else:
+                    # Extract file
+                    # Extract to dest_path
+                    tar.extract(member, path=dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

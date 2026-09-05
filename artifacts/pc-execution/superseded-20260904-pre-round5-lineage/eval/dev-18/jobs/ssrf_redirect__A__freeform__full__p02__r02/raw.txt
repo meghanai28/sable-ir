@@ -1,0 +1,56 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolution.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP/HTTPS, or if the status code is not 200.
+    """
+    # Parse the URL to extract scheme, netloc, path, and query
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the default port
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Extract hostname and port
+    hostname = parsed.netloc
+    if ':' in hostname:
+        hostname, port_str = hostname.rsplit(':', 1)
+        port = int(port_str)
+    else:
+        port = default_port
+    
+    # Resolve hostname to IP addresses
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for the hostname.")
+    
+    # Construct the request URL
+    request_url = f"{scheme}://{hostname}:{port}{parsed.path}?{parsed.query}"
+    
+    # Make the request using the transport function
+    status, headers, body = transport(request_url)
+    
+    # Check the status code
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed.")
+    
+    # Return the body
+    return body.decode('utf-8') if isinstance(body, bytes) else body

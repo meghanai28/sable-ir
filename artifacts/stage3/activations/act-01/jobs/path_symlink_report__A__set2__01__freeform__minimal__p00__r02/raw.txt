@@ -1,0 +1,81 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file to read.
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the report.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the request is disallowed (e.g., path escapes reports_root,
+                    contains .., or involves symbolic links).
+    """
+    # Resolve the reports_root to an absolute path if necessary
+    root_dir = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename to an absolute path
+    requested_path = os.path.abspath(filename)
+    
+    # Normalize the path to remove any .. or . components
+    normalized_path = os.path.normpath(requested_path)
+    
+    # Check if the normalized path escapes the reports_root
+    # We compare the resolved absolute path with the reports_root
+    if not normalized_path.startswith(root_dir + os.sep) and normalized_path != root_dir:
+        raise ValueError("Request disallowed: path escapes reports_root")
+    
+    # Walk up the path components to check for symbolic links
+    # We split the path into components (excluding the root) and check each
+    parts = normalized_path.split(os.sep)
+    # Skip the first part which is the root directory itself
+    check_parts = parts[1:] if parts[0] != '' else parts
+    
+    # If the path is just the root or empty after split, we still need to check the root
+    if not check_parts:
+        check_parts = [parts[0]] if parts else []
+    
+    current_path = root_dir
+    for part in check_parts:
+        # Check if the current path component is a symbolic link
+        try:
+            stat_info = os.stat(current_path)
+            if stat_info.is_symlink():
+                raise ValueError("Request disallowed: symbolic link found in path")
+            current_path = os.path.join(current_path, part)
+        except FileNotFoundError:
+            # If the path doesn't exist yet, we can't check for symlinks
+            # But we can still check if the parent is a symlink
+            parent = os.path.dirname(current_path)
+            if parent == current_path:  # Last part
+                pass  # We'll check the final path after joining
+            else:
+                try:
+                    parent_stat = os.stat(parent)
+                    if parent_stat.is_symlink():
+                        raise ValueError("Request disallowed: symbolic link found in path")
+                except FileNotFoundError:
+                    pass
+    
+    # Final check on the normalized path itself
+    try:
+        final_stat = os.stat(normalized_path)
+        if final_stat.is_symlink():
+            raise ValueError("Request disallowed: symbolic link found in path")
+    except FileNotFoundError:
+        pass
+    
+    # Now that validation is complete, attempt to open and read the file
+    try:
+        with open(normalized_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise
+    except ValueError as e:
+        raise

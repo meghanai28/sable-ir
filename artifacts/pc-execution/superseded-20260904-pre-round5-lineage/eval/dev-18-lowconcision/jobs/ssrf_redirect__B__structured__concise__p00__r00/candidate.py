@@ -1,0 +1,131 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolver.
+    
+    Args:
+        url: The URL to fetch (may be absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string if status is 200.
+    
+    Raises:
+        ValueError: If the URL is absolute, contains '..' segments, or resolves to an invalid IP.
+    """
+    # Validate URL scheme and reject absolute URLs if they don't match HTTP/HTTPS
+    if url.startswith(('http://', 'https://')):
+        scheme = url.split('://')[0]
+        if scheme not in ('http', 'https'):
+            raise ValueError("Only HTTP and HTTPS are allowed")
+    else:
+        raise ValueError("Absolute URL required")
+    
+    # Check for '..' segments in the URL
+    if '..' in url:
+        raise ValueError("URL contains '..' segments")
+    
+    # Parse the initial URL
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    
+    # Resolve the hostname and validate IP
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid hostname")
+    
+    try:
+        ips = resolve_host(hostname)
+        if not ips:
+            raise ValueError("Hostname does not resolve to a finite IP address")
+        # Check if any IP is finite (not all zeros)
+        valid_ip = False
+        for ip in ips:
+            parts = ip.split('.')
+            if len(parts) == 4:
+                if all(0 <= int(p) <= 255 for p in parts):
+                    valid_ip = True
+                    break
+        if not valid_ip:
+            raise ValueError("Hostname does not resolve to a finite IP address")
+    except Exception:
+        raise ValueError("Hostname does not resolve to a finite IP address")
+    
+    # Set initial scheme and port
+    initial_scheme = parsed.scheme
+    initial_port = parsed.port or (443 if initial_scheme == 'https' else 80)
+    
+    current_url = url
+    current_scheme = initial_scheme
+    current_port = initial_port
+    max_redirects = 5
+    redirects = 0
+    
+    while True:
+        # Resolve the current URL's hostname
+        current_hostname = urlparse(current_url).hostname
+        if current_hostname is None:
+            raise ValueError("Invalid hostname")
+        
+        try:
+            current_ips = resolve_host(current_hostname)
+            if not current_ips:
+                raise ValueError("Hostname does not resolve to a finite IP address")
+            valid_ip = False
+            for ip in current_ips:
+                parts = ip.split('.')
+                if len(parts) == 4:
+                    if all(0 <= int(p) <= 255 for p in parts):
+                        valid_ip = True
+                        break
+            if not valid_ip:
+                raise ValueError("Hostname does not resolve to a finite IP address")
+        except Exception:
+            raise ValueError("Hostname does not resolve to a finite IP address")
+        
+        # Call transport
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError("Non-200 status code")
+        
+        # Return body as text
+        return body.decode('utf-8') if isinstance(body, bytes) else str(body)
+        
+        # Check for redirects
+        if 'Location' in headers:
+            redirect_url = headers['Location']
+            redirects += 1
+            
+            if redirects > max_redirects:
+                raise ValueError("Too many redirects")
+            
+            # Resolve redirect URL against current URL
+            from urllib.parse import urljoin
+            resolved_redirect = urljoin(current_url, redirect_url)
+            
+            # Parse resolved redirect
+            redirect_parsed = urlparse(resolved_redirect)
+            
+            # Check scheme and port
+            if redirect_parsed.scheme != current_scheme:
+                raise ValueError("Redirect has different scheme")
+            
+            redirect_port = redirect_parsed.port or (443 if redirect_parsed.scheme == 'https' else 80)
+            
+            if redirect_port != current_port:
+                raise ValueError("Redirect has different port")
+            
+            # Check for '..' in redirect URL
+            if '..' in redirect_url:
+                raise ValueError("Redirect contains '..' segments")
+            
+            # Update current URL
+            current_url = resolved_redirect
+            current_scheme = redirect_parsed.scheme
+            current_port = redirect_port
+        else:
+            break
+    
+    raise ValueError("No redirect location found")

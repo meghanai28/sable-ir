@@ -1,0 +1,85 @@
+import os
+import tarfile
+import stat
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Returns True only if extraction completes successfully without writing
+    any content outside dest_path. Returns False if validation or extraction fails.
+    """
+    # Normalize dest_path to an absolute path, resolving .. and .
+    try:
+        dest_path = os.path.abspath(dest_path)
+    except (ValueError, OSError):
+        return False
+
+    # Ensure dest_path exists and is a directory
+    if not os.path.isdir(dest_path):
+        try:
+            os.makedirs(dest_path, exist_ok=True)
+        except (OSError, PermissionError):
+            return False
+
+    # Define the root directory for validation
+    root_dir = dest_path
+
+    # Open the tar file and iterate over members
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members to validate before extraction
+            members = tar.getmembers()
+            
+            for member in members:
+                # Skip directories, only extract files
+                if member.isdir():
+                    continue
+                
+                # Resolve the target path of the member
+                try:
+                    # Use member.name which is the path in the archive
+                    # We need to resolve the path to check if it escapes
+                    member_name = member.name
+                    
+                    # Calculate the target path relative to dest_path
+                    # We must resolve the path to detect .. escapes
+                    target_path = os.path.normpath(os.path.join(root_dir, member_name))
+                    
+                    # Check if the target path escapes the root directory
+                    # by checking if it's outside the root or contains .. that goes above root
+                    if not target_path.startswith(root_dir + os.sep) and target_path != root_dir:
+                        # This could be an escape if the path doesn't start with root + sep
+                        # However, we must also check if the normalized path is outside root
+                        # A safer check: ensure the resolved path is within the root directory tree
+                        if not (target_path == root_dir or target_path.startswith(root_dir + os.sep)):
+                            return False
+                    
+                    # Additional check: ensure the path doesn't go above root
+                    # by checking the common prefix
+                    root_parts = root_dir.split(os.sep)
+                    target_parts = target_path.split(os.sep)
+                    
+                    # Find the length of the common prefix
+                    min_len = min(len(root_parts), len(target_parts))
+                    common_prefix = root_parts[:min_len]
+                    
+                    if not (common_prefix == target_parts[:min_len]):
+                        return False
+                        
+                except (ValueError, OSError):
+                    return False
+                
+                # Now perform the extraction with the validated path
+                try:
+                    # Extract to the validated target_path
+                    member.extract(member_name, path=root_dir)
+                except (tarfile.TarError, OSError, PermissionError):
+                    return False
+                    
+    except (tarfile.TarError, OSError, PermissionError):
+        return False
+    
+    return True

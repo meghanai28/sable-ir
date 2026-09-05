@@ -8,8 +8,8 @@ dev-only behavioral selection can happen afterwards; nothing here reads the test
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
-import importlib.metadata
 import json
 import os
 import re
@@ -377,7 +377,7 @@ def run_stage2_training(
     dataset_path = root / manifest.dataset_manifest_path
     if _sha(dataset_path.read_bytes()) != manifest.dataset_manifest_sha256:
         raise Stage2Error("Stage 2 dataset manifest changed after authorization")
-    current_versions = _versions(manifest.package_versions)
+    current_versions = package_versions()
     if current_versions != manifest.package_versions:
         raise Stage2Error(
             f"Stage 2 package versions changed: frozen={manifest.package_versions}, "
@@ -437,7 +437,10 @@ def run_stage2_training(
         per_device_train_batch_size=config.qlora.per_device_train_batch_size,
         per_device_eval_batch_size=config.qlora.per_device_eval_batch_size,
         gradient_accumulation_steps=config.qlora.gradient_accumulation_steps,
-        warmup_ratio=config.qlora.warmup_ratio,
+        # transformers v5 removed `warmup_ratio`. `warmup_steps` is a float and a value below 1
+        # is interpreted as a ratio -- ceil(num_training_steps * value) -- so passing the frozen
+        # warmup_ratio here preserves the configured schedule exactly.
+        warmup_steps=config.qlora.warmup_ratio,
         weight_decay=config.qlora.weight_decay,
         lr_scheduler_type="cosine",
         seed=config.qlora.seed,
@@ -456,7 +459,8 @@ def run_stage2_training(
         report_to="none",
         load_best_model_at_end=False,
         dataloader_num_workers=0,
-        group_by_length=False,
+        # `group_by_length` was removed in transformers v5; it was already False here, and no
+        # length grouping is the current behaviour, so dropping it changes nothing.
     )
     trainer = Trainer(
         model=model,
@@ -474,7 +478,10 @@ def run_stage2_training(
     trainer.save_model(str(final_adapter))
     tokenizer.save_pretrained(str(final_adapter))
     state_path = output / "trainer-state.json"
-    _write_new(state_path, json.dumps(trainer.state.to_dict(), indent=2, sort_keys=True) + "\n")
+    # transformers v5 removed TrainerState.to_dict(); it is a dataclass, and asdict gives
+    # the same full log history, epoch, and global_step record.
+    state = dataclasses.asdict(trainer.state)
+    _write_new(state_path, json.dumps(state, indent=2, sort_keys=True) + "\n")
     names_payload = "\n".join(trainable_names) + "\n"
     _write_new(output / "trainable-parameter-names.txt", names_payload)
     _write_new(output / "lora-target-modules.txt", "\n".join(targets) + "\n")
@@ -556,16 +563,6 @@ def hash_tree(directory: Path, *, adapter_only: bool = False) -> dict[str, str]:
             continue
         hashes[path.relative_to(directory).as_posix()] = _sha(path.read_bytes())
     return hashes
-
-
-def _versions(names: dict[str, str]) -> dict[str, str]:
-    current: dict[str, str] = {}
-    for name in names:
-        try:
-            current[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            current[name] = "absent"
-    return current
 
 
 def _relative(path: Path, root: Path) -> str:

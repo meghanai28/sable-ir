@@ -1,0 +1,140 @@
+import urllib.parse
+import urllib.request
+import socket
+import ssl
+from typing import Tuple, List
+
+def _get_default_port(scheme: str) -> int:
+    """Return the default port for a given scheme."""
+    return 80 if scheme == 'http' else 443
+
+def _resolve_host(hostname: str, resolver: callable) -> List[str]:
+    """Resolve hostname to IP addresses using the provided resolver."""
+    try:
+        return resolver(hostname)
+    except Exception:
+        return []
+
+def _validate_scheme(url: str) -> str:
+    """Validate the scheme of the URL and return it if valid, otherwise raise ValueError."""
+    scheme = urllib.parse.urlparse(url).scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Only HTTP and HTTPS schemes are allowed, got {scheme}")
+    return scheme
+
+def _get_public_destination(url: str, scheme: str, port: int) -> str:
+    """Extract the public destination (scheme://host:port) from the URL."""
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("Invalid URL structure")
+    host = parsed.netloc
+    if ':' in host:
+        host, _ = host.rsplit(':', 1)
+    if not host:
+        raise ValueError("No host in URL")
+    if port != _get_default_port(scheme):
+        host = f"{host}:{port}"
+    return f"{scheme}://{host}"
+
+def _is_relative_location(location: str) -> bool:
+    """Check if the location header is a relative URL."""
+    return not location.startswith(('http://', 'https://'))
+
+def _follow_location(current_url: str, location: str, resolver: callable) -> str:
+    """Follow a relative Location header and return the resolved absolute URL."""
+    parsed_current = urllib.parse.urlparse(current_url)
+    parsed_location = urllib.parse.urlparse(location)
+    
+    # Combine base and location
+    full_url = urllib.parse.urljoin(parsed_current.geturl(), parsed_location.geturl())
+    
+    # Re-parse to get new scheme/host/port
+    new_parsed = urllib.parse.urlparse(full_url)
+    
+    # Validate scheme
+    scheme = _validate_scheme(full_url)
+    
+    # Resolve hostname
+    hostname = new_parsed.netloc
+    if ':' in hostname:
+        hostname, _ = hostname.rsplit(':', 1)
+    
+    if not hostname:
+        raise ValueError("No host in resolved URL")
+    
+    resolved_ips = _resolve_host(hostname, resolver)
+    if not resolved_ips:
+        raise ValueError(f"Failed to resolve hostname {hostname}")
+    
+    # Construct new public destination
+    if new_parsed.port is None:
+        new_port = _get_default_port(scheme)
+    else:
+        new_port = new_parsed.port
+    
+    new_public_dest = f"{scheme}://{hostname}"
+    if new_port != _get_default_port(scheme):
+        new_public_dest = f"{new_public_dest}:{new_port}"
+    
+    return new_public_dest
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """Fetch text from a URL with validation and security checks."""
+    # Order: Check scheme and resolve hostname before making network request
+    scheme = _validate_scheme(url)
+    port = _get_default_port(scheme)
+    
+    # Extract and validate public destination
+    public_dest = _get_public_destination(url, scheme, port)
+    
+    # Resolve hostname
+    hostname = public_dest.split('://')[1].split(':')[0]
+    resolved_ips = _resolve_host(hostname, resolve_host)
+    if not resolved_ips:
+        raise ValueError(f"Failed to resolve hostname {hostname}")
+    
+    # Make the request
+    req = urllib.request.Request(url)
+    
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            status = response.status
+            headers = response.headers
+            body = response.read().decode('utf-8')
+            
+            # Check status
+            if status != 200:
+                raise ValueError(f"Invalid status code: {status}")
+            
+            # Check for Location header and follow if relative
+            location = headers.get('Location')
+            if location:
+                if _is_relative_location(location):
+                    # Follow the location
+                    new_dest = _follow_location(url, location, resolve_host)
+                    # Check if new destination remains beneath selected public destination
+                    # (i.e., same host)
+                    new_host = new_dest.split('://')[1].split(':')[0]
+                    if new_host != hostname:
+                        raise ValueError("Redirect destination must be on the same host")
+                    # Update the request URL
+                    req = urllib.request.Request(new_dest)
+                    # Re-fetch
+                    with urllib.request.urlopen(req, timeout=10) as new_response:
+                        new_status = new_response.status
+                        new_headers = new_response.headers
+                        new_body = new_response.read().decode('utf-8')
+                        if new_status != 200:
+                            raise ValueError(f"Invalid status code after redirect: {new_status}")
+                        return new_body
+                else:
+                    raise ValueError("Absolute Location header not allowed")
+            
+            return body
+            
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP Error: {e.code}")
+    except urllib.error.URLError as e:
+        raise ValueError(f"URL Error: {e.reason}")
+    except Exception as e:
+        raise ValueError(f"Unexpected error: {e}")

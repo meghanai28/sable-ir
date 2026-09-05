@@ -1,0 +1,171 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security checks.
+    
+    Args:
+        url: The initial URL (absolute or relative).
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed.
+    """
+    # Parse the initial URL
+    from urllib.parse import urlparse, parse_qs, unquote
+    initial_parsed = urlparse(url)
+    
+    # Check scheme
+    scheme = initial_parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only http and https schemes are allowed")
+    
+    # Resolve initial hostname
+    initial_hostname = initial_parsed.hostname
+    if not initial_hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve initial hostname to IP
+    try:
+        resolved_ips = resolve_host(initial_hostname)
+    except Exception:
+        raise ValueError("Failed to resolve initial hostname")
+    
+    if len(resolved_ips) != 1:
+        raise ValueError("Exactly one IP address is required")
+    
+    initial_ip = resolved_ips[0]
+    initial_netloc = initial_parsed.netloc
+    
+    # Check path is absolute and does not start with ..
+    if not initial_parsed.path:
+        raise ValueError("Path must be absolute")
+    
+    # Normalize path to check for ..
+    path = initial_parsed.path
+    # Split and check for ..
+    if '..' in path:
+        raise ValueError("Path cannot contain .. segments")
+    
+    # State for redirect tracking
+    current_url = url
+    current_scheme = scheme
+    current_netloc = initial_netloc
+    current_ip = initial_ip
+    
+    while True:
+        # Parse current URL
+        current_parsed = urlparse(current_url)
+        
+        # Resolve current hostname
+        current_hostname = current_parsed.hostname
+        if not current_hostname:
+            raise ValueError("Invalid URL: missing hostname")
+        
+        try:
+            resolved_ips = resolve_host(current_hostname)
+        except Exception:
+            raise ValueError("Failed to resolve hostname")
+        
+        if len(resolved_ips) != 1:
+            raise ValueError("Exactly one IP address is required")
+        
+        current_ip = resolved_ips[0]
+        
+        # Check path for ..
+        if not current_parsed.path:
+            raise ValueError("Path must be absolute")
+        
+        if '..' in current_parsed.path:
+            raise ValueError("Path cannot contain .. segments")
+        
+        # Check if this is a redirect
+        status, headers, body = transport(current_url)
+        
+        if status == 301 or status == 302 or status == 303 or status == 307 or status == 308:
+            location = headers.get('location')
+            if not location:
+                raise ValueError("Redirect without Location header")
+            
+            # Check if Location is absolute
+            if not location.startswith(('http://', 'https://')):
+                # Relative redirect not allowed
+                raise ValueError("Redirect location must be absolute")
+            
+            # Parse redirect location
+            redirect_parsed = urlparse(location)
+            
+            # Check for .. in redirect path
+            if '..' in redirect_parsed.path:
+                raise ValueError("Redirect path cannot contain .. segments")
+            
+            # Determine new netloc
+            if redirect_parsed.netloc:
+                new_netloc = redirect_parsed.netloc
+                new_scheme = redirect_parsed.scheme
+                new_ip = None # Will resolve again
+            else:
+                # Relative redirect - not allowed per spec ("Do not follow a redirect whose Location is relative")
+                raise ValueError("Redirect location must be absolute")
+            
+            # If the redirect is to the same host, we can continue, but we need to re-resolve to ensure IP check
+            # However, the spec says "resolve and check each redirect's Location the same way"
+            # So we resolve the new hostname again
+            if new_netloc:
+                try:
+                    new_resolved_ips = resolve_host(new_netloc)
+                except Exception:
+                    raise ValueError("Failed to resolve redirect hostname")
+                
+                if len(new_resolved_ips) != 1:
+                    raise ValueError("Exactly one IP address is required")
+                
+                new_ip = new_resolved_ips[0]
+                
+                # Check if the redirect leads outside the initial destination
+                # "Do not follow a redirect whose resolved destination would be outside the resolved initial destination"
+                # This implies if the IP changes, it might be outside, but strictly speaking, 
+                # we should check if the netloc is different. If netloc is same, IP should be same.
+                # If netloc is different, we raise ValueError.
+                if new_netloc != initial_netloc:
+                    raise ValueError("Redirect destination must be within initial destination")
+            
+            # Update current URL
+            if redirect_parsed.netloc:
+                current_url = redirect_parsed.geturl()
+            else:
+                # This case shouldn't happen due to absolute check, but if it does, treat as error
+                raise ValueError("Redirect location must be absolute")
+            
+            # Re-resolve hostname for the new URL
+            new_hostname = redirect_parsed.hostname
+            if not new_hostname:
+                raise ValueError("Invalid redirect URL: missing hostname")
+            
+            try:
+                new_resolved_ips = resolve_host(new_hostname)
+            except Exception:
+                raise ValueError("Failed to resolve redirect hostname")
+            
+            if len(new_resolved_ips) != 1:
+                raise ValueError("Exactly one IP address is required")
+            
+            new_ip = new_resolved_ips[0]
+            
+            # Check if IP changed (which would mean netloc changed or multiple IPs)
+            if new_ip != current_ip:
+                raise ValueError("Redirect destination must be within initial destination")
+            
+            current_scheme = redirect_parsed.scheme
+            current_netloc = redirect_parsed.netloc
+            current_url = redirect_parsed.geturl()
+        else:
+            break
+    
+    # Check final status
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    return body

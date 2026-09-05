@@ -1,0 +1,56 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolution.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP/HTTPS, status code is not 200, or redirect is followed.
+    """
+    import socket
+    import urllib.parse
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Determine port
+    default_port = 80 if scheme == 'http' else 443
+    port = parsed.port if parsed.port else default_port
+    
+    # Extract hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve hostname to IP addresses
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # Build the request URL with port
+    request_url = f"{scheme}://{hostname}:{port}{parsed.path}?{parsed.query}"
+    
+    # Call transport
+    status, headers, body = transport(request_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Request failed with status code {status}")
+    
+    # Check for redirect (do not follow)
+    if 'location' in headers.lower():
+        raise ValueError("Redirect detected, not following")
+    
+    # Return body
+    return body

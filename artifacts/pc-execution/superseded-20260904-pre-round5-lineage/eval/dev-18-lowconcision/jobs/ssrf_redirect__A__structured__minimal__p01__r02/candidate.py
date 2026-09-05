@@ -1,0 +1,67 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation and no following of redirects.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function taking a URL and returning (status, headers, body).
+        resolve_host (callable): A function taking a hostname and returning textual IP addresses.
+    
+    Returns:
+        str: The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., absolute URL, unreachable host, or redirect).
+    """
+    # Parse the URL
+    from urllib.parse import urlparse, parse_qs
+    
+    parsed = urlparse(url)
+    
+    # Guard: Reject absolute URLs (scheme must be http or https)
+    if not parsed.scheme or parsed.scheme.lower() not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS URLs are allowed")
+    
+    # Guard: Reject paths containing '..' segments
+    if '..' in parsed.path:
+        raise ValueError("URLs containing '..' segments are disallowed")
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid hostname in URL")
+    
+    # Guard: Check if hostname is reachable via resolve_host
+    try:
+        ips = resolve_host(hostname)
+        if not ips:
+            raise ValueError("Hostname is unreachable")
+    except Exception:
+        raise ValueError("Hostname is unreachable")
+    
+    # Check port
+    default_port = 80 if parsed.scheme == 'http' else 443
+    if parsed.port is not None and parsed.port != default_port:
+        raise ValueError("Only default ports are allowed")
+    
+    # Build the request URL
+    request_url = f"{parsed.scheme}://{hostname}"
+    if parsed.path:
+        request_url += parsed.path
+    if parsed.query:
+        request_url += f"?{parsed.query}"
+    
+    # Capture initial response
+    status, headers, body = transport(request_url)
+    
+    # Guard: Check status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    # Guard: Do not follow any redirects (even if they appear public)
+    # Check for Location header
+    location = headers.get('Location')
+    if location:
+        raise ValueError("Redirects are not allowed")
+    
+    return body

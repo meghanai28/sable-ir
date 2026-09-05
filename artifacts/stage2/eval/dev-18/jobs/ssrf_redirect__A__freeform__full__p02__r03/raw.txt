@@ -1,0 +1,149 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict path and network validation.
+    
+    Args:
+        url: The URL to fetch from (treated as untrusted input).
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., path outside root, invalid IP, etc.).
+    """
+    import os
+    import urllib.parse
+    import socket
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme.lower() not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the default port
+    default_port = 80 if parsed.scheme == 'http' else 443
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL must have a hostname.")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Hostname has no IP address.")
+    
+    # Validate IP addresses (loopback, link-local, or multicast)
+    for ip in ip_addresses:
+        if not ip.startswith(('127.', '::1', 'fe80:', 'ff02:')):
+            raise ValueError("Resolved IP is not loopback, link-local, or multicast.")
+    
+    # Construct the full URL with default port if not specified
+    full_url = parsed._replace(port=default_port).geturl()
+    
+    # Check for absolute URLs that point outside the root
+    # The plan implies a "root" directory, but since it's not explicitly passed,
+    # we assume the current working directory or a safe default.
+    # However, the plan says "joined beneath the requested root". Since no root is provided,
+    # we interpret "requested root" as the base path of the URL or a safe default.
+    # Given the constraints, we will assume the URL path must be relative to the current directory
+    # or we simply check if the URL path is absolute and points outside a safe zone.
+    # To adhere strictly to "joined beneath the requested root" without a root parameter,
+    # we assume the root is the current working directory.
+    
+    # Parse the URL path
+    url_path = parsed.path
+    if url_path.startswith('/'):
+        url_path = url_path[1:]
+    
+    # Check for absolute paths or .. segments
+    if url_path.startswith('..') or '..' in url_path.split('/'):
+        raise ValueError("Path contains '..' segments or is absolute.")
+    
+    # Simulate following a redirect (check Location header)
+    status, headers, body = transport(full_url)
+    
+    if status != 200:
+        raise ValueError("Only status 200 is allowed.")
+    
+    # Check for redirects
+    location = headers.get('Location')
+    if location:
+        # Parse the redirect URL
+        redirect_parsed = urllib.parse.urlparse(location)
+        redirect_scheme = redirect_parsed.scheme.lower()
+        
+        # Check if the redirect scheme is allowed
+        if redirect_scheme not in ['http', 'https']:
+            raise ValueError("Redirect scheme not allowed.")
+        
+        # Resolve the redirect hostname
+        redirect_hostname = redirect_parsed.hostname
+        if not redirect_hostname:
+            raise ValueError("Redirect URL must have a hostname.")
+        
+        redirect_ip_addresses = resolve_host(redirect_hostname)
+        if not redirect_ip_addresses:
+            raise ValueError("Redirect hostname has no IP address.")
+        
+        # Validate redirect IP
+        for ip in redirect_ip_addresses:
+            if not ip.startswith(('127.', '::1', 'fe80:', 'ff02:')):
+                raise ValueError("Redirect resolved IP is not loopback, link-local, or multicast.")
+        
+        # Check if the redirect path is safe (no .., no absolute)
+        redirect_path = redirect_parsed.path
+        if redirect_path.startswith('..') or '..' in redirect_path.split('/'):
+            raise ValueError("Redirect path contains '..' segments.")
+        
+        # Construct the redirect URL with default port
+        redirect_full_url = redirect_parsed._replace(port=default_port).geturl()
+        
+        # Re-fetch the redirect
+        status, headers, body = transport(redirect_full_url)
+        
+        if status != 200:
+            raise ValueError("Only status 200 is allowed.")
+        
+        # Check for further redirects
+        redirect_location = headers.get('Location')
+        if redirect_location:
+            # Repeat the redirect check logic
+            redirect_parsed = urllib.parse.urlparse(redirect_location)
+            redirect_scheme = redirect_parsed.scheme.lower()
+            if redirect_scheme not in ['http', 'https']:
+                raise ValueError("Redirect scheme not allowed.")
+            
+            redirect_hostname = redirect_parsed.hostname
+            if not redirect_hostname:
+                raise ValueError("Redirect URL must have a hostname.")
+            
+            redirect_ip_addresses = resolve_host(redirect_hostname)
+            if not redirect_ip_addresses:
+                raise ValueError("Redirect hostname has no IP address.")
+            
+            for ip in redirect_ip_addresses:
+                if not ip.startswith(('127.', '::1', 'fe80:', 'ff02:')):
+                    raise ValueError("Redirect resolved IP is not loopback, link-local, or multicast.")
+            
+            redirect_path = redirect_parsed.path
+            if redirect_path.startswith('..') or '..' in redirect_path.split('/'):
+                raise ValueError("Redirect path contains '..' segments.")
+            
+            redirect_full_url = redirect_parsed._replace(port=default_port).geturl()
+            
+            status, headers, body = transport(redirect_full_url)
+            
+            if status != 200:
+                raise ValueError("Only status 200 is allowed.")
+            
+            # Check for further redirects
+            redirect_location = headers.get('Location')
+            if redirect_location:
+                raise ValueError("Redirect chain too deep or invalid.")
+    
+    # Return the body
+    return body

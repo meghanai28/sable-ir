@@ -42,8 +42,10 @@ ModelT = TypeVar("ModelT", bound=StrictModel)
 STRUCTURED_FIELDS = ("SOURCE", "TRUST", "SINK", "GUARD", "ORDER", "EFFECT")
 TRAINING_HARNESS_VERSION: Literal["stage2-qlora-training-v2"] = "stage2-qlora-training-v2"
 DATASET_HARNESS_VERSION: Literal["stage2-reference-dataset-v2"] = "stage2-reference-dataset-v2"
-REQUIRED_PACKAGES = ("torch", "transformers", "peft", "accelerate", "bitsandbytes")
-OPTIONAL_KERNEL_PACKAGES = ("fla", "flash-linear-attention", "causal-conv1d", "triton")
+REQUIRED_PACKAGES = ("torch", "transformers", "peft", "accelerate", "bitsandbytes", "numpy")
+# Distribution names, not import names: the `flash-linear-attention` distribution provides the
+# `fla` module. Probing for a distribution called "fla" always reports absent and is misleading.
+OPTIONAL_KERNEL_PACKAGES = ("flash-linear-attention", "causal-conv1d", "triton")
 DOCUMENT_ORDER_VARIANT_LIMIT = 3
 
 
@@ -260,6 +262,44 @@ class SplitAssignment(StrictModel):
         if path.is_absolute() or ".." in path.parts or path.suffix != ".json":
             raise ValueError("split task_path must be a repository-relative JSON path")
         return self
+
+
+class HumanAuditAttestation(StrictModel):
+    """Append-only human sign-off that BINDS an existing audit without rewriting it.
+
+    The audited content, its Claude preliminary-review provenance, the frozen dataset and any
+    trained adapter all stay byte-identical. Approving unchanged data is metadata, not a new
+    dataset, so this never forces a re-freeze or retrain. Retraining is required only when a
+    plan, audit decision, paraphrase, training row, or the split itself changes -- each of which
+    changes `source_audit_sha256` and invalidates this attestation automatically.
+    """
+
+    schema_version: Literal[1] = 1
+    reviewer: NonEmpty
+    reviewed_at_utc: str
+    # When the approval decision was recorded, distinct from when review happened.
+    approved_at_utc: str | None = None
+    source_audit_path: str
+    source_audit_sha256: Sha256
+    bound_artifact_path: str | None = None
+    bound_artifact_sha256: Sha256 | None = None
+    decision: Literal[
+        "pending_human_review",
+        "approved_without_changes",
+        "approved_after_applied_corrections",
+    ]
+    statement: NonEmpty
+    preliminary_reviewer: NonEmpty
+    corrections_required_and_applied: tuple[str, ...] = ()
+
+    @property
+    def approved(self) -> bool:
+        """Only a completed human review satisfies a human-review gate.
+
+        `pending_human_review` records that a named reviewer intends to sign off but has not yet
+        inspected the current bytes. It must never stand in for completed review.
+        """
+        return self.decision != "pending_human_review"
 
 
 class Stage2SplitManifest(StrictModel):
@@ -1040,6 +1080,11 @@ def freeze_stage2_dataset(
     split = _load(Stage2SplitManifest, split_path)
     corpus = _load(Stage2ReferenceCorpus, corpus_path)
     audit = _load(Stage2ReferenceAudit, audit_path)
+    if split.config_sha256 != _sha(config_path.read_bytes()):
+        raise Stage2Error(
+            "frozen split records a different Stage 2 config; re-freeze the split against the "
+            "current config instead of freezing a dataset across a config change"
+        )
     if not audit.complete or audit.reviewer is None:
         raise Stage2Error("reference audit lacks reviewer/completed_at")
     if audit.corpus_sha256 != _sha(corpus_path.read_bytes()):
@@ -1186,6 +1231,37 @@ class Stage2PreflightReport(StrictModel):
     ready_for_training: bool
 
 
+def load_human_attestation(
+    path: Path, repository_root: Path, *, expect_artifact: Path | None = None
+) -> HumanAuditAttestation:
+    """Load a human sign-off and verify it still binds the exact audited bytes."""
+    root = repository_root.resolve()
+    attestation = _load(HumanAuditAttestation, path)
+    audit_path = root / attestation.source_audit_path
+    if not audit_path.is_file():
+        raise Stage2Error(f"attested audit is missing: {attestation.source_audit_path}")
+    if _sha(audit_path.read_bytes()) != attestation.source_audit_sha256:
+        raise Stage2Error(
+            "human attestation is bound to different audit bytes; the audited content changed "
+            "after sign-off, so it must be re-reviewed"
+        )
+    if attestation.bound_artifact_sha256 is not None and attestation.bound_artifact_path:
+        bound = root / attestation.bound_artifact_path
+        if not bound.is_file() or _sha(bound.read_bytes()) != attestation.bound_artifact_sha256:
+            raise Stage2Error(
+                f"human attestation no longer binds {attestation.bound_artifact_path}"
+            )
+    if expect_artifact is not None and attestation.bound_artifact_path != _relative(
+        expect_artifact, root
+    ):
+        raise Stage2Error("human attestation binds a different artifact than the gate expects")
+    return attestation
+
+
+def stage2_human_attestation_path(config: Stage2Config) -> str:
+    return config.reference_audit_path.replace(".json", ".human-attestation.json")
+
+
 def audit_stage2_preflight(
     config_path: Path,
     repository_root: Path,
@@ -1209,9 +1285,13 @@ def audit_stage2_preflight(
             if not (root / row.task_path).is_file()
             or _sha((root / row.task_path).read_bytes()) != row.task_sha256
         ]
-        split_ok = not stale
+        config_bound = split.config_sha256 == _sha(config_path.read_bytes())
+        split_ok = not stale and config_bound
         counts = {name.value: count for name, count in split.counts.items()}
-        detail = f"design={split.design_mode.value}; counts={counts}; stale={stale}"
+        detail = (
+            f"design={split.design_mode.value}; counts={counts}; stale={stale}; "
+            f"config_sha256_bound={config_bound}"
+        )
     checks.append(PreflightCheck(check="frozen_base_task_split", passed=split_ok, detail=detail))
 
     try:
@@ -1224,6 +1304,24 @@ def audit_stage2_preflight(
     checks.append(
         PreflightCheck(
             check="complete_behavior_blinded_reference_audit", passed=audit_ok, detail=detail
+        )
+    )
+
+    attestation_path = root / stage2_human_attestation_path(config)
+    try:
+        attestation = load_human_attestation(attestation_path, root)
+        attested_ok = attestation.approved
+        detail = (
+            f"reviewer={attestation.reviewer}; decision={attestation.decision}; "
+            f"reviewed_at={attestation.reviewed_at_utc}; "
+            f"preliminary={attestation.preliminary_reviewer[:48]}"
+        )
+    except (Stage2Error, OSError) as error:
+        attested_ok = False
+        detail = str(error)
+    checks.append(
+        PreflightCheck(
+            check="human_audit_attestation", passed=attested_ok, detail=detail
         )
     )
 
@@ -1299,13 +1397,21 @@ def audit_stage2_preflight(
         )
     )
     kernels = {name: packages.get(name, "absent") for name in OPTIONAL_KERNEL_PACKAGES}
+    delta_rule = "flash-linear-attention" in packages
+    conv = "causal-conv1d" in packages
+    active = [
+        f"gated-delta-rule={'flash-linear-attention' if delta_rule else 'pytorch-fallback'}",
+        f"causal-conv1d={'kernel' if conv else 'pytorch-fallback'}",
+    ]
     checks.append(
         PreflightCheck(
             check="optional_linear_attention_kernels",
             passed=True,
             detail=(
-                "informational: without fla/causal-conv1d the Gated DeltaNet layers use the "
-                f"slower PyTorch fallback; observed={json.dumps(kernels, sort_keys=True)}"
+                "informational: Gated DeltaNet kernel selection for this run; a fallback is "
+                "correct but slower on long sequences and changes kernel numerics relative to "
+                f"the other path. {'; '.join(active)}; "
+                f"observed={json.dumps(kernels, sort_keys=True)}"
             ),
         )
     )
@@ -1513,7 +1619,8 @@ def _torch_cuda() -> str:
 
 
 def package_versions() -> dict[str, str]:
-    versions: dict[str, str] = {}
+    """Exact interpreter and package versions; canary and preflight must agree on every one."""
+    versions: dict[str, str] = {"python": platform.python_version()}
     for name in (*REQUIRED_PACKAGES, *OPTIONAL_KERNEL_PACKAGES):
         with suppress(importlib.metadata.PackageNotFoundError):
             versions[name] = importlib.metadata.version(name)

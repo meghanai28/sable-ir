@@ -1,0 +1,84 @@
+import os
+import tarfile
+import stat
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path with security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize paths to ensure consistency and prevent path traversal via symlinks
+        # Resolve the tar_path to an absolute path to check integrity
+        tar_abs = os.path.abspath(tar_path)
+        
+        # Resolve the destination path, ensuring it is absolute
+        dest_abs = os.path.abspath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_abs, exist_ok=True)
+        
+        # Security check: Ensure dest_abs is within the current working directory or a known safe root
+        # For this implementation, we assume the caller's environment is safe, but we must prevent
+        # extraction from writing outside dest_abs.
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members in the archive
+            members = tar.getnames()
+            
+            for member in members:
+                # Check for absolute paths or paths with .. components
+                # tarfile.getnames() returns paths relative to the archive root, but we must check
+                # if the resolved path would escape dest_abs.
+                
+                # Normalize the member name to handle .. components in the archive itself
+                # However, the primary check is the resolved path relative to dest_abs.
+                
+                # Determine the target path for this member
+                target_path = os.path.join(dest_abs, member)
+                
+                # Check for absolute paths (though tarfile usually normalizes, being explicit is safer)
+                if os.path.isabs(member):
+                    raise ValueError(f"Archive contains absolute path: {member}")
+                
+                # Normalize the target path to resolve any .. components
+                normalized_target = os.path.normpath(target_path)
+                
+                # Security check: Ensure the normalized target is within dest_abs
+                if not normalized_target.startswith(dest_abs + os.sep) and normalized_target != dest_abs:
+                    raise ValueError(f"Path traversal detected: {member} -> {normalized_target}")
+                
+                # Additional check: Ensure no symbolic or hard links point outside dest_abs
+                # We need to inspect the member's mode and link references if any
+                member_info = tar.getmember(member)
+                
+                # Check for hard links
+                if member_info.linkname:
+                    # Resolve the link target
+                    link_target = os.path.normpath(os.path.join(dest_abs, member_info.linkname))
+                    if not link_target.startswith(dest_abs + os.sep) and link_target != dest_abs:
+                        raise ValueError(f"Hard link escapes destination: {member} -> {member_info.linkname}")
+                
+                # Check for symbolic links
+                if member_info.issym() or member_info.islnk():
+                    # For symlinks, we need to resolve the target after extraction or check the linkname
+                    # The linkname in the archive is relative to the archive root, so we resolve it relative to dest_abs
+                    link_target = os.path.normpath(os.path.join(dest_abs, member_info.linkname))
+                    if not link_target.startswith(dest_abs + os.sep) and link_target != dest_abs:
+                        raise ValueError(f"Symbolic link escapes destination: {member} -> {member_info.linkname}")
+                
+                # Extract the member
+                tar.extract(member, dest_abs)
+            
+            return True
+            
+    except Exception as e:
+        return False

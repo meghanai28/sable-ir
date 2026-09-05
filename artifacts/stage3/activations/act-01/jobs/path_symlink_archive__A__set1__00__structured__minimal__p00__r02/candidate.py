@@ -1,0 +1,83 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completed successfully, False otherwise.
+        
+    Raises:
+        ValueError: If the destination path escapes the allowed directory or if any archive member would do so.
+        FileNotFoundError: If the tar file does not exist.
+    """
+    # Normalize and resolve the destination path
+    dest_path = os.path.normpath(dest_path)
+    dest_dir = os.path.dirname(dest_path)
+    dest_file = os.path.basename(dest_path)
+    
+    # Ensure the destination directory exists
+    if not os.path.exists(dest_dir):
+        os.makedirs(dest_dir, exist_ok=True)
+    
+    # Resolve the absolute path for the destination
+    resolved_dest = os.path.abspath(dest_dir)
+    
+    # Check if the destination directory is outside the current working directory or has .. components that might be exploited
+    # We will use a safe check: the resolved path should not contain '..' relative to the base
+    if '..' in os.path.normpath(dest_path):
+        raise ValueError("Destination path contains '..' segments")
+    
+    # Extract the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # List all members to be extracted
+            members = tar.getnames()
+            
+            for member in members:
+                # Resolve the target path
+                member_dir = os.path.dirname(member)
+                member_file = os.path.basename(member)
+                
+                # Construct the full target path
+                if member_dir:
+                    full_target = os.path.join(resolved_dest, member_dir)
+                else:
+                    full_target = resolved_dest
+                
+                # Normalize the target path
+                full_target = os.path.normpath(full_target)
+                
+                # Check if the target path escapes the destination directory
+                if not full_target.startswith(resolved_dest + os.sep) and full_target != resolved_dest:
+                    raise ValueError(f"Archive member '{member}' would escape the destination directory '{resolved_dest}'")
+                
+                # Extract the member
+                tar.extract(member, dest_dir)
+                
+    except Exception as e:
+        # Clean up any partially extracted files if necessary
+        return False
+    
+    # Verify that no files were extracted outside the destination
+    # Check for any files in the parent directory of the destination
+    if os.path.exists(resolved_dest):
+        parent_dir = os.path.dirname(resolved_dest)
+        if os.path.exists(parent_dir):
+            try:
+                files = os.listdir(parent_dir)
+                for file in files:
+                    if file.startswith(os.path.basename(resolved_dest)):
+                        # This is expected, but we should ensure no files are created in the parent directory
+                        pass
+            except Exception:
+                return False
+    
+    return True

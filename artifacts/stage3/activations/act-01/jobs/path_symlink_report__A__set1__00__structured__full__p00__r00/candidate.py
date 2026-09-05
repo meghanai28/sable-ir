@@ -1,0 +1,43 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed.
+    """
+    # Resolve the reports_root to an absolute path if it isn't already
+    root_dir = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to an absolute path
+    requested_path = os.path.abspath(filename)
+    
+    # Resolve the requested path to see its real components
+    resolved_path = os.path.realpath(requested_path)
+    
+    # Ensure the resolved path is within the reports_root
+    # We compare the normalized absolute paths. If the resolved path starts with
+    # the root directory plus a separator (or is exactly the root), it's safe.
+    if not (resolved_path == root_dir or resolved_path.startswith(root_dir + os.sep)):
+        raise ValueError("Request disallowed: path escapes reports_root")
+    
+    # Walk the path components and check for symbolic links
+    # We split the path into components to check each directory and file
+    parts = []
+    current = root_dir
+    for part in resolved_path[len(root_dir):].split(os.sep):
+        if not part:
+            continue
+        current = os.path.join(current, part)
+        # Check if the current component is a symbolic link
+        if os.path.islink(current):
+            raise ValueError("Request disallowed: symbolic link found in path")
+        parts.append(part)
+    
+    # After resolving, check if the final file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {resolved_path}")
+    
+    # Read the file
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

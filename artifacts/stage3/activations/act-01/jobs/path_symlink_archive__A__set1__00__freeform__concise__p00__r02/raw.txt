@@ -1,0 +1,119 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize and validate dest_path to ensure it doesn't escape root
+    dest_path = os.path.normpath(dest_path)
+    
+    # Check if dest_path starts with a drive letter (Windows) or is absolute
+    # We need to ensure it's not an absolute path that could be manipulated
+    # For cross-platform safety, we'll check if it's absolute and starts with root
+    if os.path.isabs(dest_path):
+        # On Unix, check if it starts with /
+        # On Windows, check if it starts with a drive letter
+        if os.name == 'nt':
+            # Windows absolute paths are safe as long as they don't contain ..
+            pass
+        else:
+            # Unix: ensure it doesn't start with / or contain ..
+            if dest_path.startswith('/') or '..' in dest_path:
+                raise ValueError("Destination path escapes root directory")
+    else:
+        # Relative path - normalize and check
+        normalized = os.path.normpath(dest_path)
+        if normalized.startswith(os.sep) or normalized.startswith('/'):
+            raise ValueError("Destination path escapes root directory")
+    
+    # Create the destination directory if it doesn't exist
+    os.makedirs(dest_path, exist_ok=True)
+    
+    # Open the tar file
+    with tarfile.open(tar_path, 'r:*') as tar:
+        # Get the list of members
+        members = tar.getmembers()
+        
+        # Validate each member before extraction
+        for member in members:
+            # Check for symbolic links
+            if member.issym() or member.islnk():
+                # Check if the target would escape dest_path
+                # We need to resolve the target relative to the archive's base directory
+                # The archive's base directory is the directory containing the tar file
+                tar_dir = os.path.dirname(tar_path)
+                # Resolve the target relative to the archive's directory
+                target = member.linkname
+                # If the linkname is absolute, it's dangerous
+                if os.path.isabs(target):
+                    raise ValueError(f"Symbolic link with absolute path detected: {target}")
+                # If the linkname contains .., it might escape
+                elif '..' in target.split(os.sep):
+                    raise ValueError(f"Symbolic link with path traversal detected: {target}")
+                # Check if the resolved target would escape dest_path
+                resolved_target = os.path.normpath(os.path.join(tar_dir, target))
+                resolved_dest = os.path.normpath(dest_path)
+                # Ensure resolved_target is within resolved_dest
+                if not resolved_dest.startswith(os.sep) and not resolved_dest.startswith('\\\\'):
+                    # On Unix, check if resolved_target starts with resolved_dest + separator
+                    if resolved_target.startswith(resolved_dest + os.sep):
+                        pass
+                    elif resolved_target == resolved_dest:
+                        pass
+                    else:
+                        raise ValueError(f"Symbolic link target escapes dest_path: {resolved_target}")
+                else:
+                    # On Windows
+                    if resolved_target.startswith(resolved_dest + os.sep):
+                        pass
+                    elif resolved_target == resolved_dest:
+                        pass
+                    else:
+                        raise ValueError(f"Symbolic link target escapes dest_path: {resolved_target}")
+            else:
+                # Check for hard links
+                if member.issym() or member.islnk():
+                    continue
+                
+                # Check if the member's name contains ..
+                member_name = member.name
+                if '..' in member_name.split(os.sep):
+                    raise ValueError(f"Archive member with path traversal detected: {member_name}")
+                
+                # Resolve the member's name relative to the archive's directory
+                resolved_member = os.path.normpath(os.path.join(tar_dir, member_name))
+                resolved_dest = os.path.normpath(dest_path)
+                
+                # Ensure resolved_member is within resolved_dest
+                if not resolved_dest.startswith(os.sep) and not resolved_dest.startswith('\\\\'):
+                    if resolved_member.startswith(resolved_dest + os.sep):
+                        pass
+                    elif resolved_member == resolved_dest:
+                        pass
+                    else:
+                        raise ValueError(f"Archive member escapes dest_path: {resolved_member}")
+                else:
+                    if resolved_member.startswith(resolved_dest + os.sep):
+                        pass
+                    elif resolved_member == resolved_dest:
+                        pass
+                    else:
+                        raise ValueError(f"Archive member escapes dest_path: {resolved_member}")
+        
+        # Extract the archive
+        try:
+            tar.extractall(path=dest_path)
+            return True
+        except Exception as e:
+            # Clean up if extraction fails
+            shutil.rmtree(dest_path, ignore_errors=True)
+            return False

@@ -1,0 +1,40 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme: only allow http or https
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Extract the hostname (netloc without port)
+    hostname = parsed.netloc
+    if ':' in hostname:
+        hostname, _ = hostname.split(':', 1)
+    
+    # Resolve the hostname to IP address(es)
+    ip_addresses = resolve_host(hostname)
+    
+    if not ip_addresses:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Iterate through IP addresses to find the one with status 200
+    for ip in ip_addresses:
+        # Construct the full URL with the resolved IP
+        full_url = f"{scheme}://{ip}{parsed.path}"
+        if parsed.query:
+            full_url += f"?{parsed.query}"
+        if parsed.fragment:
+            full_url += f"#{parsed.fragment}"
+        
+        # Call the transport function
+        status, headers, body = transport(full_url)
+        
+        # Only accept status 200, no redirects
+        if status == 200:
+            return body
+    
+    raise ValueError("Request failed: no valid response with status 200 found")

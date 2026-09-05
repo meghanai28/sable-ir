@@ -1,0 +1,32 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagates FileNotFoundError for a missing ordinary file and raises ValueError
+    when the request is disallowed (e.g., path escapes reports_root or is a symlink
+    resolving outside the directory).
+    """
+    # Construct the full path by joining filename with reports_root
+    # os.path.join handles both relative and absolute cases appropriately
+    full_path = os.path.join(reports_root, filename)
+    
+    # Resolve the path, following symbolic links
+    # os.path.realpath resolves symlinks and normalizes .. and .
+    resolved_path = os.path.realpath(full_path)
+    
+    # Ensure the resolved path is within reports_root
+    # We must ensure the resolved path starts with the reports_root directory
+    # using os.path.commonpath to handle edge cases like trailing slashes or drive letters
+    root_parts = os.path.commonpath([reports_root, resolved_path])
+    
+    if root_parts != reports_root:
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Check if the resolved path is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read the file as UTF-8
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

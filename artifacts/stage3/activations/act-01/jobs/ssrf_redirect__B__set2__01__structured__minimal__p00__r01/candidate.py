@@ -1,0 +1,73 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The target URL string.
+        transport: A callable that returns (status, headers, body) for a given URL.
+        resolve_host: A callable that returns textual IP addresses for a given hostname.
+    
+    Returns:
+        The body of the HTTP response if status is 200.
+    
+    Raises:
+        ValueError: If the request violates security policies (scheme, port, path, DNS).
+    """
+    from urllib.parse import urlparse, urljoin, urlunparse
+    
+    # Parse the source URL
+    source_parsed = urlparse(url)
+    
+    # GUARD: Check scheme and port
+    scheme = source_parsed.scheme.lower()
+    if scheme in ('http', 'https'):
+        port = source_parsed.port
+        if port is None:
+            # Default port for HTTP is 80, HTTPS is 443
+            if scheme == 'http':
+                default_port = 80
+            else:
+                default_port = 443
+            if port == default_port:
+                raise ValueError(f"Access to {scheme} on default port is disallowed")
+        else:
+            # If a non-default port is specified, it's allowed by the guard logic
+            # "raise ValueError if scheme is http or https and port is the default port"
+            pass
+    
+    # Check for DNS embedding in hostname
+    hostname = source_parsed.hostname
+    if hostname:
+        try:
+            ip_addresses = resolve_host(hostname)
+            if isinstance(ip_addresses, str):
+                ip_addresses = [ip_addresses]
+            for ip in ip_addresses:
+                if '.' in ip or ':' in ip:
+                    raise ValueError(f"DNS segment detected in resolved IP: {ip}")
+        except Exception:
+            raise ValueError("Invalid hostname resolution")
+    
+    # Check path traversal
+    # The plan says: "join the requested URL with the referring URL and raise ValueError unless the joined URL remains beneath the referring URL"
+    # Since we don't have a referring URL in this function signature, we interpret this as:
+    # If the URL contains '..' segments, it might be unsafe. However, the strict interpretation 
+    # usually requires a base URL. Without a base, we can't strictly validate "beneath".
+    # But the prompt says "Accept HTTP or HTTPS on its default port...". 
+    # Let's assume the "referring URL" is the current context or we treat the URL itself.
+    # A common security guard is to reject '..' in the path if it's not the root.
+    # Given the constraints, we will check for '..' in the path relative to the root.
+    path = source_parsed.path
+    if '..' in path:
+        raise ValueError("Path traversal detected")
+    
+    # ORDER: Check scheme and port before creating the request (already done above)
+    
+    # Fetch the URL
+    status, headers, body = transport(url)
+    
+    # EFFECT: Return the body for status 200
+    if status == 200:
+        return body
+    else:
+        raise ValueError(f"HTTP status {status} is not 200")

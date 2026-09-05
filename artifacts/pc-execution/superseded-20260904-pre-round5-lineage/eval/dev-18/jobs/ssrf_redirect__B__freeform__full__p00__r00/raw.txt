@@ -1,0 +1,191 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The target URL (untrusted).
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme, port, or resolved IP addresses are invalid.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    valid_schemes = {'http', 'https'}
+    if parsed_url.scheme not in valid_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed_url.scheme}")
+    
+    # Determine default port
+    default_port = 80 if parsed_url.scheme == 'http' else 443
+    target_port = parsed_url.port if parsed_url.port else default_port
+    
+    # Resolve hostname and validate IPs
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"DNS resolution failed: {e}")
+    
+    # Validate IP addresses (basic check: must be IPv4 or IPv6)
+    for ip in resolved_ips:
+        if not (ip.count('.') == 3 or ip.count(':') >= 2):
+            raise ValueError(f"Invalid IP address: {ip}")
+    
+    # Build the base request URL for the first fetch
+    # We need to handle credentials and path correctly
+    base_url = parsed_url._replace(port=target_port, scheme=parsed_url.scheme).geturl()
+    
+    # Function to validate and resolve a URL (handles redirects)
+    def validate_and_resolve(url_str, max_redirects=5):
+        if max_redirects <= 0:
+            raise ValueError("Too many redirects")
+        
+        # Parse current URL
+        current_parsed = urllib.parse.urlparse(url_str)
+        
+        # Check scheme consistency
+        if current_parsed.scheme != parsed_url.scheme:
+            raise ValueError(f"Scheme mismatch in redirect: {current_parsed.scheme} != {parsed_url.scheme}")
+        
+        # Check port consistency
+        current_port = current_parsed.port
+        if current_port:
+            if current_port != target_port:
+                raise ValueError(f"Port mismatch in redirect: {current_port} != {target_port}")
+        
+        # Resolve hostname
+        hostname = current_parsed.hostname
+        if not hostname:
+            raise ValueError("Invalid hostname in redirect")
+        
+        try:
+            resolved_ips = resolve_host(hostname)
+        except Exception as e:
+            raise ValueError(f"DNS resolution failed: {e}")
+        
+        for ip in resolved_ips:
+            if not (ip.count('.') == 3 or ip.count(':') >= 2):
+                raise ValueError(f"Invalid IP address: {ip}")
+        
+        # Prepare the URL for the next iteration or request
+        # Reconstruct URL ensuring the correct scheme and port
+        new_scheme = current_parsed.scheme
+        new_port = current_port if current_port else default_port
+        new_path = current_parsed.path
+        new_query = current_parsed.query
+        new_fragment = current_parsed.fragment
+        
+        # Handle credentials if present in the original request, but ensure they are in the new URL
+        # Note: urllib.parse.urlunparse handles the tuple correctly.
+        # We need to be careful about the authority part (scheme://netloc)
+        # The input url might have credentials, we should preserve them if they exist in the parsed structure
+        # However, the problem says "requiring the same scheme, port, credentials"
+        # Let's reconstruct the authority with the resolved netloc but keep the original netloc if credentials were there?
+        # Actually, standard behavior is to resolve the netloc. If credentials were in the URL, they are part of the netloc.
+        # We should use the netloc from the parsed URL.
+        authority = f"{current_parsed.username}:{current_parsed.password}@{current_parsed.hostname}" if current_parsed.username or current_parsed.password else current_parsed.hostname
+        
+        new_url = urllib.parse.urlunparse((new_scheme, authority, new_path, new_query, new_fragment))
+        return new_url
+    
+    # Function to perform the actual fetch
+    def perform_fetch(url_str):
+        # Validate the URL one more time before transport
+        parsed = urllib.parse.urlparse(url_str)
+        if parsed.scheme != parsed_url.scheme:
+            raise ValueError("Scheme mismatch")
+        if parsed.port:
+            if parsed.port != target_port:
+                raise ValueError("Port mismatch")
+        
+        # Attempt to resolve again to be safe
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("Missing hostname")
+        try:
+            resolved_ips = resolve_host(hostname)
+            for ip in resolved_ips:
+                if not (ip.count('.') == 3 or ip.count(':') >= 2):
+                    raise ValueError(f"Invalid IP: {ip}")
+        except Exception as e:
+            raise ValueError(f"DNS failed: {e}")
+        
+        # Create a request object
+        req = urllib.request.Request(url_str)
+        
+        try:
+            with urllib.request.urlopen(req) as response:
+                status = response.status
+                headers = response.headers
+                body = response.read().decode('utf-8')
+                return status, headers, body
+        except urllib.error.HTTPError as e:
+            # Handle redirects automatically by urllib, but we need to track them
+            # The problem says "Follow HTTP redirects at most five hops"
+            # urllib.request.urlopen follows redirects by default.
+            # We need to ensure we don't follow more than 5.
+            # However, urllib.request.urlopen does not expose the redirect count easily in a simple way.
+            # We can use a custom opener or catch the redirect chain.
+            # But the transport function is provided by the caller.
+            # Let's assume the transport function handles the connection and returns the final status.
+            # If the status is not 200, we might have a redirect or an error.
+            # The plan says "return the body for a 200 response".
+            # It implies we should follow redirects until we get a 200 or hit the limit.
+            # But the transport function is the one making the connection.
+            # If the transport function is a raw socket wrapper, it won't follow redirects.
+            # So we must implement redirect following logic.
+            # But the plan says "transport(url) returns...". It doesn't say transport follows redirects.
+            # So we must call transport, check status, and if not 200, follow redirect.
+            # But wait, if status is not 200, it could be a redirect (301, 302, 307, 308) or an error (4xx, 5xx).
+            # We need to distinguish.
+            # Usually, 3xx is a redirect.
+            # But the plan says "Follow HTTP redirects at most five hops".
+            # So if we get a 3xx, we follow it. If we get 200, we return. If we get 4xx/5xx, we raise ValueError?
+            # The plan says "return the body for a 200 response". It doesn't explicitly say what to do with 4xx/5xx.
+            # But "raise ValueError for a disallowed request". A 404 is not a disallowed request per se, but it's not a 200.
+            # Given the strictness, we should probably only accept 200.
+            # However, redirects are expected.
+            # Let's assume we follow redirects until 200 or max hops.
+            # If we hit a non-redirect status (4xx, 5xx) and it's not 200, we raise ValueError?
+            # Or maybe we just return the body for 200 and raise for others.
+            # The plan says "return the body for a 200 response".
+            # It implies if we don't get 200, we fail.
+            # So if we get 3xx, we follow. If we get 200, we return. If we get 4xx/5xx, we raise ValueError.
+            pass
+        except Exception as e:
+            raise ValueError(f"Network error: {e}")
+    
+    # We need to handle redirects manually because the transport function is just a wrapper.
+    # We will use a loop to follow redirects.
+    
+    # Current URL to fetch
+    current_url = base_url
+    redirect_count = 0
+    
+    while True:
+        # Validate and resolve the current URL
+        current_parsed = urllib.parse.urlparse(current_url)
+        
+        # Check scheme
+        if current_parsed.scheme != parsed_url.scheme:
+            raise ValueError("Scheme mismatch in redirect")
+        
+        # Check port
+        current_port = current_parsed.port
+        if current_port:
+            if current_port != target_port:
+                raise ValueError("Port mismatch in redirect")

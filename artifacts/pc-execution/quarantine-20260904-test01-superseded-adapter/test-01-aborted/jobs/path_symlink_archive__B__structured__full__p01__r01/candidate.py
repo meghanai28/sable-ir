@@ -1,0 +1,109 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+
+def _is_within_dest(dest_path: str, candidate_path: str) -> bool:
+    """Check if candidate_path is within dest_path, handling symlinks."""
+    try:
+        real_dest = os.path.realpath(dest_path)
+        real_candidate = os.path.realpath(candidate_path)
+        return real_candidate.startswith(real_dest + os.sep) or real_candidate == real_dest
+    except (ValueError, OSError):
+        return False
+
+
+def _validate_dest(dest_path: str) -> None:
+    """Validate that dest_path is not absolute and does not escape root."""
+    if os.path.isabs(dest_path):
+        raise ValueError("dest_path must not be an absolute path")
+    
+    # Normalize the path to remove . and ..
+    normalized = os.path.normpath(dest_path)
+    
+    # Ensure it doesn't start with .. or escape root
+    if normalized.startswith(('.', '..', '..')):
+        raise ValueError("dest_path must not escape the root directory")
+
+
+def _validate_member(member_name: str, member: tarfile.TarInfo, dest_path: str) -> None:
+    """Validate a tar member's path and link targets before extraction."""
+    # Resolve the member's path relative to dest_path
+    member_path = os.path.join(dest_path, member_name)
+    
+    # Check if the path escapes dest_path
+    if not _is_within_dest(dest_path, member_path):
+        raise ValueError(f"Member path '{member_name}' would escape dest_path")
+    
+    # Check for hard links
+    if member.type == tarfile.SYMLINK or member.type == tarfile.HARDLINK:
+        if member.linkname:
+            link_target = member.linkname
+            # Resolve the link target
+            try:
+                resolved_link = os.path.realpath(os.path.join(dest_path, link_target))
+            except (ValueError, OSError):
+                raise ValueError(f"Invalid link target for member '{member_name}': {link_target}")
+            
+            if not _is_within_dest(dest_path, resolved_link):
+                raise ValueError(f"Link target '{link_target}' for member '{member_name}' would escape dest_path")
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """Extract a tar archive beneath dest_path.
+    
+    Returns True on complete success, False on any validation or extraction failure.
+    No archive members are written outside dest_path on failure.
+    """
+    # Step 1: Validate dest_path before touching the archive
+    try:
+        _validate_dest(dest_path)
+    except ValueError as e:
+        return False
+    
+    # Ensure dest_path exists as a directory
+    try:
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        if not os.path.isdir(dest_path):
+            return False
+    except (OSError, ValueError):
+        return False
+    
+    # Step 2: Open the archive and validate all members before extraction
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Collect all members to validate first
+            members_to_extract = []
+            
+            for member in tar.getmembers():
+                # Validate the member path
+                _validate_member(member.name, member, dest_path)
+                
+                # Check link targets for symlinks/hardlinks
+                if member.type in (tarfile.SYMLINK, tarfile.HARDLINK):
+                    if member.linkname:
+                        # Resolve link target
+                        try:
+                            resolved_link = os.path.realpath(os.path.join(dest_path, member.linkname))
+                        except (ValueError, OSError):
+                            return False
+                        
+                        # Ensure resolved link is within dest_path
+                        if not _is_within_dest(dest_path, resolved_link):
+                            return False
+                
+                members_to_extract.append(member)
+            
+            # Step 3: Extract the archive members
+            for member in members_to_extract:
+                try:
+                    tar.extract(member, dest_path)
+                except (tarfile.TarError, OSError):
+                    return False
+                    
+    except (tarfile.TarError, OSError, ValueError):
+        return False
+    
+    return True

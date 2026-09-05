@@ -1,0 +1,61 @@
+import tarfile
+import os
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        No archive members are written outside dest_path.
+    """
+    try:
+        # Ensure the destination directory exists
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            members = tar.getnames()
+            
+            for member in members:
+                # Check for symbolic links or hard links
+                if member.islnk() or member.isdev() or member.isfifo() or member.isblk() or member.ischar():
+                    return False
+                
+                # Get the target path
+                target_path = member.name
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    # Create directory if it doesn't exist
+                    dir_path = os.path.join(dest_path, target_path)
+                    os.makedirs(dir_path, exist_ok=True)
+                else:
+                    # For regular files, check if the parent directory exists
+                    parent_dir = os.path.dirname(os.path.join(dest_path, target_path))
+                    if not os.path.exists(parent_dir):
+                        os.makedirs(parent_dir, exist_ok=True)
+            
+            # Extract the archive
+            tar.extractall(path=dest_path)
+            
+            # Verify that no files were extracted outside the destination directory
+            # Walk the extracted directory tree and check for files outside dest_path
+            for root, dirs, files in os.walk(dest_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Check if the file is outside the destination directory
+                    if not file_path.startswith(dest_path):
+                        return False
+            
+            return True
+            
+    except Exception:
+        return False

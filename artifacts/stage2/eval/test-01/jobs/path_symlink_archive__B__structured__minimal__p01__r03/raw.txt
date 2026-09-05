@@ -1,0 +1,84 @@
+import os
+import tarfile
+import shutil
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to an absolute path without resolving symlinks."""
+    return os.path.normpath(path)
+
+def _is_under_dest(sink_path: str, dest_path: str) -> bool:
+    """Check if sink_path is under dest_path."""
+    try:
+        normalized_sink = _normalize_path(sink_path)
+        normalized_dest = _normalize_path(dest_path)
+        return normalized_sink.startswith(normalized_dest + os.sep) or normalized_sink == normalized_dest
+    except ValueError:
+        return False
+
+def _validate_member(member: tarfile.TarInfo, dest_path: str) -> bool:
+    """Validate a tar member to ensure it does not escape dest_path or have unsafe links."""
+    # Check type
+    if member.type == tarfile.SYMLINK or member.type == tarfile.HARDLINK:
+        if member.linkname:
+            # Resolve the link target
+            try:
+                if member.isdir:
+                    link_target = os.path.join(dest_path, member.name)
+                    resolved_link = os.path.realpath(link_target)
+                else:
+                    link_target = member.name
+                    resolved_link = os.path.realpath(link_target)
+                
+                # Ensure the resolved link is under dest_path
+                if not _is_under_dest(resolved_link, dest_path):
+                    return False
+            except (OSError, ValueError):
+                return False
+    else:
+        # For regular files or directories, check the target path
+        target_path = os.path.join(dest_path, member.name)
+        if not _is_under_dest(target_path, dest_path):
+            return False
+    
+    return True
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security checks.
+    
+    Returns True on complete success, False on any failure or validation error.
+    No archive members are written outside dest_path on failure.
+    """
+    try:
+        # Normalize paths
+        normalized_tar = _normalize_path(tar_path)
+        normalized_dest = _normalize_path(dest_path)
+        
+        # Validate tar_path exists
+        if not os.path.isfile(normalized_tar):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(normalized_tar, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                if not _validate_member(member, normalized_dest):
+                    return False
+            
+            # Extract all members
+            for member in tar:
+                if not _validate_member(member, normalized_dest):
+                    return False
+                member.dir = member.isdir
+                member.size = os.path.getsize(member.name) if member.isfile() else 0
+                member.linkname = None  # Reset linkname as we are not following links
+                
+                try:
+                    tar.extract(member, path=normalized_dest)
+                except (OSError, tarfile.TarError):
+                    return False
+        
+        return True
+
+    except Exception:
+        return False

@@ -1,0 +1,137 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The target URL string.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, resolution fails, or final destination is invalid.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Guard: Validate scheme and port
+    valid_schemes = ('http', 'https')
+    if parsed_url.scheme not in valid_schemes:
+        raise ValueError(f"Disallowed scheme: {parsed_url.scheme}")
+    
+    # Determine default port
+    default_port = {'http': 80, 'https': 443}[parsed_url.scheme]
+    
+    # Guard: Validate port
+    if parsed_url.port is not None and parsed_url.port != default_port:
+        raise ValueError(f"Port {parsed_url.port} not allowed; expected {default_port}")
+    
+    # Guard: Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses resolved for hostname")
+    
+    # Helper to get the public address (IP) from parsed URL
+    def get_public_address(u):
+        return u.hostname
+    
+    # Function to validate if a URL matches the initial destination constraints
+    def is_safe_destination(u):
+        # Must have same scheme
+        if u.scheme != parsed_url.scheme:
+            return False
+        # Must have same port (None or default_port)
+        if u.port is not None and u.port != default_port:
+            return False
+        # Must have same credentials (None or identical)
+        if u.username is not None or u.password is not None:
+            if parsed_url.username is not None and parsed_url.password is not None:
+                if u.username != parsed_url.username or u.password != parsed_url.password:
+                    return False
+            else:
+                return False
+        # Must have same public address (IP)
+        if u.hostname not in ip_addresses:
+            return False
+        return True
+    
+    current_url = parsed_url
+    hop_count = 0
+    max_hops = 5
+    
+    while True:
+        # Check final destination before establishing connection
+        if not is_safe_destination(current_url):
+            raise ValueError("Final destination is invalid")
+        
+        # Prepare request URL
+        request_url = current_url.geturl()
+        
+        # Call transport
+        try:
+            status, headers, body = transport(request_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        # Guard: Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Guard: Check for redirect (3xx)
+        if 300 <= status < 400:
+            # Parse Location header
+            location_header = headers.get('Location')
+            if not location_header:
+                raise ValueError("Redirect without Location header")
+            
+            # Guard: Resolve hostname of redirect
+            redirect_url = urllib.parse.urlparse(location_header)
+            if not redirect_url.hostname:
+                raise ValueError("Invalid redirect URL")
+            
+            try:
+                resolved_ips = resolve_host(redirect_url.hostname)
+            except Exception:
+                raise ValueError("Failed to resolve redirect hostname")
+            
+            if not resolved_ips:
+                raise ValueError("No IP addresses resolved for redirect hostname")
+            
+            # Guard: Validate redirect URL
+            if not is_safe_destination(redirect_url):
+                raise ValueError("Redirect destination is invalid")
+            
+            # Update current_url
+            current_url = redirect_url
+            hop_count += 1
+            
+            if hop_count > max_hops:
+                raise ValueError(f"Too many redirects: {hop_count}")
+            continue
+        else:
+            # Guard: Check for other disallowed status codes (e.g., 4xx, 5xx)
+            if status < 400:
+                raise ValueError(f"Unexpected status code: {status}")
+            
+            # Convert body to text
+            if isinstance(body, bytes):
+                body = body.decode('utf-8', errors='replace')
+            return body
+    
+    # If we reach here without returning, something is wrong
+    raise ValueError("Unexpected flow")

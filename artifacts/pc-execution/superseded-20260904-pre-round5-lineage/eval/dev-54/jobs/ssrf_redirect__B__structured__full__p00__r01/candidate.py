@@ -1,0 +1,140 @@
+import urllib.request
+import urllib.parse
+import urllib.error
+import socket
+import ssl
+import sys
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL using the provided transport and host resolution.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The response body text for status 200.
+    
+    Raises:
+        ValueError: For disallowed requests, failed host resolution, or non-200 status codes.
+    """
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    host = parsed.hostname
+    
+    # GUARD: Accept only HTTP or HTTPS on the default port
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP or HTTPS schemes are allowed.")
+    
+    default_port = {'http': 80, 'https': 443}
+    if port is None:
+        port = default_port[scheme]
+    elif port != default_port[scheme]:
+        raise ValueError("Only default ports are allowed.")
+    
+    # GUARD: Resolve the hostname
+    try:
+        ip_addresses = resolve_host(host)
+    except Exception:
+        raise ValueError("Host resolution failed.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for host.")
+    
+    current_url = url
+    max_redirects = 5
+    redirect_count = 0
+    
+    while True:
+        # Parse the current URL for redirect checks
+        current_parsed = urllib.parse.urlparse(current_url)
+        current_scheme = current_parsed.scheme.lower()
+        current_port = current_parsed.port
+        current_host = current_parsed.hostname
+        current_path = current_parsed.path
+        current_query = current_parsed.query
+        current_credentials = current_parsed.username + ':' + current_parsed.password if current_parsed.username and current_parsed.password else ''
+        
+        # Attempt to fetch
+        try:
+            response = transport(current_url)
+        except Exception:
+            raise ValueError("Request failed.")
+        
+        status, headers, body = response
+        
+        # GUARD: Check status code
+        if status != 200:
+            raise ValueError("Status code is not 200.")
+        
+        # GUARD: Check for redirects
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError("Too many redirects.")
+            
+            # Resolve the redirect location
+            try:
+                redirect_parsed = urllib.parse.urlparse(location)
+            except Exception:
+                raise ValueError("Invalid redirect URL.")
+            
+            # GUARD: Resolve the hostname for the redirect
+            try:
+                redirect_ips = resolve_host(redirect_parsed.hostname)
+            except Exception:
+                raise ValueError("Redirect host resolution failed.")
+            
+            if not redirect_ips:
+                raise ValueError("No IP addresses found for redirect host.")
+            
+            # GUARD: Check scheme, port, credentials, and public address
+            if current_scheme != redirect_parsed.scheme.lower():
+                raise ValueError("Redirect scheme mismatch.")
+            
+            if current_port != redirect_parsed.port:
+                raise ValueError("Redirect port mismatch.")
+            
+            if current_credentials != redirect_parsed.username + ':' + redirect_parsed.password:
+                raise ValueError("Redirect credentials mismatch.")
+            
+            # Check public address (first IP)
+            if current_host and redirect_parsed.hostname:
+                if current_host not in redirect_ips:
+                    raise ValueError("Redirect host IP mismatch.")
+            
+            # Construct the new URL
+            new_url = urllib.parse.urljoin(current_url, location)
+            current_url = new_url
+        else:
+            break
+    
+    # GUARD: Check the final destination before reading the body
+    final_parsed = urllib.parse.urlparse(current_url)
+    final_scheme = final_parsed.scheme.lower()
+    final_port = final_parsed.port
+    final_host = final_parsed.hostname
+    final_path = final_parsed.path
+    final_query = final_parsed.query
+    final_credentials = final_parsed.username + ':' + final_parsed.password if final_parsed.username and final_parsed.password else ''
+    
+    # Re-check scheme, port, credentials, and public address for the final URL
+    if scheme != final_scheme:
+        raise ValueError("Final destination scheme mismatch.")
+    
+    if port != final_port:
+        raise ValueError("Final destination port mismatch.")
+    
+    if host != final_host:
+        raise ValueError("Final destination host mismatch.")
+    
+    if host and final_host:
+        if host not in resolve_host(final_host):
+            raise ValueError("Final destination host IP mismatch.")
+    
+    # Return the body
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

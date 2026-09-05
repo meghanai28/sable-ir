@@ -1,0 +1,137 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Security constraints:
+    - Rejects any symbolic links or hard links.
+    - Rejects any member whose target (for links) would fall outside dest_path.
+    - Validates all members before extraction.
+    - Does not write any file outside dest_path.
+    """
+    # Create the destination directory if it doesn't exist
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Validate that tar_path exists and is a file
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Skip directories in the loop, they are handled by the extraction logic
+                # but we must check their paths.
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    # Get the target path
+                    if member.issym():
+                        target = member.linkname
+                    else:
+                        target = member.linkname
+                    
+                    # Resolve the target relative to the member's directory in the archive
+                    # The member's directory in the archive is member.name.rstrip('/')
+                    member_dir = member.name.rstrip('/')
+                    
+                    # Calculate where the link would be in the filesystem
+                    link_dest = os.path.join(dest_path, member.name)
+                    
+                    # If it's a symlink, we need to check the target
+                    # The target in the archive is relative to the member's directory
+                    if not member_dir:
+                        # Link at root of archive
+                        target_path = os.path.normpath(target)
+                    else:
+                        target_path = os.path.normpath(os.path.join(member_dir, target))
+                    
+                    # Check if the target is outside dest_path
+                    # We need to resolve the target relative to dest_path
+                    # If the target is absolute, it's always outside (unless we trust the system, but we reject it)
+                    # If relative, we check if it escapes dest_path
+                    
+                    # Normalize dest_path to absolute if possible, but we should handle relative dest_path carefully
+                    # The requirement says "never write outside dest_path". If dest_path is relative, we should treat it as relative to the current working directory?
+                    # Actually, standard practice is to make dest_path absolute to prevent escape via ..
+                    
+                    # Let's make dest_path absolute to be safe
+                    dest_path_abs = os.path.abspath(dest_path)
+                    target_path_abs = os.path.abspath(target_path)
+                    
+                    # Check if target is outside dest_path
+                    if not target_path_abs.startswith(dest_path_abs + os.sep) and target_path_abs != dest_path_abs:
+                        return False
+                    
+                    # Reject symbolic links entirely as per plan: "reject every symbolic-link and hard-link member"
+                    return False
+                
+                # Check for hard links
+                if member.islnk():
+                    return False
+                
+                # Check for regular files and directories
+                if member.isfile():
+                    # Check if the file path escapes dest_path
+                    member_path = os.path.normpath(member.name)
+                    dest_path_abs = os.path.abspath(dest_path)
+                    
+                    # Ensure the path is within dest_path
+                    # We must handle the case where member.name is absolute (should be rejected)
+                    if member.name.startswith('/'):
+                        return False
+                    
+                    # Check for .. in the path
+                    parts = member.name.split('/')
+                    for i, part in enumerate(parts):
+                        if part == '..':
+                            # This could escape if not handled carefully
+                            # But we need to check the full path
+                            pass
+                    
+                    # Safest check: resolve the path and see if it's under dest_path
+                    # However, we must be careful with symlinks in the path components themselves (not allowed per plan, but .. might be)
+                    # The plan says "validate all archive members before opening and extracting"
+                    # We should check if the normalized path is under dest_path
+                    
+                    # Construct the full path in the destination
+                    full_path = os.path.join(dest_path, member.name)
+                    full_path_abs = os.path.abspath(full_path)
+                    
+                    if not full_path_abs.startswith(dest_path_abs + os.sep) and full_path_abs != dest_path_abs:
+                        return False
+                        
+                elif member.isdir():
+                    # Check if directory path escapes dest_path
+                    dir_path = os.path.normpath(member.name)
+                    if dir_path.startswith('/'):
+                        return False
+                    
+                    dir_path_abs = os.path.abspath(os.path.join(dest_path, dir_path))
+                    if not dir_path_abs.startswith(dest_path_abs + os.sep) and dir_path_abs != dest_path_abs:
+                        return False
+            
+            # Now perform the extraction
+            # We need to extract only regular files and directories, skipping links
+            # tarfile.extractall extracts everything, so we need a custom approach or filter
+            
+            # Extract members that are not links
+            for member in tar:
+                # Skip symbolic and hard links
+                if member.issym() or member.islnk():
+                    continue
+                
+                # Extract the member
+                member.extract(dest_path, member.name)
+                
+    except (tarfile.TarError, OSError):
+        return False
+    
+    return True

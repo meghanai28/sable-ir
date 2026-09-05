@@ -1,0 +1,164 @@
+import urllib.parse
+import urllib.request
+import urllib.error
+import socket
+import struct
+import re
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL, resolving redirects and validating hosts.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response with status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed or validation fails.
+    """
+    
+    def validate_scheme(scheme):
+        """Check if the scheme is allowed (http or https)."""
+        return scheme.lower() in ['http', 'https']
+    
+    def validate_port(port):
+        """Check if the port is valid (default for http/https)."""
+        if scheme == 'http':
+            return port == 80
+        elif scheme == 'https':
+            return port == 443
+        return False
+    
+    def validate_dns(ip_list):
+        """Check if the IP list is valid (not empty)."""
+        return len(ip_list) > 0
+    
+    def validate_public_address(ip_list):
+        """
+        Check if the IP addresses are public (not localhost or private).
+        This is a simplified check based on the plan's implication of "public address validation".
+        We will assume that if the plan implies strict validation, we should block private ranges.
+        However, the plan says "raise ValueError if ... public address validation fails".
+        Given the context of security, we will block private IPs (127.0.0.1, 10.x, 172.16-31.x, 192.168.x, ::1, etc.).
+        """
+        for ip in ip_list:
+            if ip.startswith('127.') or ip.startswith('::1'):
+                return False
+            if ip.startswith(('10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.')):
+                return False
+        return True
+    
+    def parse_url_components(url_str):
+        """Parse the URL into scheme, netloc, path, etc."""
+        parsed = urllib.parse.urlparse(url_str)
+        return {
+            'scheme': parsed.scheme,
+            'netloc': parsed.netloc,
+            'path': parsed.path,
+            'params': parsed.params,
+            'query': parsed.query,
+            'fragment': parsed.fragment,
+            'port': parsed.port
+        }
+    
+    def resolve_url_components(parsed_url, new_netloc, new_port):
+        """Resolve the new URL components against the current one."""
+        # Construct the new URL with the new netloc and port
+        # If no scheme provided in new_netloc, inherit from current
+        new_scheme = parsed_url['scheme']
+        if not new_scheme:
+            new_scheme = parsed_url['scheme']
+        
+        # Handle credentials
+        new_netloc = new_netloc or parsed_url['netloc']
+        
+        # Reconstruct the full URL for validation
+        new_url_str = new_scheme + '://' + new_netloc
+        
+        # Parse again to get components
+        new_parsed = urllib.parse.urlparse(new_url_str)
+        
+        return new_parsed
+    
+    def is_absolute_url(url_str):
+        """Check if the URL is absolute."""
+        return bool(urllib.parse.urlparse(url_str).scheme)
+    
+    # Initial URL parsing
+    current_parsed = parse_url_components(url)
+    
+    # Check if scheme is allowed
+    if not validate_scheme(current_parsed['scheme']):
+        raise ValueError("Disallowed scheme")
+    
+    # Check if port is allowed
+    if not validate_port(current_parsed['port']):
+        raise ValueError("Disallowed port")
+    
+    # Check if host resolves
+    hostname = current_parsed['netloc'].split(':')[0]
+    ip_addresses = resolve_host(hostname)
+    if not validate_dns(ip_addresses):
+        raise ValueError("DNS lookup failed")
+    
+    if not validate_public_address(ip_addresses):
+        raise ValueError("Public address validation failed")
+    
+    # Max hops for Location header resolution
+    max_hops = 5
+    current_url_str = current_parsed.geturl()
+    
+    for _ in range(max_hops):
+        # Call transport
+        status, headers, body = transport(current_url_str)
+        
+        if status != 200:
+            raise ValueError("Status is not 200")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            # Resolve the Location header
+            new_parsed = resolve_url_components(current_parsed, location_header, None)
+            
+            # Validate scheme
+            if not validate_scheme(new_parsed['scheme']):
+                raise ValueError("Disallowed scheme in Location")
+            
+            # Validate port
+            if not validate_port(new_parsed['port']):
+                raise ValueError("Disallowed port in Location")
+            
+            # Resolve host
+            hostname = new_parsed['netloc'].split(':')[0]
+            ip_addresses = resolve_host(hostname)
+            if not validate_dns(ip_addresses):
+                raise ValueError("DNS lookup failed in Location")
+            
+            if not validate_public_address(ip_addresses):
+                raise ValueError("Public address validation failed in Location")
+            
+            # Construct the new URL string
+            new_url_str = new_parsed.geturl()
+            
+            # Update current_parsed
+            current_parsed = new_parsed
+            
+            # Check if we have exceeded max hops
+            if _ + 1 >= max_hops:
+                raise ValueError("Maximum redirect hops exceeded")
+        else:
+            break
+    
+    return body
+
+# Note: The above implementation is a placeholder based on the plan.
+# The actual transport and resolve_host functions are not provided.
+# This code assumes they are passed as arguments.
+# The implementation handles URL parsing, redirect resolution, and validation as per the plan.
+# It raises ValueError for disallowed requests, invalid DNS, or failed public address validation.
+# It returns the body of the response with status 200.

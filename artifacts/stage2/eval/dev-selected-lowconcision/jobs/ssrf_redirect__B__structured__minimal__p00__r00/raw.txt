@@ -1,0 +1,37 @@
+import socket
+from urllib.parse import urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    parsed = urlparse(url)
+    
+    # Guard: Check scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Disallowed scheme")
+    
+    # Guard: Resolve host
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: no hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No valid IP address found for hostname")
+    
+    # Use the first valid IP address for the connection
+    ip_address = ip_addresses[0]
+    
+    # Determine the default port based on scheme
+    if scheme == 'http':
+        port = 80
+    else:
+        port = 443
+    
+    # Establish connection and get response
+    status, headers, body = transport(url)
+    
+    # Guard: Return body only for status 200
+    if status != 200:
+        raise ValueError("Request failed: status code is not 200")
+    
+    return body

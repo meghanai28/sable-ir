@@ -1,0 +1,42 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    if url.startswith('http://') or url.startswith('https://'):
+        scheme = url[4:] if url.startswith('http://') else url[8:]
+        if scheme not in ['http', 'https']:
+            raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname resolution failed")
+    
+    if not resolved_ips:
+        raise ValueError("No reachable IP addresses found for hostname")
+    
+    if parsed.port:
+        port = parsed.port
+    else:
+        port = 80 if scheme == 'http' else 443
+    
+    if port != 80 and scheme == 'http':
+        raise ValueError("HTTP must use port 80")
+    if port != 443 and scheme == 'https':
+        raise ValueError("HTTPS must use port 443")
+    
+    try:
+        status, headers, body = transport(url)
+    except Exception:
+        raise ValueError("Request failed")
+    
+    if status != 200:
+        raise ValueError("Unexpected status code")
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body

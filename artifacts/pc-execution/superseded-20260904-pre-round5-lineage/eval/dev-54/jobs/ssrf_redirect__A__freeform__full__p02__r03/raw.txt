@@ -1,0 +1,60 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolver.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a url and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The body of the response as a string if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (non-200 status).
+    """
+    # Parse the URL components
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the port
+    port = parsed.port
+    if port is None:
+        if parsed.scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("No hostname found in URL.")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Failed to resolve hostname.")
+    
+    # Use the first resolved IP address
+    ip_address = ip_addresses[0]
+    
+    # Construct the URL for the transport function
+    # If the original URL had a port, use it; otherwise, use the default
+    if port != 80 and port != 443:
+        constructed_url = f"{parsed.scheme}://{hostname}:{port}{parsed.path}"
+    else:
+        constructed_url = f"{parsed.scheme}://{hostname}{parsed.path}"
+    
+    # Call the transport function
+    status, headers, body = transport(constructed_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Disallowed request: Status code {status} is not 200.")
+    
+    # Return the body as text
+    return body

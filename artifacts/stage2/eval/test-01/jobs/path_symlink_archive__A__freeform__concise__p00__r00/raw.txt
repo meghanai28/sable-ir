@@ -1,0 +1,172 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to an absolute path without resolving symlinks."""
+    if not os.path.isabs(path):
+        path = os.path.abspath(path)
+    return os.path.normpath(path)
+
+def _resolve_member_path(member_name: str, dest_path: str) -> str:
+    """Resolve the path of an archive member, following symlinks/hardlinks if needed."""
+    # Determine the base directory for the member
+    if member_name.startswith('/'):
+        member_dir = dest_path
+        member_basename = member_name
+    else:
+        # Handle relative paths within the archive
+        # If dest_path is absolute, we treat the member as relative to dest_path
+        if os.path.isabs(dest_path):
+            member_dir = dest_path
+            # Remove leading slash if present for joining
+            clean_dest = dest_path.lstrip(os.path.sep)
+            clean_member = member_name.lstrip(os.path.sep)
+            member_dir = os.path.join(clean_dest, clean_member)
+        else:
+            # Relative dest_path, join directly
+            member_dir = os.path.join(dest_path, member_name)
+    
+    # Ensure we are working with absolute paths for comparison
+    if not os.path.isabs(member_dir):
+        member_dir = os.path.abspath(member_dir)
+    
+    return member_dir
+
+def _check_member_safety(member_name: str, dest_path: str, tar_path: str) -> bool:
+    """
+    Check if an archive member is safe to extract.
+    Returns True if safe, raises ValueError if unsafe.
+    """
+    dest_resolved = _normalize_path(dest_path)
+    
+    # Construct the potential extraction path
+    # We need to handle the case where the member name is absolute or relative
+    if member_name.startswith('/'):
+        # Absolute path in archive
+        potential_path = member_name
+    else:
+        # Relative path
+        # If dest_path is absolute, join it
+        if os.path.isabs(dest_path):
+            potential_path = os.path.join(dest_path, member_name)
+        else:
+            potential_path = os.path.join(dest_path, member_name)
+    
+    # Normalize the potential path to absolute to check for escape
+    # We must resolve symlinks and hardlinks if they exist in the archive
+    # However, tarfile members don't inherently store the full chain of symlinks
+    # We need to be careful: if a symlink points to a file inside dest, it's safe.
+    # If it points outside, it's unsafe.
+    
+    # Get the absolute path of the member location within dest
+    abs_member_path = os.path.abspath(potential_path)
+    
+    # Check if it escapes the root
+    if not abs_member_path.startswith(dest_resolved) and abs_member_path != dest_resolved:
+        raise ValueError(f"Member path {member_name} escapes dest path {dest_path}")
+    
+    # Now we need to check if any symlinks or hardlinks in the archive resolve outside dest.
+    # tarfile.extractfile and similar methods don't easily give us the full link chain
+    # unless we use the 'links' parameter or check the file system state during extraction.
+    # But the requirement says: "walk each archive member... following symbolic links and hard links... and raise an error unless the fully resolved target remains inside dest_path"
+    # This implies we should check the target of the links.
+    
+    # Since we are validating BEFORE extraction, we need to simulate or check the link targets.
+    # tarfile members have 'type' which can be 'l' for symbolic link.
+    # For hard links, they are stored differently in the archive.
+    
+    # Let's assume the archive content is what we can inspect.
+    # If the member is a symlink, we can check its target.
+    # If the member is a regular file, we just check its path.
+    
+    if member_name.startswith('/'):
+        # Absolute path in archive, treat as relative to dest for safety check?
+        # Actually, if it's absolute, it's dangerous if it points outside dest.
+        # But the prompt says "whose resolved path escapes".
+        # Let's stick to: resolved path of the member (as if extracted to dest) must be inside dest.
+        pass
+    
+    # Re-evaluating based on standard safe extraction logic:
+    # 1. Resolve the member path relative to dest.
+    # 2. Check if it's absolute and escapes root.
+    # 3. If it's a symlink, resolve its target and check if that escapes dest.
+    # 4. If it's a hardlink, resolve the target and check if that escapes dest.
+    
+    # Since we cannot extract yet, we rely on the member info.
+    # tarfile.TarInfo doesn't give us the resolved path of a symlink target unless we know the file system.
+    # However, the prompt implies we should check the target.
+    # We can't know the target without extracting or having metadata.
+    # But wait, for a symlink, the target is stored in the archive.
+    # For a hardlink, the linkname is stored.
+    
+    # Let's implement the check:
+    # 1. Calculate the extraction path.
+    # 2. If the extraction path is outside dest, raise error.
+    # 3. If the member is a symlink, check if the target (resolved relative to the member's location) is outside dest.
+    # 4. If the member is a hardlink, check if the link target is outside dest.
+    
+    # Note: tarfile members for symlinks store the target relative to the member's directory?
+    # No, they store the target as is.
+    
+    # Let's do the path resolution:
+    if member_name.startswith('/'):
+        # Absolute path in archive
+        # If it starts with /, it might be intended to be absolute.
+        # We treat it as a path relative to dest if dest is absolute?
+        # Actually, if it's absolute, it's dangerous.
+        # Let's assume the user wants to extract to dest, so absolute paths in archive are relative to dest?
+        # No, standard behavior: if member is absolute, it's absolute.
+        # But the prompt says "whose resolved path escapes".
+        # Let's assume the member name is relative to the extraction point unless specified otherwise.
+        # But to be safe, if member is absolute, we check if it's inside dest.
+        pass
+    
+    # Simplified logic:
+    # 1. Construct the full path where the member would be extracted.
+    # 2. If it's outside dest, raise error.
+    # 3. If it's a symlink, resolve the target. If the target is outside dest, raise error.
+    # 4. If it's a hardlink, resolve the target. If the target is outside dest, raise error.
+    
+    # Since we can't resolve the target without extracting, we assume the archive is trusted for the target?
+    # No, the prompt says "Treat tar_path and dest_path as untrusted".
+    # So we must ensure that even if the archive contains a symlink pointing outside, we catch it.
+    # But we can't know the target without extracting.
+    # Wait, the archive member info contains the target for symlinks.
+    # tarfile.TarInfo.name is the member name.
+    # tarfile.TarInfo.type is 'l' for symlink.
+    # tarfile.TarInfo.mode is the mode.
+    # tarfile.TarInfo.linkname is the target of the symlink.
+    # So we can check linkname.
+    
+    # But linkname is relative to the member's directory?
+    # No, it's absolute or relative to the member's directory?
+    # According to tar format, linkname is the name of the file to link to.
+    # It can be absolute or relative.
+    # If relative, it's relative to the member's directory.
+    
+    # So, if member is a symlink:
+    #   target = linkname
+    #   if target starts with /:
+    #       full_target = target
+    #   else:
+    #       full_target = os.path.join(member_dir, target)
+    #   Then check if full_target is inside dest.
+    
+    # Similarly for hardlinks:
+    #   linkname is the name of the file to link to.
+    #   If relative, full_target = os.path.join(member_dir, linkname)
+    #   Then check if full_target is inside dest.
+    
+    # But wait, we need to know the member_dir.
+    # member_dir is the directory where the member is located.
+    # If member_name is absolute, member_dir is the directory part of member_name?
+    # No, if member_name is absolute, it's the full path.
+    # If member_name is relative, member_dir is dest_path.
+    
+    # Let's refine:
+    # 1. Determine the extraction path for the member.
+    # 2. If it's outside dest, raise error.
+    # 3. If it's a symlink or hardlink, determine the target path.
+    # 4. If the target

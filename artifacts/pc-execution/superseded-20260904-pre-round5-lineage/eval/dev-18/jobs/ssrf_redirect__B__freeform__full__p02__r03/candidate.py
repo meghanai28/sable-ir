@@ -1,0 +1,168 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict scheme and hop resolution checks.
+    
+    Args:
+        url: The initial URL to fetch (absolute or relative).
+        transport: A callable transport(url) -> (status, headers, body).
+        resolve_host: A callable resolve_host(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body of a successful request with status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, port is not default,
+                   or if hop resolution fails validation.
+    """
+    import urllib.parse
+    from urllib.request import urlparse
+    
+    def get_default_port(scheme):
+        if scheme == "http":
+            return 80
+        elif scheme == "https":
+            return 443
+        return None
+    
+    def validate_and_resolve_location(location_url, initial_dest):
+        """
+        Validate a location URL against the initial destination.
+        Must have same scheme, port, credentials, DNS, and public address.
+        """
+        try:
+            parsed = urlparse(location_url)
+        except Exception:
+            raise ValueError(f"Invalid location URL: {location_url}")
+        
+        # Check scheme
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Disallowed scheme in location: {parsed.scheme}")
+        
+        # Check port
+        default_port = get_default_port(parsed.scheme)
+        if parsed.port is None:
+            actual_port = default_port
+        else:
+            actual_port = parsed.port
+        
+        if actual_port != default_port:
+            raise ValueError(f"Non-default port in location: {actual_port}")
+        
+        # Check credentials
+        if parsed.username or parsed.password:
+            if not (initial_dest.username or initial_dest.password):
+                raise ValueError("Credentials mismatch in location")
+        
+        # Check DNS and public address
+        initial_host = initial_dest.hostname
+        initial_netloc = initial_dest.netloc
+        
+        # Normalize hostnames for comparison (case-insensitive, strip port if not default)
+        def normalize_host(h):
+            if ":" in h:
+                host, port = h.rsplit(":", 1)
+                if port != str(get_default_port(h.split(":", 1)[0])):
+                    return None
+                return host.lower()
+            return h.lower()
+        
+        normalized_initial = normalize_host(initial_netloc)
+        normalized_current = normalize_host(parsed.hostname)
+        
+        if normalized_initial is None or normalized_current is None:
+            raise ValueError("DNS mismatch in location")
+        
+        if normalized_initial != normalized_current:
+            raise ValueError("DNS mismatch in location")
+        
+        # Resolve hostname
+        try:
+            resolved_ips = resolve_host(parsed.hostname)
+        except Exception:
+            raise ValueError(f"Failed to resolve hostname: {parsed.hostname}")
+        
+        if not resolved_ips:
+            raise ValueError(f"No IP addresses resolved for: {parsed.hostname}")
+        
+        # Check if any resolved IP matches the initial destination's IP
+        initial_resolved_ips = resolve_host(initial_host)
+        if not initial_resolved_ips:
+            raise ValueError(f"No IP addresses resolved for initial destination: {initial_host}")
+        
+        # Check if there is any overlap in IP addresses
+        initial_ips_set = set(initial_resolved_ips)
+        current_ips_set = set(resolved_ips)
+        
+        if not initial_ips_set.intersection(current_ips_set):
+            raise ValueError("Public address mismatch in location")
+        
+        return parsed
+    
+    # Parse initial URL
+    try:
+        initial_parsed = urlparse(url)
+    except Exception:
+        raise ValueError(f"Invalid initial URL: {url}")
+    
+    # Check initial scheme
+    if initial_parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Disallowed scheme in initial URL: {initial_parsed.scheme}")
+    
+    # Check initial port
+    default_port = get_default_port(initial_parsed.scheme)
+    if initial_parsed.port is None:
+        actual_port = default_port
+    else:
+        actual_port = initial_parsed.port
+    
+    if actual_port != default_port:
+        raise ValueError(f"Non-default port in initial URL: {actual_port}")
+    
+    # Extract initial destination info for comparison
+    initial_host = initial_parsed.hostname
+    initial_netloc = initial_parsed.netloc
+    
+    # Initialize hop tracking
+    current_location = initial_parsed
+    hop_count = 0
+    max_hops = 5
+    
+    # Resolve initial hostname
+    try:
+        initial_resolved_ips = resolve_host(initial_host)
+    except Exception:
+        raise ValueError(f"Failed to resolve initial hostname: {initial_host}")
+    
+    if not initial_resolved_ips:
+        raise ValueError(f"No IP addresses resolved for initial destination: {initial_host}")
+    
+    initial_ips_set = set(initial_resolved_ips)
+    
+    # Loop through hops
+    while hop_count <= max_hops:
+        if hop_count > 0:
+            # Validate current location against initial destination
+            try:
+                validated_location = validate_and_resolve_location(
+                    current_location.geturl(),
+                    initial_parsed
+                )
+                current_location = validated_location
+            except ValueError as e:
+                raise ValueError(f"Location validation failed at hop {hop_count}: {e}")
+        
+        # Fetch using transport
+        try:
+            status, headers, body = transport(current_location.geturl())
+        except Exception as e:
+            raise ValueError(f"Transport failed: {e}")
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Return body
+        return body.decode('utf-8') if isinstance(body, bytes) else body
+    
+    # If we reach here, we exceeded max hops without returning
+    raise ValueError(f"Too many hops: {max_hops + 1}")

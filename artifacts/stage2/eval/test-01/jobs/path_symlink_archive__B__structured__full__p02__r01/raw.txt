@@ -1,0 +1,63 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path containment validation.
+    
+    Returns True only if extraction completes successfully without writing outside dest_path.
+    Returns False if validation or extraction fails.
+    """
+    try:
+        # Normalize the destination path to an absolute path
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Ensure the destination directory exists
+        if not os.path.isdir(resolved_dest):
+            os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Resolve the target path for the member
+                # tarfile.getmember() returns a member object; we need to resolve its name
+                member_name = member.name
+                
+                # Check for path traversal
+                # Resolve the member's path relative to dest_path
+                # We must ensure the member's name does not escape the destination
+                if member_name.startswith('../') or member_name.startswith('..'):
+                    return False
+                
+                # Resolve the full path of the member's content
+                member_path = os.path.join(resolved_dest, member_name)
+                member_path = os.path.normpath(member_path)
+                
+                # Ensure the member path is within the destination
+                if not member_path.startswith(resolved_dest + os.sep) and member_path != resolved_dest:
+                    return False
+                
+                # Check for symbolic links and hard links
+                if member.type == tarfile.SYMTYPE:
+                    linkname = member.linkname
+                    resolved_link = os.path.normpath(os.path.join(resolved_dest, linkname))
+                    if not resolved_link.startswith(resolved_dest + os.sep) and resolved_link != resolved_dest:
+                        return False
+                elif member.type == tarfile.LINKTYPE:
+                    linkname = member.linkname
+                    resolved_link = os.path.normpath(os.path.join(resolved_dest, linkname))
+                    if not resolved_link.startswith(resolved_dest + os.sep) and resolved_link != resolved_dest:
+                        return False
+            
+            # Extract the archive
+            tar.extractall(path=resolved_dest)
+            
+            return True
+            
+    except Exception:
+        return False

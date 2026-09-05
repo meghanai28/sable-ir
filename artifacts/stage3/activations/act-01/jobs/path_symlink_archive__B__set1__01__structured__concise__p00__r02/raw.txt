@@ -1,0 +1,65 @@
+import os
+import tarfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve .. segments."""
+    return os.path.normpath(path)
+
+def _is_within_root(root: str, target: str) -> bool:
+    """Check if target is within root, accounting for case sensitivity on some systems."""
+    try:
+        target_norm = _normalize_path(target)
+        root_norm = _normalize_path(root)
+        return target_norm.startswith(root_norm + os.sep) or target_norm == root_norm
+    except (ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination.
+    
+    Validates that no archive member or link would escape the dest_path.
+    Returns True on complete success, False otherwise.
+    """
+    try:
+        # Normalize and validate the destination root
+        dest_path = _normalize_path(dest_path)
+        root = os.path.abspath(dest_path)
+        
+        # Ensure the destination directory exists
+        os.makedirs(root, exist_ok=True)
+        
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members and links before extraction
+            for member in tar.getmembers():
+                # Get the target path if it's a link
+                if member.issym() or member.islnk():
+                    link_target = member.linkname
+                    # Normalize the link target
+                    link_target_norm = _normalize_path(link_target)
+                    # Check if the link target is within the root
+                    if not _is_within_root(root, link_target_norm):
+                        return False
+                else:
+                    # For regular files, directories, etc., check the member's name
+                    member_name = member.name
+                    # Normalize the member name
+                    member_name_norm = _normalize_path(member_name)
+                    # Check if the member is within the root
+                    if not _is_within_root(root, member_name_norm):
+                        return False
+            
+            # If validation passes, perform the extraction
+            # Use excludefunc to ensure we don't extract anything outside dest_path
+            def is_member_within_dest(member):
+                # Normalize the member name
+                member_name_norm = _normalize_path(member.name)
+                return _is_within_root(root, member_name_norm)
+            
+            tar.extractall(path=root, members=tar.getmembers(), exclude=nonexistent_members)
+            return True
+            
+    except (tarfile.TarError, OSError, IOError):
+        return False

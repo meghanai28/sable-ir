@@ -1,0 +1,105 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve and validate dest_path
+        dest_resolved = os.path.realpath(dest_path)
+        dest_dir = os.path.dirname(dest_resolved)
+        
+        # Check if dest_dir is a directory
+        if not os.path.isdir(dest_dir):
+            return False
+        
+        # Validate dest_path doesn't escape the intended directory
+        # If dest_path is absolute, ensure it's within the root or safe location
+        # The requirement says to reject absolute dest_path that escapes, but practically
+        # we should ensure the extraction stays within dest_dir.
+        
+        # Normalize dest_path to ensure no .. escapes
+        normalized_dest = os.path.normpath(dest_path)
+        if not os.path.isabs(normalized_dest):
+            normalized_dest = os.path.join(dest_dir, normalized_dest)
+        
+        # Ensure the normalized destination is within the resolved directory
+        # This handles cases where dest_path contains ..
+        try:
+            os.path.commonpath([dest_dir, normalized_dest]) == dest_dir
+        except ValueError:
+            # Different drives on Windows or other issues
+            return False
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_dir, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over all members
+            for member in tar.getmembers():
+                # Validate member name
+                member_name = member.name
+                
+                # Skip dot entries
+                if member_name == '.' or member_name == '':
+                    continue
+                
+                # Normalize the member path
+                normalized_member = os.path.normpath(member_name)
+                
+                # Check for absolute paths in member names
+                if os.path.isabs(member_name):
+                    return False
+                
+                # Check if the normalized member escapes the destination directory
+                try:
+                    os.path.commonpath([dest_dir, normalized_member]) == dest_dir
+                except ValueError:
+                    return False
+                
+                # Validate the final resolved path
+                final_member_path = os.path.normpath(os.path.join(dest_dir, normalized_member))
+                
+                # Reject symbolic links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Reject hard links if the target would escape
+                if member.islnk() or (member.issym() and member.linkname):
+                    # Check if the link target escapes
+                    if os.path.isabs(member.linkname):
+                        return False
+                    try:
+                        os.path.commonpath([dest_dir, member.linkname]) == dest_dir
+                    except ValueError:
+                        return False
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    # Create the directory
+                    os.makedirs(final_member_path, exist_ok=True)
+                else:
+                    # Ensure parent directory exists
+                    parent_dir = os.path.dirname(final_member_path)
+                    os.makedirs(parent_dir, exist_ok=True)
+                    
+                    # Extract the file
+                    tar.extract(member, dest_dir)
+                    
+                    # Set permissions to avoid world-writable files
+                    os.chmod(final_member_path, stat.S_IRUSR | stat.S_IWUSR)
+        
+        return True
+        
+    except Exception:
+        return False

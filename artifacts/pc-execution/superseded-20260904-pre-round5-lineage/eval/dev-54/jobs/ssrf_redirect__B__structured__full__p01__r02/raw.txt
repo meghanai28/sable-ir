@@ -1,0 +1,138 @@
+import urllib.request
+import urllib.parse
+import urllib.error
+import socket
+import re
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url (str): The initial URL to fetch.
+        transport (callable): A function that takes a URL string and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., wrong scheme, port, or path traversal).
+    """
+    
+    # Parse the initial URL
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception as e:
+        raise ValueError(f"Invalid URL: {e}")
+    
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS are allowed.")
+    
+    default_port = {'http': 80, 'https': 443}[scheme]
+    actual_port = parsed.port
+    
+    # Check if port is default
+    if actual_port != default_port:
+        raise ValueError(f"Non-default port {actual_port} is not allowed.")
+    
+    # Resolve the hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    
+    if not resolved_ips:
+        raise ValueError(f"No IP addresses resolved for: {hostname}")
+    
+    # Use the first resolved IP as the effective DNS and public address
+    effective_dns = resolved_ips[0]
+    effective_public_address = resolved_ips[0]
+    
+    # Validate path to prevent traversal
+    path = parsed.path
+    if '..' in path or path.startswith('/../'):
+        raise ValueError("Path traversal detected.")
+    
+    # Make the initial request
+    try:
+        status, headers, body = transport(url)
+    except Exception as e:
+        raise ValueError(f"Transport error: {e}")
+    
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Process redirects
+    current_url = url
+    max_hops = 5
+    hops = 0
+    
+    while 'Location' in headers:
+        hops += 1
+        if hops > max_hops:
+            raise ValueError("Too many redirects.")
+        
+        location_value = headers['Location']
+        current_url = urllib.parse.urljoin(url, location_value)
+        
+        # Parse the new URL
+        try:
+            new_parsed = urllib.parse.urlparse(current_url)
+        except Exception:
+            raise ValueError(f"Invalid redirect URL: {current_url}")
+        
+        # Check scheme
+        new_scheme = new_parsed.scheme.lower()
+        if new_scheme not in ('http', 'https'):
+            raise ValueError("Redirect to non-HTTP/HTTPS scheme.")
+        
+        # Check port
+        new_port = new_parsed.port
+        new_default_port = {'http': 80, 'https': 443}[new_scheme]
+        if new_port != new_default_port:
+            raise ValueError("Redirect to non-default port.")
+        
+        # Check DNS (hostname)
+        new_hostname = new_parsed.hostname
+        if not new_hostname:
+            raise ValueError("Invalid redirect URL: missing hostname.")
+        
+        # Check if hostname matches the resolved IPs (same DNS)
+        if new_hostname != hostname:
+            try:
+                new_resolved = resolve_host(new_hostname)
+                if not new_resolved or new_resolved[0] != effective_dns:
+                    raise ValueError("Redirect to different DNS/IP.")
+            except Exception:
+                raise ValueError(f"Failed to resolve redirect hostname: {new_hostname}")
+        
+        # Check public address (IP)
+        if new_hostname != hostname:
+            if new_resolved and new_resolved[0] != effective_public_address:
+                raise ValueError("Redirect to different public IP.")
+        
+        # Check path (must be beneath the requested base path)
+        # We use the original base path from the initial URL
+        base_path = parsed.path
+        if not base_path.startswith('/'):
+            base_path = '/' + base_path
+        
+        new_path = new_parsed.path
+        if not new_path.startswith(base_path):
+            raise ValueError("Redirect path is not beneath the requested base path.")
+        
+        # Re-parse and re-verify port and scheme for the new URL
+        current_url = current_url
+        # Re-fetch
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code on redirect: {status}")
+    
+    return body

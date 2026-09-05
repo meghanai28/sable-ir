@@ -1,0 +1,60 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): Function(url) -> (status, headers, body) tuple.
+        resolve_host (callable): Function(hostname) -> list of IP address strings.
+    
+    Returns:
+        str: The response body for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https or if resolution fails.
+    """
+    import socket
+    from urllib.parse import urlparse
+    
+    # Parse the URL
+    parsed_url = urlparse(url)
+    
+    # GUARD: Check scheme
+    scheme = parsed_url.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # GUARD: Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname resolution failed")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # Use the first resolved IP
+    target_ip = ip_addresses[0]
+    
+    # Determine port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Construct the request URL for the transport
+    # We use the original URL passed by the caller, but we must ensure we don't follow redirects
+    # The transport function is expected to handle the full URL or we pass the full URL
+    # Based on the plan, we accept the initial request and never follow a redirect.
+    # We assume transport expects the full URL or we construct it.
+    # Since the plan says "follow only the initial request", we pass the original URL.
+    
+    # Attempt to fetch
+    status, headers, body = transport(url)
+    
+    # GUARD: Check status code
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed")
+    
+    return body

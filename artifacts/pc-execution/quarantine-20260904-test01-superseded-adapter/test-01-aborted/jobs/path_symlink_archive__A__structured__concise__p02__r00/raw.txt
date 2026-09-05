@@ -1,0 +1,56 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path, rejecting any symbolic or hard links.
+    Returns True only if extraction succeeds completely; False otherwise.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate and extract members one by one
+            for member in tar.getmembers():
+                # Skip directories if we only want files, but the plan says
+                # "regular files and directories may be extracted", so we process them.
+                # However, we must reject symlinks and hardlinks.
+                
+                # Check if it's a symlink or hardlink
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Resolve the target path relative to dest_path
+                # We need to check if the member's name is safe before extracting
+                # The member.name is the name inside the archive
+                
+                # For safety, we construct the target path and verify it's within dest_path
+                # We use os.path.normpath and check for .. components
+                member_name = member.name
+                
+                # Ensure member_name doesn't have .. or absolute paths
+                if member_name.startswith('/') or '..' in member_name.split(os.sep):
+                    return False
+                
+                # Calculate the target path
+                target_path = os.path.normpath(os.path.join(dest_path, member_name))
+                
+                # Double check that the target is within dest_path
+                # This handles cases where dest_path has .. in it
+                real_dest = os.path.realpath(dest_path)
+                real_target = os.path.realpath(target_path)
+                
+                if not real_target.startswith(real_dest + os.sep) and real_target != real_dest:
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+        
+        return True
+    
+    except Exception:
+        return False

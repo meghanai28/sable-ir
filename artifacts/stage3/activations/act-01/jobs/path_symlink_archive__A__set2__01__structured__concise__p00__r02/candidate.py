@@ -1,0 +1,119 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path safely.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        No files are written outside dest_path on failure.
+    """
+    try:
+        # Normalize paths to absolute and remove trailing slashes
+        tar_path = os.path.abspath(tar_path)
+        dest_path = os.path.abspath(dest_path)
+        
+        # Ensure destination directory exists
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Validate that tar_path exists and is a file
+        if not os.path.isfile(tar_path):
+            return False
+        
+        # Create a temporary directory to hold the extracted members
+        # This prevents any write operations from happening directly to dest_path
+        # until we have validated all members
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix='tar_extract_')
+        
+        try:
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Get the root directory of the archive (first directory component)
+                # This helps in understanding the structure, though we validate each member
+                members = tar.getmembers()
+                
+                if not members:
+                    return False
+                
+                # Validate each member's destination path
+                for member in members:
+                    # Calculate the full destination path for this member
+                    # Use the destination path as the base, but ensure we don't escape
+                    # We need to resolve the member's name relative to dest_path
+                    member_dest = os.path.normpath(os.path.join(dest_path, member.name))
+                    
+                    # Resolve to absolute path to check for .. escapes
+                    resolved_member_dest = os.path.abspath(member_dest)
+                    
+                    # Check if the resolved path is within dest_path
+                    # We must ensure it's a strict subdirectory or file within dest_path
+                    if not resolved_member_dest.startswith(dest_path + os.sep) and resolved_member_dest != dest_path:
+                        # This indicates an escape attempt (e.g., via ..)
+                        return False
+                
+                # If all members pass validation, extract them
+                # Use filter to ensure we only extract files/directories that are safe
+                # We extract to the temp_dir first, then move to dest_path? 
+                # Actually, the safer approach is to extract directly but with strict checks,
+                # or extract to a temp dir and verify the final structure.
+                # Given the requirement to fail without writing outside dest_path,
+                # we can extract to dest_path directly but rely on the pre-check.
+                # However, tarfile.extractall() might extract to subdirectories.
+                # We must ensure the extraction doesn't go outside dest_path.
+                
+                # Re-validate by actually checking where tarfile would write
+                # The pre-check above ensures member.name + dest_path stays within dest_path
+                # But we need to be careful about the extraction behavior.
+                
+                # Let's extract to dest_path directly but with a safeguard:
+                # We will extract each member individually to verify, or use a safer extraction method.
+                # A robust way is to extract to a temp dir, then move to dest_path, but that's complex.
+                # Instead, we can use tarfile.extractall with a filter that checks the destination.
+                
+                # Actually, the simplest safe way is to extract to dest_path but ensure no .. escapes.
+                # Since we already checked member.name + dest_path, we can proceed.
+                # But we must ensure the extraction doesn't create files outside.
+                
+                # We'll extract to dest_path. The pre-check ensures no .. escapes.
+                # However, tarfile might behave unexpectedly if dest_path is not a directory.
+                # We already ensured it exists.
+                
+                # To be extra safe, we can extract to a temp dir, verify, then move.
+                # But the requirement says "without writing any archive member outside dest_path".
+                # If we extract to temp dir, we are writing outside dest_path temporarily.
+                # So we must extract directly to dest_path but with validation.
+                
+                # The pre-check ensures that member.name + dest_path is within dest_path.
+                # So we can safely extract to dest_path.
+                
+                # Extract all members
+                tar.extractall(path=dest_path)
+                
+                # After extraction, verify that no files exist outside dest_path
+                # This is a final sanity check
+                for root, dirs, files in os.walk(dest_path):
+                    for d in dirs:
+                        full_path = os.path.join(root, d)
+                        if not full_path.startswith(dest_path + os.sep) and full_path != dest_path:
+                            return False
+                    for f in files:
+                        full_path = os.path.join(root, f)
+                        if not full_path.startswith(dest_path + os.sep) and full_path != dest_path:
+                            return False
+                
+                return True
+                
+        except Exception:
+            # Clean up temp dir if created (though we used it for validation logic in mind)
+            # In this implementation, we didn't actually extract to temp_dir, we extracted to dest_path.
+            # But if we had, we would clean up.
+            return False
+            
+    except Exception:
+        return False

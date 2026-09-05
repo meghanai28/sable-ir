@@ -1,0 +1,101 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Returns True only if the entire archive is extracted successfully without
+    any members writing outside dest_path. Returns False on any failure.
+    """
+    try:
+        # Validate dest_path: must not be absolute
+        if os.path.isabs(dest_path):
+            return False
+        
+        # Resolve dest_path to an absolute path for comparison
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Ensure dest_path directory exists or create it
+        os.makedirs(os.path.dirname(resolved_dest) or '.', exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate all members before extraction
+            for member in members:
+                # Skip directories that would be created automatically if not explicit
+                # We need to check file and directory members
+                
+                # Resolve the member's path relative to dest_path
+                member_dir = os.path.dirname(member.name)
+                member_file = os.path.basename(member.name)
+                
+                # Check if member is a directory
+                if member.isdir():
+                    # For directories, we just need to ensure the path is within dest
+                    # The actual extraction will create the directory structure
+                    pass
+                else:
+                    # For files, check if the parent directory exists and is within dest
+                    parent_dir = os.path.dirname(member.name)
+                    
+                    # Calculate the absolute path of the member's location
+                    # We need to check if any part of the path escapes dest_path
+                    member_abs_path = os.path.abspath(os.path.join(resolved_dest, member.name))
+                    
+                    # Check if the member's path escapes the destination
+                    # This catches cases like ../ in the tar archive
+                    if not member_abs_path.startswith(resolved_dest + os.sep) and member_abs_path != resolved_dest:
+                        return False
+                    
+                    # Check for symbolic links
+                    if member.issym() or member.islnk():
+                        # Resolve the link target
+                        link_target = member.linkname
+                        # We need to resolve the link target relative to the member's location
+                        # The link target is relative to the member's location in the archive
+                        link_abs_path = os.path.abspath(os.path.join(resolved_dest, member.name, link_target))
+                        
+                        # Check if the link target escapes the destination
+                        if not link_abs_path.startswith(resolved_dest + os.sep) and link_abs_path != resolved_dest:
+                            return False
+                    
+                    # Check for hard links
+                    if member.islnk():
+                        # Hard links are handled similarly to symlinks in terms of path validation
+                        # The linkname is the name of the file being linked to
+                        link_target = member.linkname
+                        link_abs_path = os.path.abspath(os.path.join(resolved_dest, member.name, link_target))
+                        
+                        if not link_abs_path.startswith(resolved_dest + os.sep) and link_abs_path != resolved_dest:
+                            return False
+            
+            # Now perform the extraction with error handling
+            try:
+                tar.extractall(path=resolved_dest)
+            except Exception as e:
+                return False
+            
+            # After extraction, verify no files were written outside dest_path
+            # Walk through the extracted directory and check all files
+            for root, dirs, files in os.walk(resolved_dest):
+                # Filter out the dest_path itself from the walk
+                if root == resolved_dest:
+                    continue
+                    
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Check if this file is outside the dest_path
+                    if not file_path.startswith(resolved_dest + os.sep) and file_path != resolved_dest:
+                        return False
+            
+            return True
+            
+    except Exception:
+        return False

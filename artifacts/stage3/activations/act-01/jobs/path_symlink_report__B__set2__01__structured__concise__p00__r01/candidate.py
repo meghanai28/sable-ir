@@ -1,0 +1,37 @@
+import os
+import urllib.parse
+
+def read_report(filename: str, reports_root: str) -> str:
+    # Resolve the reports_root to an absolute path, ensuring it exists
+    if not os.path.isabs(reports_root):
+        reports_root = os.path.abspath(reports_root)
+    
+    # Normalize the reports_root to remove any trailing slashes or .
+    reports_root = os.path.normpath(reports_root)
+    
+    # Construct the target path by joining the root and the filename
+    target_path = os.path.normpath(os.path.join(reports_root, filename))
+    
+    # Resolve the target path, following symbolic links
+    try:
+        resolved_target = os.path.realpath(target_path)
+    except (OSError, ValueError):
+        raise ValueError("Invalid path or cannot resolve")
+    
+    # Ensure the resolved path is within the reports_root
+    # Use os.path.commonpath to verify containment, handling potential edge cases
+    try:
+        common_path = os.path.commonpath([reports_root, resolved_target])
+        if common_path != reports_root:
+            raise ValueError("Path escapes reports_root")
+    except ValueError:
+        # This can happen if paths are on different drives (Windows) or have mismatched separators
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file content as UTF-8
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,80 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the initial URL to check scheme and port
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme
+    requested_port = parsed_url.port
+    
+    # Validate scheme: only HTTP or HTTPS allowed
+    if scheme not in ('http', 'https'):
+        raise ValueError("Disallowed request: Invalid scheme")
+    
+    # Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Disallowed request: No hostname in URL")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Disallowed request: Hostname resolution failed")
+    
+    # Determine the default port for the scheme
+    default_port = None
+    if scheme == 'http':
+        default_port = 80
+    elif scheme == 'https':
+        default_port = 443
+    
+    # If a port is specified in the URL, it must match the default port
+    if requested_port is not None and requested_port != default_port:
+        raise ValueError("Disallowed request: Non-default port used")
+    
+    # Open the connection
+    # We need to use the raw URL or a constructed one that respects the scheme and path
+    # urllib.request.urlopen follows redirects by default, so we must disable it.
+    # However, we also need to ensure we don't follow redirects to a different scheme/port.
+    # The safest way with urllib is to use a custom opener or urllib.request.Request with redirect_limit=0.
+    
+    req = urllib.request.Request(url, method='GET')
+    req.add_header('User-Agent', 'Python-urllib')
+    
+    # Disable redirects
+    redirect_limit = 0
+    opener = urllib.request.build_opener(urllib.request.HTTPRedirectProcessor(redirect_limit))
+    
+    try:
+        response = opener.open(req)
+        
+        # Check final status code
+        status = response.status
+        
+        # The plan says: "check the final destination before reading the body and raise ValueError unless it is on the same scheme and default port as the requested url"
+        # Note: The plan also says "follow the initial destination but never follow a redirect".
+        # Since we set redirect_limit=0, the response object should reflect the final destination (the one we actually connected to).
+        # We need to verify that the final destination (scheme and port) matches the requested URL's scheme and default port.
+        
+        final_scheme = response.url.scheme
+        final_port = response.url.port
+        
+        if final_scheme != scheme:
+            raise ValueError("Disallowed request: Redirected to different scheme")
+        
+        if final_port is not None and final_port != default_port:
+            raise ValueError("Disallowed request: Redirected to non-default port")
+            
+        # Read the body
+        if status != 200:
+            raise ValueError(f"Disallowed request: Status code {status} is not 200")
+            
+        body = response.read().decode('utf-8')
+        return body
+        
+    except urllib.error.HTTPError as e:
+        if e.code != 200:
+            raise ValueError(f"Disallowed request: Status code {e.code} is not 200")
+        raise
+    except Exception as e:
+        raise ValueError(f"Disallowed request: Connection error or other error occurred")

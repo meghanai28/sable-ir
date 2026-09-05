@@ -1,0 +1,68 @@
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (path escapes root or follows a link outside root).
+    """
+    import os
+    import urllib.parse
+    
+    # Normalize the input paths to remove any redundant separators or trailing slashes
+    # and ensure they are treated as absolute if they are meant to be directories.
+    # We use os.path.abspath to resolve the root, but we must be careful not to
+    # inadvertently resolve the filename if it's relative to the current working dir
+    # in a way that escapes the intended scope.
+    
+    # Resolve the root directory to an absolute path
+    root_dir = os.path.abspath(reports_root)
+    
+    # Resolve the filename. If it's absolute, we keep it as is (but still check).
+    # If it's relative, we resolve it relative to the current working directory.
+    # The plan says "joined beneath reports_root", which implies the filename is a relative path
+    # intended to be appended to reports_root. However, to be safe against .. escapes,
+    # we should resolve the filename relative to the root if it's relative, or just
+    # treat it as a path component.
+    # Let's assume the caller provides a path that should be joined to reports_root.
+    # If filename is absolute, we must check if it's actually under reports_root.
+    # If filename is relative, we resolve it relative to the root.
+    
+    if os.path.isabs(filename):
+        requested_path = os.path.abspath(filename)
+    else:
+        # Resolve relative to the root directory to ensure it stays within the intended scope
+        requested_path = os.path.abspath(os.path.join(root_dir, filename))
+    
+    # Normalize the requested path to remove .. components that might be in the name
+    # This helps in detecting escapes early, but we also need to follow symlinks.
+    # The plan says: normalize the requested path and raise ValueError if it escapes.
+    # It also says: follow symbolic links and raise ValueError unless the fully resolved target remains inside.
+    
+    # Check if the requested path (before resolving symlinks) escapes the root
+    # We use os.path.commonpath to check containment, but it might fail if one is absolute and one isn't.
+    # Since we made requested_path absolute, we can compare.
+    try:
+        common = os.path.commonpath([root_dir, requested_path])
+        if common != root_dir:
+            raise ValueError("Path escapes reports_root")
+    except ValueError:
+        # commonpath raises ValueError if paths are on different drives (Windows) or invalid
+        raise ValueError("Invalid path structure")
+    
+    # Now resolve the path, following symbolic links
+    resolved_path = os.path.realpath(requested_path)
+    
+    # Check if the resolved path is still within the root
+    try:
+        resolved_common = os.path.commonpath([root_dir, resolved_path])
+        if resolved_common != root_dir:
+            raise ValueError("Resolved path escapes reports_root")
+    except ValueError:
+        raise ValueError("Invalid path structure")
+    
+    # Check if the resolved path is a file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {resolved_path}")
+    
+    # Read the file
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

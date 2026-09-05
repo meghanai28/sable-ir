@@ -1,0 +1,223 @@
+import socket
+import urllib.parse
+from typing import Tuple, Optional
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict scheme/port validation, DNS resolution,
+    and limited hop-following for Location headers.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function(url) -> (status, headers, body) tuple.
+        resolve_host: Function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        str: The body of the response for status code 200.
+    
+    Raises:
+        ValueError: For disallowed schemes, invalid DNS, or excessive hops.
+    """
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    
+    # Validate scheme: only HTTP or HTTPS on default ports
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Unsupported scheme: {scheme}")
+    
+    if scheme == 'http':
+        port = 80
+    else:
+        port = 443
+    
+    # Check if the scheme matches the expected port (implicit in urlparse, but explicit check for safety)
+    # urlparse handles this, but we ensure we don't accept HTTP on 443 or HTTPS on 80
+    if (scheme == 'http' and parsed.port != 80) or (scheme == 'https' and parsed.port != 443):
+        raise ValueError(f"Scheme {scheme} must use default port {port if scheme == 'http' else 443}")
+    
+    # Resolve hostname for the initial destination
+    if not parsed.hostname:
+        raise ValueError("URL must contain a hostname")
+    
+    initial_hostname = parsed.hostname
+    resolved_ips = resolve_host(initial_hostname)
+    if not resolved_ips:
+        raise ValueError(f"No DNS resolution found for {initial_hostname}")
+    
+    # Get the target IP to validate against the resolved list
+    target_ip = resolved_ips[0]
+    
+    # Check if the resolved IP matches the expected port context (though IP doesn't have port, 
+    # we rely on the scheme check above). We also ensure we have a valid IP.
+    if not target_ip:
+        raise ValueError("No valid IP address found for resolution")
+    
+    # Helper to build a new URL from a base and a path/query/fragment
+    def make_url(base: str, new_path: Optional[str] = None, new_query: Optional[str] = None, new_fragment: Optional[str] = None) -> str:
+        if new_path is None:
+            new_path = base
+        else:
+            # Remove existing path if provided
+            base_parts = urllib.parse.urlparse(base)
+            if base_parts.path:
+                base = f"{base_parts.scheme}://{base_parts.netloc}{base_parts.params}{base_parts.query}"
+            else:
+                base = f"{base_parts.scheme}://{base_parts.netloc}"
+        
+        if new_query is None:
+            new_query = ""
+        if new_fragment is None:
+            new_fragment = ""
+        
+        # Reconstruct: scheme://netloc/path;?query#fragment
+        # We need to handle the case where base might be just a path or relative
+        # For simplicity in this context, we assume the base is the full URL or we are appending to it
+        # Actually, the requirement says "resolve each Location against the current URL".
+        # So if current is http://example.com/path, and Location is /new/path, result is http://example.com/new/path
+        # If current is http://example.com, and Location is /new/path, result is http://example.com/new/path
+        
+        # Let's use urllib.parse.urljoin for the path part if the new path is absolute
+        # But Location headers are usually absolute paths or relative to current.
+        # We will treat the input as a full URL for the next hop.
+        
+        # Re-evaluating: The plan says "resolve each Location against the current URL".
+        # This implies: new_url = urljoin(current_url, location_string)
+        # However, if the location_string is absolute (starts with /), it replaces the path.
+        # If it's relative, it appends.
+        
+        # Let's implement the joining logic carefully.
+        current_parsed = urllib.parse.urlparse(base)
+        
+        # If the location string is absolute (starts with /), it replaces the path
+        if new_path.startswith('/'):
+            # Ensure we have a netloc
+            if not current_parsed.netloc:
+                raise ValueError("Location URL must have a netloc")
+            new_path = urllib.parse.urljoin(base, new_path)
+        else:
+            # Relative path, append to current path
+            if not current_parsed.path:
+                new_path = current_parsed.path + '/' + new_path
+            else:
+                new_path = current_parsed.path + '/' + new_path
+        
+        # Handle query and fragment
+        if new_query:
+            if '?' in new_path:
+                new_path = new_path.split('?')[0] + new_query
+            else:
+                new_path = new_path + '?' + new_query
+        
+        if new_fragment:
+            if '#' in new_path:
+                new_path = new_path.split('#')[0] + new_fragment
+            else:
+                new_path = new_path + '#' + new_fragment
+        
+        return new_path
+
+    def validate_destination(url_str: str) -> bool:
+        """
+        Validate that the URL matches the scheme and port of the initial request.
+        Also performs DNS resolution check.
+        """
+        try:
+            parsed = urllib.parse.urlparse(url_str)
+        except Exception:
+            return False
+        
+        if parsed.scheme.lower() != scheme:
+            return False
+        
+        if scheme == 'http':
+            if parsed.port != 80:
+                return False
+        else:
+            if parsed.port != 443:
+                return False
+        
+        if not parsed.hostname:
+            return False
+        
+        # Perform DNS resolution
+        try:
+            resolved = resolve_host(parsed.hostname)
+            if not resolved:
+                return False
+            # Check if the resolved IP is valid (non-empty string)
+            if not resolved[0]:
+                return False
+        except Exception:
+            return False
+        
+        return True
+
+    current_url = url
+    max_hops = 5
+    hop_count = 0
+    
+    while hop_count <= max_hops:
+        # Check if current_url is a valid URL
+        try:
+            current_parsed = urllib.parse.urlparse(current_url)
+        except Exception:
+            raise ValueError("Invalid URL format")
+        
+        # If no scheme, assume HTTP (though we already validated initial)
+        if not current_parsed.scheme:
+            # Treat as relative path? But we need a base.
+            # The plan says "Accept HTTP or HTTPS on its default port".
+            # If the URL provided is relative, we cannot validate scheme.
+            # We assume the caller provides an absolute URL or we treat it as relative to the initial base.
+            # But for the loop, we need a scheme.
+            # Let's assume if scheme is missing, we treat it as http://[current_hostname]/...
+            # However, the initial check ensures scheme exists.
+            # In the loop, if we follow a Location, it might be relative.
+            # We must resolve the netloc.
+            pass
+        
+        # Re-parse current_url to get scheme, netloc, path
+        # If current_url is relative (e.g., /path), we need the netloc from the previous step.
+        # But we only have the current_url string.
+        # We must ensure current_url is absolute at the start of each hop.
+        
+        # If current_url is not absolute, we need to construct it from the previous netloc.
+        # But we don't store the netloc separately. We only have the URL string.
+        # We need to extract the netloc from the current_url.
+        
+        if not current_parsed.scheme:
+            # This should not happen if we maintain absolute URLs correctly,
+            # but if the Location was relative and we didn't resolve netloc, we fail.
+            # We assume the initial URL is absolute.
+            # If we are in a loop, current_url should be absolute.
+            raise ValueError("URL must be absolute")
+        
+        # Validate the destination
+        if not validate_destination(current_url):
+            raise ValueError("Destination outside allowed scheme/port or invalid DNS")
+        
+        # Make the request
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location_header = None
+        for key, value in headers.items():
+            if key.lower() == 'location':
+                location_header = value
+                break
+        
+        if location_header:
+            hop_count += 1
+            if hop_count > max_hops:
+                raise ValueError("Maximum hop count exceeded")
+            
+            # Resolve the Location against the current URL
+            # Note: urllib.parse.urljoin handles relative vs absolute paths correctly
+            # If Location is absolute (starts with /), it replaces the path.
+            # If relative, it appends.
+            new_url = make_url(current_url

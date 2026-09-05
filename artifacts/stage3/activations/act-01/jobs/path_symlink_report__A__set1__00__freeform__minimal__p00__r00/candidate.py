@@ -1,0 +1,64 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed.
+    """
+    # Normalize the base root to an absolute path if necessary
+    resolved_root = os.path.normpath(os.path.abspath(reports_root))
+    
+    # Resolve the requested filename to an absolute path
+    requested_path = os.path.normpath(os.path.abspath(filename))
+    
+    # Check if the requested path escapes the root directory
+    # We compare the resolved absolute path against the root
+    if not requested_path.startswith(resolved_root + os.sep) and requested_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Normalize the path to remove any redundant separators or current directory references
+    normalized_path = os.path.normpath(requested_path)
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # and raise ValueError if any component is a symbolic link, even one that currently points inside the root.
+    # We need to check all components of the path from the root.
+    parts = normalized_path.split(os.sep)
+    current_path = resolved_root
+    
+    # Ensure we are within the root before checking links
+    if not current_path.startswith(resolved_root + os.sep) and current_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+        
+    # Iterate through path components to validate each part
+    for i, part in enumerate(parts):
+        if part == '' or part == '.':
+            continue
+            
+        # Construct the path to the next component
+        next_path = current_path + os.sep + part
+        
+        # Check if the next path exists and is a symlink
+        if os.path.lexists(next_path):
+            if os.path.islink(next_path):
+                raise ValueError("Symbolic link detected in path")
+        
+        # Also check the parent directory if it's not the root itself
+        if i > 0:
+            parent_path = normalized_path[:normalized_path.rfind(os.sep)]
+            if parent_path and os.path.islink(parent_path):
+                raise ValueError("Symbolic link detected in path")
+        
+        current_path = next_path
+    
+    # Final check on the full path for symlinks
+    if os.path.lexists(normalized_path) and os.path.islink(normalized_path):
+        raise ValueError("Symbolic link detected in path")
+    
+    # Ensure the file exists and is an ordinary file (not a directory)
+    if not os.path.isfile(normalized_path):
+        raise FileNotFoundError(f"File not found: {normalized_path}")
+    
+    # Read and return the UTF-8 text of the validated report
+    with open(normalized_path, 'r', encoding='utf-8') as f:
+        return f.read()

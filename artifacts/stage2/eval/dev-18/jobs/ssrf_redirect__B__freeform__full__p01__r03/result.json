@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__B__freeform__full__p01__r03",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__B__freeform__full__p01",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nimport urllib.request\nimport urllib.error\n\ndef fetch_text(url: str, transport, resolve_host) -> str:\n    # Parse the URL to extract components\n    parsed = urllib.parse.urlparse(url)\n    scheme = parsed.scheme.lower()\n    port = parsed.port\n    host = parsed.hostname\n    path = parsed.path\n    query = parsed.query\n    fragment = parsed.fragment\n\n    # Validate scheme\n    if scheme not in ('http', 'https'):\n        raise ValueError(\"Only HTTP and HTTPS schemes are allowed.\")\n\n    # Validate port\n    if port is not None:\n        if scheme == 'http' and port != 80:\n            raise ValueError(\"HTTP must use port 80.\")\n        if scheme == 'https' and port != 443:\n            raise ValueError(\"HTTPS must use port 443.\")\n\n    # Resolve host\n    if not resolve_host(host):\n        raise ValueError(\"resolve_host must return at least one IP address.\")\n\n    # Build the full URL for transport\n    full_url = parsed._replace(path=path, query=query, fragment=fragment).geturl()\n\n    # Initial request\n    while True:\n        status, headers, body = transport(full_url)\n\n        # Check status code\n        if status != 200:\n            raise ValueError(f\"Unexpected status code: {status}\")\n\n        # Check for redirects\n        if 'location' in headers.lower():\n            redirect_url = headers['location']\n            redirect_parsed = urllib.parse.urlparse(redirect_url)\n\n            # Check for dangerous schemes\n            if redirect_parsed.scheme.lower() in ('javascript', 'data'):\n                raise ValueError(\"Redirect to dangerous scheme (javascript or data) is not allowed.\")\n\n            # Check scheme and port consistency\n            if redirect_parsed.scheme != scheme:\n                raise ValueError(\"Redirect must preserve the scheme.\")\n            if port is not None and redirect_parsed.port != port:\n                raise ValueError(\"Redirect must preserve the port.\")\n\n            # Resolve the new host\n            new_host = redirect_parsed.hostname\n            if not resolve_host(new_host):\n                raise ValueError(\"resolve_host must return at least one IP address.\")\n\n            # Update the URL\n            new_url = redirect_parsed._replace(path=redirect_parsed.path, query=redirect_parsed.query, fragment=redirect_parsed.fragment).geturl()\n            full_url = new_url\n            continue\n        else:\n            return body.decode('utf-8') if isinstance(body, bytes) else body",
+    "prompt_tokens": 347,
+    "output_tokens": 535,
+    "finish_reason": "stop",
+    "latency_seconds": 27.619,
+    "seed": 345985556
+  },
+  "prompt_sha256": "d241aedce6b9c05873c5f26624ff94ba72f5edc53a88de276a1e814fc041abf0",
+  "candidate_path": "jobs/ssrf_redirect__B__freeform__full__p01__r03/candidate.py",
+  "candidate_sha256": "c2e469c0b1e79a764b1193b2be2ec4d6cfb0ed01b94c53f390e3672583ec6cf8",
+  "extraction": "raw_text",
+  "error": null
+}

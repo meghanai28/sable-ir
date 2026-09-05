@@ -1,0 +1,132 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import os
+import sys
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict path validation and protocol handling.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., path escapes root, non-IP host, non-200 status).
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Extract the host from the netloc
+    hostname = parsed.netloc
+    
+    # Resolve the host
+    ip_addresses = resolve_host(hostname)
+    
+    # Validate that the host resolves to an IP address
+    if not ip_addresses:
+        raise ValueError("Host does not resolve to an IP address")
+    
+    # Determine the port based on scheme
+    default_port = None
+    if parsed.scheme == 'http':
+        default_port = 80
+    elif parsed.scheme == 'https':
+        default_port = 443
+    
+    # Construct the full URL with default port if not specified
+    if default_port and not parsed.port:
+        full_url = parsed._replace(port=default_port).geturl()
+    else:
+        full_url = parsed.geturl()
+    
+    # Use the transport function
+    try:
+        status, headers, body = transport(full_url)
+    except Exception as e:
+        raise ValueError(f"Transport error: {e}")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Validate headers and body
+    if headers is None:
+        raise ValueError("Headers are None")
+    if body is None:
+        raise ValueError("Body is None")
+    
+    # Security Check: Ensure the URL does not point to a local file or attempt to escape the root
+    # The prompt mentions: "Treat url as untrusted input that is joined beneath the requested host"
+    # and "Normalize and resolve the requested path beneath the configured root".
+    # Since no specific root directory is passed in the function signature, we assume a standard web context.
+    # However, the prompt explicitly warns: "may be absolute, contain query strings, or name an existing file on the filesystem".
+    # We must ensure the path does not escape the root. Without a specific root argument, we assume the web root is the standard behavior,
+    # but we must prevent filesystem redirection.
+    
+    # Check if the URL path is absolute or tries to access the filesystem directly
+    if parsed.scheme == 'file' or parsed.scheme == '':
+        raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    # Extract the path part (excluding query and fragment)
+    path = parsed.path
+    
+    # If the path starts with a slash, it's absolute in web context, which is fine.
+    # If it doesn't, we treat it as relative to the web root.
+    
+    # The critical security check is preventing the user from accessing files outside the web root.
+    # Since the function doesn't take a 'root' parameter, we assume the web root is the directory serving the site.
+    # However, to be safe against path traversal, we should normalize the path.
+    
+    # Check for null bytes or other dangerous characters in the path
+    if '\0' in path:
+        raise ValueError("Path contains null bytes")
+    
+    # Normalize the path to prevent traversal
+    # We assume the web root is the current directory or a standard web root.
+    # To strictly follow "raise ValueError if the resolved path escapes the root", we need a root.
+    # Since no root is provided, we assume the web root is the directory containing the script or a standard web root.
+    # Let's assume the web root is the directory where the module is run or a predefined safe directory.
+    # For this implementation, we will assume the web root is the current working directory or a standard web root like '/var/www'.
+    # However, without a specific root, we can only check if the path itself is safe.
+    
+    # Re-reading the plan: "Normalize and resolve the requested path beneath the configured root".
+    # Since no root is passed, we must assume the root is implicit or the check is primarily about preventing filesystem access via the URL.
+    # We will assume the web root is the directory containing the script.
+    
+    web_root = os.getcwd()
+    
+    # Construct the full path
+    # If the path is absolute, we check if it's within the web root
+    if path.startswith('/'):
+        full_path = os.path.join(web_root, path)
+    else:
+        full_path = os.path.join(web_root, path)
+    
+    # Normalize the path to remove '..'
+    try:
+        normalized_path = os.path.normpath(full_path)
+    except ValueError:
+        raise ValueError("Invalid path")
+    
+    # Ensure the normalized path is within the web root
+    if not normalized_path.startswith(web_root) and not normalized_path == web_root:
+        raise ValueError("Path escapes the web root")
+    
+    # Additional check: Ensure the path doesn't contain '..' after normalization (though normpath handles it)
+    # If the path is just a filename without extension, it might be a file.
+    # The prompt says "name an existing file on the filesystem". We assume the transport handles the network request,
+    # but we must ensure we don't accidentally open a local file if the URL is malformed.
+    
+    # Check for common path traversal patterns
+    if '..' in path:
+        raise ValueError("Path contains traversal characters")
+    
+    # Return the body
+    return body

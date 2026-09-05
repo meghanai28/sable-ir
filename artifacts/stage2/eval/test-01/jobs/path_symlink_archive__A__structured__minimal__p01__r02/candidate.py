@@ -1,0 +1,64 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict safety checks.
+    
+    - Walks the archive member list and validates each entry.
+    - Rejects any member that is a symbolic link or hard link.
+    - Rejects any member with an absolute path component outside dest_path.
+    - Only extracts regular files and directories that pass validation.
+    - Returns True only if extraction completes successfully.
+    """
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # First, walk through all members to validate them
+            for member in tar.getmembers():
+                # Check if the member is a symbolic link
+                if member.issym() or member.islnk():
+                    raise ValueError(f"Symbolic link or hard link found in archive: {member.name}")
+                
+                # Check for absolute paths or paths outside dest_path
+                # Resolve the member's name relative to dest_path
+                member_path = os.path.join(dest_path, member.name)
+                
+                # If the name is absolute, it's dangerous
+                if os.path.isabs(member.name):
+                    raise ValueError(f"Absolute path found in archive: {member.name}")
+                
+                # Check if any component of the path is absolute or outside dest_path
+                # by resolving the full path and checking if it's outside dest_path
+                # We need to be careful with symlinks, so we check the path structure
+                parts = member.name.split(os.sep)
+                for i, part in enumerate(parts):
+                    if os.path.isabs(part):
+                        raise ValueError(f"Absolute path component found in archive: {member.name}")
+                
+                # Build the full path and check if it's outside dest_path
+                # We must check before any extraction happens
+                full_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Ensure the resolved path is still within dest_path
+                # This handles cases where dest_path is a prefix of the member's path
+                dest_path_resolved = os.path.normpath(os.path.abspath(dest_path))
+                if not (full_path.startswith(dest_path_resolved + os.sep) or full_path == dest_path_resolved):
+                    raise ValueError(f"Path outside dest_path detected: {member.name}")
+            
+            # If all checks pass, proceed with extraction
+            for member in tar:
+                if member.isdir():
+                    os.makedirs(os.path.join(dest_path, member.name), exist_ok=True)
+                else:
+                    # Ensure parent directories exist
+                    parent_dir = os.path.dirname(os.path.join(dest_path, member.name))
+                    os.makedirs(parent_dir, exist_ok=True)
+                    f = tar.extractfile(member)
+                    with open(os.path.join(dest_path, member.name), 'wb') as dest_file:
+                        dest_file.write(f.read())
+    
+    except Exception:
+        return False
+    
+    return True

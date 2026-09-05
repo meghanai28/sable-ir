@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__B__freeform__concise__p01__r02",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__B__freeform__concise__p01",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport stat\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to a destination directory with strict security checks.\n    \n    Returns True only if all members are extracted successfully; otherwise returns False\n    without writing any archive content.\n    \"\"\"\n    try:\n        # Normalize the destination path to remove . and .. segments\n        resolved_dest = os.path.normpath(dest_path)\n        \n        # Reject absolute paths\n        if os.path.isabs(dest_path):\n            return False\n        \n        # Open the tar file\n        tar = tarfile.open(tar_path, 'r:*')\n        \n        try:\n            for member in tar.getmembers():\n                # Skip directories (they are created automatically)\n                if member.isdir():\n                    continue\n                \n                # Resolve the target path relative to the destination\n                # We need to resolve the member's name to see if it escapes\n                member_name = member.name\n                \n                # Check if the member name starts with .. or contains .. in a way that escapes\n                # Normalize the member path relative to dest\n                relative_member_path = os.path.normpath(os.path.join(resolved_dest, member_name))\n                \n                # Security check: ensure the resolved path is within the destination\n                # Use os.path.commonpath to verify they share the same prefix\n                common = os.path.commonpath([resolved_dest, relative_member_path])\n                if common != resolved_dest:\n                    return False\n                \n                # Check for symbolic links and hard links\n                if member.issym() or member.islnk():\n                    link_target = member.linkname\n                    # Resolve the link target relative to the destination\n                    resolved_link_target = os.path.normpath(os.path.join(resolved_dest, link_target))\n                    common_link = os.path.commonpath([resolved_dest, resolved_link_target])\n                    if common_link != resolved_dest:\n                        return False\n                    continue\n                \n                # Check for device files\n                if member.isdev():\n                    return False\n                \n                # Check for directories again (already handled but for completeness)\n                if member.isdir():\n                    continue\n                \n                # Extract the member\n                # We use extractfile to avoid creating the directory structure explicitly\n                # and to have more control over the extraction\n                try:\n                    tar.extractfile(member)\n                    # Write to the resolved destination\n                    with open(relative_member_path, 'wb') as f:\n                        f.write(tar.extractfile(member).read())\n                except Exception:\n                    return False\n                    \n        finally:\n            tar.close()\n        \n        return True\n        \n    except Exception:\n        return False",
+    "prompt_tokens": 258,
+    "output_tokens": 566,
+    "finish_reason": "stop",
+    "latency_seconds": 21.758,
+    "seed": 1183492475
+  },
+  "prompt_sha256": "2ba3910b2fb05397463d5b77223e493ad54a7263bf3210fd3491309fc401163d",
+  "candidate_path": "jobs/path_symlink_archive__B__freeform__concise__p01__r02/candidate.py",
+  "candidate_sha256": "f5ffb5df4b4a8d76246139d786b9c345e86d48f487180e19764e07fc04bcee38",
+  "extraction": "raw_text",
+  "error": null
+}

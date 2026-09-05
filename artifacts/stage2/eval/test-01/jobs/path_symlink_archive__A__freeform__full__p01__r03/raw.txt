@@ -1,0 +1,168 @@
+import os
+import tarfile
+import stat
+
+def _validate_dest_path(dest_path: str) -> None:
+    """
+    Normalize dest_path and ensure it does not escape the root.
+    Raises ValueError if dest_path is invalid or escapes root.
+    """
+    # Resolve the path without following symlinks to check for .. traversal
+    # We need to ensure the path is absolute or resolve it to an absolute path
+    if not os.path.isabs(dest_path):
+        # If relative, resolve against current working directory, but we must be careful
+        # The spec says dest_path may be absolute. We'll treat relative paths as relative to cwd
+        # but the check should be against the resolved absolute path.
+        try:
+            resolved = os.path.abspath(dest_path)
+        except ValueError:
+            raise ValueError(f"Invalid path: {dest_path}")
+    else:
+        resolved = os.path.abspath(dest_path)
+    
+    # Ensure the path is a directory (or create it if needed, but we are validating first)
+    # Actually, we just need to ensure the base directory is valid and safe.
+    # We will check if the resolved path contains .. in its components before resolution or after?
+    # Best practice: resolve to absolute, then check components.
+    
+    # Re-check: if the user provides a path like "/tmp/../../../etc", abspath might just give /tmp
+    # But we must prevent extraction into /tmp if the intent was to go to /etc.
+    # The standard safe way is to resolve the target of the extraction.
+    
+    # Let's resolve the base directory.
+    base_dir = os.path.dirname(resolved)
+    
+    # Check for .. in the resolved path components
+    parts = resolved.split(os.sep)
+    if '..' in parts:
+        raise ValueError(f"Path contains '..' segments: {resolved}")
+    
+    # Ensure the directory exists or we can create it?
+    # The plan says "extract a tar archive beneath dest_path".
+    # We should ensure dest_path is a valid directory.
+    if not os.path.isdir(resolved):
+        # Try to create it, but if it fails (e.g., permission), we return False later.
+        # For now, just validate structure.
+        pass
+
+def _validate_member(member_name: str, dest_path: str) -> None:
+    """
+    Validate a single tar member name to ensure it stays within dest_path.
+    Checks for absolute paths, .. segments, and symlink/hardlink targets.
+    Raises ValueError if the member is unsafe.
+    """
+    # Check for absolute path
+    if os.path.isabs(member_name):
+        raise ValueError(f"Member has absolute path: {member_name}")
+    
+    # Check for .. segments in the name itself
+    if '..' in member_name.split(os.sep):
+        raise ValueError(f"Member contains '..' segments: {member_name}")
+    
+    # Calculate the full target path
+    full_path = os.path.normpath(os.path.join(dest_path, member_name))
+    
+    # Ensure the full path is within dest_path (prevents .. escapes)
+    # We use os.path.realpath on the dest_path to get the canonical base, 
+    # but we must not follow symlinks on the member name itself.
+    # However, we must ensure the result is under the resolved dest_path.
+    
+    # Get the absolute path of the destination base
+    abs_dest = os.path.abspath(dest_path)
+    
+    # Check if the member path escapes the absolute destination
+    if not full_path.startswith(abs_dest + os.sep) and full_path != abs_dest:
+        # This check handles the case where full_path is inside abs_dest but not a child
+        # e.g. dest=/tmp/foo, member=bar -> /tmp/foo/bar (ok)
+        # dest=/tmp/foo, member=../bar -> /tmp/bar (fail)
+        # We need to be careful with trailing slashes.
+        if not (full_path == abs_dest or full_path.startswith(abs_dest + os.sep)):
+            raise ValueError(f"Member path escapes destination: {member_name} -> {full_path}")
+    
+    # Check for symbolic links and hard links
+    # We need to check the link target if the member is a symlink or if we are extracting a hard link?
+    # The tarfile member object has 'linkname' for hard links and 'linkname' for symlinks.
+    # We must validate the link target if it exists.
+    
+    # Note: We cannot resolve the link target yet because the file doesn't exist on disk.
+    # We can only check the 'linkname' attribute of the tar member.
+    # If linkname is set, we must validate that its resolved path is within dest_path.
+    
+    # However, the plan says: "a symbolic-link or hard-link whose declared target points inside dest_path must be rejected"
+    # This implies we check the target.
+    
+    # We can resolve the linkname relative to dest_path.
+    # But wait, if the linkname is just "target", and dest_path is "/safe", then "/safe/target" is inside.
+    # If linkname is "../target", it escapes.
+    
+    # We must also consider that the linkname might be absolute.
+    
+    # Let's resolve the linkname relative to dest_path.
+    # If the linkname is absolute, we already checked above.
+    # If relative, we join with dest_path.
+    
+    # Actually, the safest check is to resolve the linkname relative to dest_path and ensure it's within dest_path.
+    # But we must not follow symlinks in dest_path itself for the check?
+    # The plan says "raise an error if it escapes the resolved root of dest_path".
+    # So we should resolve dest_path to its canonical form (without following symlinks? or with?).
+    # Usually, security checks resolve the base to prevent /tmp/.. -> /etc.
+    # But we shouldn't resolve the member's link target if it's a symlink, because that would be following the symlink.
+    # Wait, the plan says "whose declared target points inside dest_path".
+    # This suggests we check the target.
+    
+    # Let's resolve the linkname relative to dest_path.
+    # If linkname is absolute, we check if it's under dest_path.
+    # If relative, we join and check.
+    
+    # We must use os.path.realpath on the linkname's base (dest_path) to ensure we are checking against the real root.
+    # But we must not resolve the linkname itself if it's a symlink?
+    # No, we are checking the *declared* target.
+    # If the declared target is "../etc/passwd", we must reject it.
+    
+    # So:
+    # 1. If linkname is absolute: check if it starts with abs_dest + os.sep.
+    # 2. If linkname is relative: join with abs_dest, then check if it starts with abs_dest + os.sep.
+    # 3. Also ensure no .. in the linkname.
+    
+    # Wait, the plan says "Do all of this validation before extracting any member".
+    # We have the member info from tarfile.
+    
+    # Let's refine the check for linkname.
+    # If member is a symlink, linkname is the target.
+    # If member is a hardlink, linkname is the target.
+    
+    # We must ensure that the linkname does not escape dest_path.
+    
+    # Resolve the base directory (dest_path) to absolute, without following symlinks?
+    # The plan says "resolved root of dest_path".
+    # If dest_path is a symlink to /safe, we should treat /safe as the root?
+    # Or the symlink itself?
+    # Usually, we want to prevent extraction to /safe/../etc.
+    # So we resolve dest_path to absolute.
+    
+    # Check linkname:
+    if member.linkname:
+        # Resolve the linkname relative to dest_path
+        # If linkname is absolute, we already checked.
+        # If relative, we join.
+        
+        # Check for .. in linkname
+        if '..' in member.linkname.split(os.sep):
+            raise ValueError(f"Link target contains '..': {member.linkname}")
+        
+        # Resolve the full target path
+        full_link_target = os.path.normpath(os.path.join(dest_path, member.linkname))
+        
+        # Check if it escapes
+        if not full_link_target.startswith(abs_dest + os.sep) and full_link_target != abs_dest:
+            raise ValueError(f"Link target escapes destination: {member.linkname} -> {full_link_target}")
+        
+        # Additionally, we should check if the link target is absolute and points outside.
+        # We did check absolute above.
+        # What if linkname is absolute but points inside? e.g. /safe/target.
+        # We check if it starts with abs_dest + os.sep.
+        # If abs_dest is /safe, and linkname is /safe/target, it starts with /safe/ -> ok.
+        # If linkname is /etc, it does not start with /safe/ -> fail.
+        
+        # One edge case: what if dest_path is a symlink?
+        # If dest_path is "/tmp/link" which points to "/safe", and we extract to "/

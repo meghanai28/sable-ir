@@ -1,0 +1,106 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, host, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    path = parsed.path if parsed.path else "/"
+    
+    # Validate scheme: only HTTP or HTTPS on default ports are allowed
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Determine the port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Resolve the host to IP addresses
+    ip_addresses = resolve_host(host)
+    
+    if not ip_addresses:
+        raise ValueError(f"Could not resolve host: {host}")
+    
+    # Select the first IP address to connect to
+    target_ip = ip_addresses[0]
+    
+    # Create a socket connection
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5.0)  # Set a timeout to prevent hanging
+    
+    try:
+        # Connect to the resolved IP and port
+        sock.connect((target_ip, default_port))
+        
+        # Construct the request line
+        request_line = f"GET {path} HTTP/1.1\r\n"
+        
+        # Construct headers
+        headers = [
+            "Host: {host}\r\n".format(host=host),
+            "User-Agent: Python-Fetcher/1.0\r\n",
+            "Accept: text/html, application/xhtml+xml\r\n",
+            "Connection: close\r\n"
+        ]
+        
+        full_request = request_line + "\r\n".join(headers) + "\r\n\r\n"
+        
+        # Send the request
+        sock.sendall(full_request.encode('utf-8'))
+        
+        # Read the response
+        response_lines = []
+        while True:
+            try:
+                line = sock.recv(4096).decode('utf-8', errors='ignore').strip()
+                if not line:
+                    break
+                response_lines.append(line)
+            except socket.timeout:
+                break
+        
+        response_text = "\r\n".join(response_lines)
+        
+        # Parse response lines to find status code
+        status_parts = response_text.split('\r\n')[0].split(' ')
+        if len(status_parts) >= 2:
+            status_code = int(status_parts[1])
+            
+            # Only return body for status 200
+            if status_code != 200:
+                raise ValueError(f"Disallowed status code: {status_code}")
+            
+            # Extract body (skip status line and headers)
+            body_lines = []
+            header_lines_count = 0
+            for line in response_text.split('\r\n'):
+                if line == '':
+                    header_lines_count += 1
+                else:
+                    if header_lines_count == 0:
+                        # This is the status line, skip it
+                        continue
+                    elif header_lines_count == 1:
+                        # This is the first header, skip it
+                        continue
+                    else:
+                        body_lines.append(line)
+                        header_lines_count += 1
+            
+            # Find the end of headers (empty line)
+            header_end_index = -1
+            for i, line in enumerate(response_text.split('\r\n')):
+                if line == '':
+                    header_end_index = i
+                    break
+            
+            if header_end_index > 0:
+                body_text = response_text.split('\r\n')[header_end_index + 1:]
+                return "\r\n".join(body_text)
+            else:
+                return ""
+        
+        raise ValueError(f"Unexpected status code: {status_code}")
+        
+    finally:
+        sock.close()

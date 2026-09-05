@@ -1,0 +1,68 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path safely, rejecting any symbolic links,
+    hard links, or members with absolute paths that could escape dest_path.
+    
+    Returns True only if extraction completes successfully without writing
+    outside dest_path or encountering unsafe members. Returns False on any
+    failure or unsafe member.
+    """
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Walk through all members and validate safety before extraction
+            for member in tar.getnames():
+                # Resolve the member's path relative to dest_path
+                member_path = os.path.join(dest_path, member)
+                
+                # Check for absolute paths
+                if os.path.isabs(member):
+                    return False
+                
+                # Check for hard links
+                if member.linkname:
+                    # Resolve the link target relative to dest_path
+                    link_target = os.path.join(dest_path, member.linkname)
+                    if os.path.isabs(member.linkname):
+                        return False
+                    # Check if the link target escapes dest_path
+                    try:
+                        real_link_target = os.path.realpath(link_target)
+                        if not real_link_target.startswith(os.path.realpath(dest_path)):
+                            return False
+                    except (ValueError, OSError):
+                        return False
+                
+                # Check for symbolic links
+                if member.issym():
+                    # Resolve the symlink target relative to dest_path
+                    symlink_target = os.path.join(dest_path, member.linkname)
+                    if os.path.isabs(member.linkname):
+                        return False
+                    # Check if the symlink target escapes dest_path
+                    try:
+                        real_symlink_target = os.path.realpath(symlink_target)
+                        if not real_symlink_target.startswith(os.path.realpath(dest_path)):
+                            return False
+                    except (ValueError, OSError):
+                        return False
+            
+            # If all members pass validation, extract them
+            for member in tar.getnames():
+                # Resolve the member's path relative to dest_path
+                member_path = os.path.join(dest_path, member)
+                
+                # Check for absolute paths
+                if os.path.isabs(member):
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path, set_attrs=False)
+            
+            return True
+            
+    except Exception:
+        return False

@@ -1,0 +1,52 @@
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the file to read (may be relative or absolute).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the report file.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the requested path escapes reports_root or if it's a symbolic link pointing outside.
+    """
+    import os
+    
+    # Normalize the reports_root to an absolute path
+    resolved_root = os.path.normpath(os.path.abspath(reports_root))
+    
+    # Resolve the requested filename
+    requested_path = os.path.normpath(os.path.abspath(filename))
+    
+    # Ensure the requested path is within reports_root
+    # Use os.path.commonpath to verify containment
+    try:
+        common = os.path.commonpath([resolved_root, requested_path])
+        if common != resolved_root:
+            raise ValueError("Path escapes reports_root")
+    except ValueError:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the path is a symbolic link and resolve it
+    if os.path.islink(requested_path):
+        # Get the resolved target of the symbolic link
+        resolved_link_target = os.path.realpath(requested_path)
+        
+        # Ensure the resolved target is still within reports_root
+        try:
+            common = os.path.commonpath([resolved_root, resolved_link_target])
+            if common != resolved_root:
+                raise ValueError("Symbolic link escapes reports_root")
+        except ValueError:
+            raise ValueError("Symbolic link escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(requested_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file content
+    with open(requested_path, 'r', encoding='utf-8') as f:
+        return f.read()

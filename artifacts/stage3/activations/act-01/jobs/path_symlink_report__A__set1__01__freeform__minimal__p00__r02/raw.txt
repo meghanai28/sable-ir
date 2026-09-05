@@ -1,0 +1,131 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagates FileNotFoundError for a missing ordinary file and raises ValueError
+    when the request is disallowed (path traversal or symbolic links).
+    """
+    # Resolve the root directory
+    root_dir = os.path.realpath(reports_root)
+    
+    # Normalize the filename to remove redundant separators
+    # We will construct the target path and then validate it
+    target_path = os.path.normpath(filename)
+    
+    # Calculate the absolute path of the requested file
+    # If filename is absolute, we must ensure it's within root_dir
+    # If filename is relative, we resolve it relative to root_dir
+    
+    if os.path.isabs(target_path):
+        # If absolute, resolve it
+        requested_path = os.path.realpath(target_path)
+    else:
+        # If relative, resolve it relative to root_dir
+        requested_path = os.path.realpath(os.path.join(root_dir, target_path))
+    
+    # Validate that the resolved path is within the root directory
+    # We use os.path.commonpath to check containment, but we must be careful
+    # with the way paths are resolved. A safer approach for containment check:
+    try:
+        common = os.path.commonpath([root_dir, requested_path])
+        if common != root_dir:
+            raise ValueError("Path traversal detected")
+    except ValueError:
+        # This can happen if paths are on different drives (Windows) or invalid
+        raise ValueError("Path traversal detected")
+    
+    # Walk each user-selected path component beneath the resolved reports_root
+    # and raise ValueError if any component is a symbolic link, even one that
+    # currently points inside the root.
+    # We need to check the path from root_dir up to requested_path, excluding the root itself.
+    # However, the requirement says "walk each user-selected path component".
+    # This implies we should check the components between root_dir and requested_path.
+    # We can do this by splitting the relative part.
+    
+    # Get the relative path from root_dir to requested_path
+    # We need to handle cases where requested_path might be just a file name or a directory
+    # The plan says "walk each user-selected path component beneath the resolved reports_root"
+    # This suggests we are checking the directory structure leading to the file.
+    
+    # Let's reconstruct the path components relative to root_dir
+    # We assume requested_path is the final resolved path.
+    # We need to check every directory component in the path between root_dir and requested_path.
+    
+    # First, ensure requested_path is within root_dir (already done above)
+    # Now, iterate through the path components.
+    
+    # We can get the relative path from root_dir
+    rel_path = os.path.relpath(requested_path, root_dir)
+    
+    # If the relative path is empty, it means requested_path == root_dir (which is invalid for a file)
+    # But we are checking for symbolic links in the components.
+    
+    # Split the relative path into components
+    parts = rel_path.split(os.sep) if os.sep != '/' else rel_path.split('/')
+    
+    # Actually, a better way to check components is to walk the path from root_dir to requested_path
+    # We can do this by checking each directory in the path.
+    
+    # Let's use os.path.split to break down the path
+    current = root_dir
+    # We need to check all components in the path of requested_path relative to root_dir
+    # But requested_path is absolute. We can just walk the path from root_dir.
+    
+    # Re-evaluating "walk each user-selected path component beneath the resolved reports_root"
+    # This likely means: if the path is reports_root/a/b/c.txt, we check 'a', 'a/b', etc.
+    # But we only check if they are symlinks.
+    
+    # Let's construct the path step by step from root_dir
+    # We need to check every directory in the path of requested_path relative to root_dir.
+    
+    # Get the relative path again
+    rel = os.path.relpath(requested_path, root_dir)
+    
+    # If rel is empty, it's the root itself. We shouldn't read from root directly if it's a file?
+    # The function reads a report, so it expects a file.
+    
+    # Check for symlinks in the path components
+    # We traverse from root_dir to requested_path
+    current_path = root_dir
+    
+    # We need to check every directory component in the path of requested_path relative to root_dir.
+    # We can do this by splitting the relative path.
+    
+    # Handle the case where rel_path might contain .. if not normalized, but we normalized it.
+    # We split by separator.
+    components = rel.split(os.sep)
+    
+    # Check each component
+    for i, comp in enumerate(components):
+        if not comp:
+            continue
+        # Build the path to the current component
+        if i == 0:
+            check_path = os.path.join(root_dir, comp)
+        else:
+            check_path = os.path.join(root_dir, os.sep.join(components[:i+1]))
+        
+        # Check if it's a symbolic link
+        if os.path.islink(check_path):
+            raise ValueError("Symbolic link detected in path")
+        
+        # Also, we should probably check if it's a directory if we are walking
+        # But the requirement says "even one that currently points inside the root"
+        # So we check islink.
+    
+    # Now, attempt to open the file
+    try:
+        with open(requested_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        # We are only supposed to propagate FileNotFoundError for missing ordinary files.
+        # Other exceptions (like PermissionError) might be raised.
+        # The prompt says "Propagate FileNotFoundError for a missing ordinary file".
+        # It doesn't explicitly say what to do with other errors, but typically we raise them.
+        # However, the plan says "let a missing ordinary file raise FileNotFoundError".
+        # It implies other errors should be handled or raised.
+        # Given the constraints, we will let the exception propagate.
+        raise e

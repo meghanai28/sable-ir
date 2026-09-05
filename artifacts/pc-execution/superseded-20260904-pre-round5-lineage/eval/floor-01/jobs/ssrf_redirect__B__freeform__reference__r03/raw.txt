@@ -1,0 +1,254 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+from typing import Tuple, List, Optional
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> List[str] of textual IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If validation fails at any step.
+    """
+    
+    def validate_url(parsed_url: urllib.parse.ParseResult) -> bool:
+        """
+        Validate URL structure:
+        - Must have a hostname.
+        - No username or password.
+        - Scheme must be http or https.
+        - Port must be default (80 for http, 443 for https) or omitted.
+        """
+        scheme = parsed_url.scheme.lower()
+        if scheme not in ('http', 'https'):
+            return False
+        
+        # Check for username or password in the netloc
+        netloc = parsed_url.netloc
+        if '@' in netloc:
+            return False
+        
+        # Determine expected default port
+        default_port = 80 if scheme == 'http' else 443
+        
+        # Check port presence
+        if ':' in netloc:
+            # Port is specified
+            port_str = netloc.split(':')[-1]
+            try:
+                port = int(port_str)
+                if port != default_port:
+                    return False
+            except ValueError:
+                return False
+        else:
+            # No port specified, which is allowed (default)
+            pass
+        
+        # Must have a hostname
+        if not netloc:
+            return False
+            
+        return True
+    
+    def is_public_address(addr: str) -> bool:
+        """
+        Check if an address is a global public address.
+        Simple heuristic: starts with 10, 127, 172.16-31, 192.168, or ::1 are private.
+        """
+        addr = addr.lower().strip()
+        if addr.startswith(('10.', '127.', '192.168.', '169.254.', '::1', '::ffff:')):
+            return False
+        # Check for link-local (fe80)
+        if addr.startswith('fe80:'):
+            return False
+        # Check for unique local (fc00)
+        if addr.startswith('fc00:'):
+            return False
+        # Check for multicast (ff00)
+        if addr.startswith('ff'):
+            return False
+        return True
+    
+    def resolve_and_validate_hostname(hostname: str) -> Optional[str]:
+        """
+        Resolve hostname using resolve_host and validate against public addresses.
+        Returns the first valid public IP or None if none found.
+        """
+        addresses = resolve_host(hostname)
+        if not addresses:
+            return None
+        for addr in addresses:
+            if is_public_address(addr):
+                return addr
+        return None
+    
+    def validate_redirect_location(current_url: urllib.parse.ParseResult, 
+                                   new_location: str) -> Optional[urllib.parse.ParseResult]:
+        """
+        Resolve redirect location against current URL and validate.
+        """
+        try:
+            new_parsed = urllib.parse.urlparse(new_location)
+        except ValueError:
+            return None
+            
+        if not validate_url(new_parsed):
+            return None
+            
+        # Resolve the new hostname
+        new_hostname = new_parsed.netloc
+        if not new_hostname:
+            return None
+            
+        resolved_ip = resolve_and_validate_hostname(new_hostname)
+        if resolved_ip is None:
+            return None
+        
+        # Reconstruct the validated URL with resolved IP
+        # We need to handle the scheme and port correctly
+        scheme = new_parsed.scheme
+        port = new_parsed.port
+        
+        # If port is default, omit it in the netloc for the next hop
+        if port == 80 and scheme == 'http':
+            netloc = new_hostname
+        elif port == 443 and scheme == 'https':
+            netloc = new_hostname
+        else:
+            netloc = f"{new_hostname}:{port}"
+        
+        return urllib.parse.ParseResult(scheme, netloc, new_parsed.path, 
+                                        new_parsed.params, new_parsed.query)
+    
+    def validate_and_fetch(current_url: urllib.parse.ParseResult, 
+                          max_redirects: int = 5) -> str:
+        """
+        Main loop to fetch content, validating each step and handling redirects.
+        """
+        # Initial validation
+        if not validate_url(current_url):
+            raise ValueError("Invalid initial URL")
+        
+        # Resolve initial hostname
+        resolved_ip = resolve_and_validate_hostname(current_url.netloc)
+        if resolved_ip is None:
+            raise ValueError("Invalid initial hostname")
+        
+        current_url = urllib.parse.ParseResult(
+            current_url.scheme,
+            f"{current_url.netloc}", # Keep original netloc for first call
+            current_url.path,
+            current_url.params,
+            current_url.query
+        )
+        
+        # We will resolve the IP before calling transport if needed, 
+        # but the plan says "Validate every destination before each transport call".
+        # The transport function takes the URL string. We need to ensure the URL passed 
+        # has a valid hostname that resolves to a public IP.
+        
+        # Prepare the URL string for transport
+        url_str = current_url.geturl()
+        
+        # Check if we need to resolve the IP for the URL string (e.g. if it's a hostname)
+        # The transport function likely expects a URL string.
+        # We must ensure the hostname in the URL is valid before calling transport.
+        
+        # Actually, the plan says: "resolve the hostname with resolve_host and raise ValueError if it yields no addresses or any address is not a global public address."
+        # This implies we check the URL's netloc before calling transport.
+        
+        # We already did that in the initial block. Now for redirects:
+        
+        while True:
+            # Validate the current URL one more time (sanity check)
+            if not validate_url(current_url):
+                raise ValueError("Invalid URL in loop")
+            
+            resolved_ip = resolve_and_validate_hostname(current_url.netloc)
+            if resolved_ip is None:
+                raise ValueError("Invalid hostname in loop")
+            
+            # Call transport
+            try:
+                status, headers, body = transport(current_url.geturl())
+            except Exception as e:
+                raise ValueError(f"Transport error: {e}")
+            
+            if status == 200:
+                return body
+            
+            # Handle redirects
+            if status in (301, 302, 303, 307, 308):
+                location = headers.get('location', '')
+                if not location:
+                    raise ValueError("Missing Location header")
+                
+                # Parse the new location
+                new_location_parsed = urllib.parse.urlparse(location)
+                
+                # Validate the new location
+                if not validate_url(new_location_parsed):
+                    raise ValueError("Invalid redirect URL")
+                
+                # Resolve the new hostname
+                new_hostname = new_location_parsed.netloc
+                if not new_hostname:
+                    raise ValueError("Empty hostname in redirect")
+                
+                resolved_ip_new = resolve_and_validate_hostname(new_hostname)
+                if resolved_ip_new is None:
+                    raise ValueError("Invalid hostname in redirect")
+                
+                # Reconstruct the URL with the validated hostname
+                # We use the resolved IP if it's an IP, or the hostname if it's a domain
+                # But the plan says "resolve the hostname... apply this same complete validation"
+                # So we construct the new URL using the validated hostname/IP
+                
+                # If the new location has a port, we keep it. If not, we use default.
+                new_port = new_location_parsed.port
+                if new_port == 80 and new_location_parsed.scheme == 'http':
+                    new_netloc = new_hostname
+                elif new_port == 443 and new_location_parsed.scheme == 'https':
+                    new_netloc = new_hostname
+                else:
+                    new_netloc = f"{new_hostname}:{new_port}"
+                
+                new_url = urllib.parse.ParseResult(
+                    new_location_parsed.scheme,
+                    new_netloc,
+                    new_location_parsed.path,
+                    new_location_parsed.params,
+                    new_location_parsed.query
+                )
+                
+                current_url = new_url
+                
+                if max_redirects == 0:
+                    raise ValueError("Redirect limit exceeded")
+                max_redirects -= 1
+            else:
+                raise ValueError(f"Unexpected status code: {status}")
+    
+    # Initial validation and fetch
+    initial_parsed = urllib.parse.urlparse(url)
+    if not validate_url(initial_parsed):
+        raise ValueError("Invalid initial URL")
+    
+    resolved_ip_initial = resolve_and_validate_hostname(initial_parsed.netloc)
+    if resolved_ip_initial is None:
+        raise ValueError("Invalid initial hostname")
+    
+    # Prepare the URL string for the first transport call
+    # Ensure the netloc is valid (it is, we checked)
+    first_url = urllib.parse.ParseResult(
+        initial

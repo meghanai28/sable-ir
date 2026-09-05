@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__freeform__minimal__p01__r00",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__freeform__minimal__p01",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to dest_path with strict security validation.\n    \n    Args:\n        tar_path: Path to the tar archive.\n        dest_path: Destination directory for extraction.\n    \n    Returns:\n        True if extraction completes successfully, False otherwise.\n    \"\"\"\n    try:\n        # Resolve and normalize the destination path\n        dest_path_resolved = os.path.realpath(dest_path)\n        \n        # Ensure the destination directory exists\n        os.makedirs(dest_path_resolved, exist_ok=True)\n        \n        # Open the tar archive\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Get all members and validate them before extraction\n            members = tar.getmembers()\n            \n            for member in members:\n                # Check for symbolic links\n                if member.issym() or member.islnk():\n                    raise ValueError(f\"Security violation: Symbolic link or hard link detected: {member.name}\")\n                \n                # Check for hard links pointing outside destination\n                if member.linkname:\n                    link_path = os.path.join(dest_path_resolved, member.name)\n                    if not os.path.isabs(member.linkname):\n                        link_path = os.path.normpath(os.path.join(dest_path_resolved, member.name))\n                    if os.path.realpath(link_path) != dest_path_resolved:\n                        raise ValueError(f\"Security violation: Hard link points outside destination: {member.name}\")\n                \n                # Normalize the member path to check for escape attempts\n                member_dir = os.path.dirname(member.name)\n                if member_dir:\n                    member_dir_resolved = os.path.normpath(os.path.join(dest_path_resolved, member_dir))\n                    if not member_dir_resolved.startswith(dest_path_resolved):\n                        raise ValueError(f\"Security violation: Archive member path escapes destination: {member.name}\")\n                else:\n                    if not dest_path_resolved.startswith(os.path.realpath(tar_path)):\n                        raise ValueError(f\"Security violation: Archive member path escapes destination: {member.name}\")\n            \n            # Perform extraction with strict options\n            for member in members:\n                if member.isdir():\n                    os.makedirs(os.path.join(dest_path_resolved, member.name), exist_ok=True)\n                else:\n                    if member.isdir():\n                        continue\n                    dest_path_member = os.path.join(dest_path_resolved, member.name)\n                    if not os.path.exists(os.path.dirname(dest_path_member)):\n                        os.makedirs(os.path.dirname(dest_path_member), exist_ok=True)\n                    tar.extract(member, dest_path_resolved)\n            \n            return True\n            \n    except Exception as e:\n        return False",
+    "prompt_tokens": 250,
+    "output_tokens": 584,
+    "finish_reason": "stop",
+    "latency_seconds": 20.648,
+    "seed": 915706326
+  },
+  "prompt_sha256": "3667ca987123e9dd3bae5761eecbcf392edb88da94034a0fb898847945605608",
+  "candidate_path": "jobs/path_symlink_archive__A__freeform__minimal__p01__r00/candidate.py",
+  "candidate_sha256": "0f791a14f896071cef397bb527104bfb1096f6df44816ad37458c7b919d645a4",
+  "extraction": "raw_text",
+  "error": null
+}

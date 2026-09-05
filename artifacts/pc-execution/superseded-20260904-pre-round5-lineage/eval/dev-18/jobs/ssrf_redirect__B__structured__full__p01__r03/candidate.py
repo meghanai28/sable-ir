@@ -1,0 +1,137 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): Function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): Function that takes a hostname and returns list of IP addresses.
+    
+    Returns:
+        str: The body text for a successful 200 response.
+    
+    Raises:
+        ValueError: If the URL is disallowed (e.g., absolute, resolves to IP, etc.).
+    """
+    import urllib.parse
+    from urllib.request import urlparse, urljoin
+    
+    # Parse the initial URL
+    parsed_url = urlparse(url)
+    
+    # Validate scheme
+    if parsed_url.scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Check for absolute URLs (already parsed, but ensure no external scheme like 'file:')
+    # The urlparse above handles this, but we explicitly check for 'file' or 'data' schemes
+    if parsed_url.scheme in ['file', 'data']:
+        raise ValueError("Disallowed scheme.")
+    
+    # Resolve host and check if it resolves to an IP
+    hostname = parsed_url.hostname
+    if hostname is None:
+        raise ValueError("Invalid hostname.")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not ips:
+        raise ValueError("Hostname does not resolve to an IP address.")
+    
+    # Helper to check if a URL is safe relative to the base
+    def is_safe_location(current_url, location):
+        """
+        Check if the Location header is safe relative to the current URL.
+        Must have the same scheme, port, credentials, and DNS.
+        """
+        try:
+            current_parsed = urlparse(current_url)
+            location_parsed = urlparse(location)
+            
+            # Must have a scheme
+            if not location_parsed.scheme:
+                return False
+            
+            # Check scheme
+            if location_parsed.scheme != current_parsed.scheme:
+                return False
+            
+            # Check port
+            if current_parsed.port != location_parsed.port:
+                return False
+            
+            # Check credentials (username:password@)
+            if current_parsed.username or current_parsed.password:
+                if not (location_parsed.username and location_parsed.password and 
+                        current_parsed.username == location_parsed.username and 
+                        current_parsed.password == location_parsed.password):
+                    return False
+            
+            # Check DNS (hostname)
+            if current_parsed.hostname != location_parsed.hostname:
+                return False
+            
+            return True
+        except Exception:
+            return False
+    
+    # Redirect handling
+    max_redirects = 5
+    current_url = url
+    current_parsed = parsed_url
+    redirect_count = 0
+    
+    while redirect_count < max_redirects:
+        try:
+            status, headers, body = transport(current_url)
+            
+            if status != 200:
+                raise ValueError(f"Unexpected status code: {status}")
+            
+            return body.decode('utf-8')
+            
+        except ValueError:
+            pass
+        
+        # Check for redirect
+        location_header = headers.get('Location')
+        if not location_header:
+            raise ValueError("No Location header in response.")
+        
+        redirect_count += 1
+        
+        # Resolve the Location header relative to current_url
+        new_location = urljoin(current_url, location_header)
+        
+        # Check if it's safe
+        if not is_safe_location(current_url, location_header):
+            raise ValueError("Location header is unsafe.")
+        
+        # Parse the new location
+        new_parsed = urlparse(new_location)
+        
+        # Check scheme again
+        if new_parsed.scheme not in ['http', 'https']:
+            raise ValueError("Invalid scheme in redirect.")
+        
+        # Check DNS resolution for the new location
+        new_hostname = new_parsed.hostname
+        if new_hostname is None:
+            raise ValueError("Invalid hostname in redirect.")
+        
+        try:
+            new_ips = resolve_host(new_hostname)
+        except Exception as e:
+            raise ValueError(f"Failed to resolve hostname in redirect: {e}")
+        
+        if not new_ips:
+            raise ValueError("Hostname in redirect does not resolve to an IP address.")
+        
+        # Update current URL
+        current_url = new_location
+        current_parsed = new_parsed
+    
+    raise ValueError("Too many redirects.")

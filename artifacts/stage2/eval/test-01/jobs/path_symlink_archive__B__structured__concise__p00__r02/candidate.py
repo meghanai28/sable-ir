@@ -1,0 +1,134 @@
+import os
+import tarfile
+import tempfile
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to its absolute, canonical form."""
+    return os.path.normpath(os.path.abspath(path))
+
+def _is_within_base(target: str, base: str) -> bool:
+    """Check if target is within base directory."""
+    try:
+        normalized_target = _normalize_path(target)
+        normalized_base = _normalize_path(base)
+        return normalized_target.startswith(normalized_base + os.sep) or normalized_target == normalized_base
+    except (ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    Returns True on complete success, False otherwise.
+    No archive members are written outside dest_path on failure.
+    """
+    try:
+        # Normalize and validate destination
+        resolved_dest = _normalize_path(dest_path)
+        
+        # Check for path traversal in destination itself
+        if not resolved_dest.startswith(os.path.abspath(os.path.dirname(dest_path)) + os.sep) or resolved_dest == os.path.abspath(dest_path):
+            # Additional check to ensure dest_path doesn't escape
+            # We compare the normalized absolute path of the input with the resolved
+            if not resolved_dest.startswith(os.path.abspath(os.path.dirname(dest_path)) + os.sep) and not resolved_dest == os.path.abspath(dest_path):
+                # This logic is slightly redundant with normpath but ensures safety
+                pass
+
+        # Validate destination is safe (doesn't contain .. that escapes root)
+        # Re-normalize to absolute to check for escapes
+        safe_dest = _normalize_path(dest_path)
+        if not safe_dest.startswith(os.path.abspath(os.path.dirname(dest_path)) + os.sep) and not safe_dest == os.path.abspath(dest_path):
+            # This block is theoretically unreachable if normpath is used correctly but added for clarity
+            pass
+
+        # Create a temporary directory for extraction to ensure we don't write outside dest_path
+        # We will move files to the correct location after validation
+        with tempfile.TemporaryDirectory() as temp_extract_dir:
+            # Open the tar file
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Get list of all members
+                members = tar.getnames()
+                
+                # Validate each member
+                for member in members:
+                    # Resolve the member's target path
+                    member_path = os.path.join(resolved_dest, member)
+                    
+                    # Normalize the member path to check for escapes
+                    normalized_member = _normalize_path(member_path)
+                    
+                    # Check if the normalized member escapes the base destination
+                    if not _is_within_base(normalized_member, resolved_dest):
+                        return False
+                
+                # Now perform the extraction to the temp directory first
+                tar.extractall(temp_extract_dir)
+                
+                # Move all extracted files to the correct destination
+                # We need to handle symlinks carefully as well
+                for root, dirs, files in os.walk(temp_extract_dir):
+                    # Remove directories
+                    for d in dirs:
+                        os.remove(os.path.join(root, d))
+                    # Remove files
+                    for f in files:
+                        os.remove(os.path.join(root, f))
+                
+                # Copy files and directories to dest_path
+                for root, dirs, files in os.walk(temp_extract_dir):
+                    # Get relative path from temp_extract_dir
+                    rel_root = os.path.relpath(root, temp_extract_dir)
+                    dest_root = os.path.join(resolved_dest, rel_root) if rel_root != '.' else resolved_dest
+                    
+                    # Create directory structure
+                    if rel_root:
+                        os.makedirs(dest_root, exist_ok=True)
+                    else:
+                        os.makedirs(resolved_dest, exist_ok=True)
+                    
+                    # Copy files
+                    for f in files:
+                        src = os.path.join(root, f)
+                        dst = os.path.join(dest_root, f)
+                        if os.path.isdir(src):
+                            os.makedirs(dst, exist_ok=True)
+                        else:
+                            # Ensure parent exists
+                            os.makedirs(os.path.dirname(dst), exist_ok=True)
+                            shutil.copy2(src, dst)
+                
+                # Handle symlinks
+                for root, dirs, files in os.walk(temp_extract_dir):
+                    rel_root = os.path.relpath(root, temp_extract_dir)
+                    dest_root = os.path.join(resolved_dest, rel_root) if rel_root != '.' else resolved_dest
+                    
+                    for f in files:
+                        src = os.path.join(root, f)
+                        dst = os.path.join(dest_root, f)
+                        if os.path.islink(src):
+                            link_target = os.readlink(src)
+                            # Resolve the link target relative to the source directory
+                            if os.path.isabs(link_target):
+                                link_target = os.path.normpath(link_target)
+                            else:
+                                link_target = os.path.normpath(os.path.join(os.path.dirname(src), link_target))
+                            
+                            # Check if the resolved link target is within dest_path
+                            if not _is_within_base(link_target, resolved_dest):
+                                return False
+                            
+                            # Create the symlink at the destination
+                            os.symlink(link_target, dst)
+                    
+                    # Remove the original directory if it's empty or not needed
+                    if rel_root:
+                        if not os.listdir(os.path.join(temp_extract_dir, rel_root)):
+                            os.rmdir(os.path.join(temp_extract_dir, rel_root))
+                
+                # Clean up temp directory
+                import shutil
+                shutil.rmtree(temp_extract_dir)
+                
+                return True
+                
+    except Exception:
+        return False

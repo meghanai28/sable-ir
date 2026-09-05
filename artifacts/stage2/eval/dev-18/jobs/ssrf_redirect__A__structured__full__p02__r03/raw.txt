@@ -1,0 +1,85 @@
+import urllib.parse
+import urllib.request
+import socket
+import ssl
+from typing import Tuple, List, Optional
+
+def resolve_host(hostname: str) -> List[str]:
+    """Resolve hostname to list of IP addresses."""
+    try:
+        ip_addresses = socket.getaddrinfo(hostname, None)
+        return [ip[4][0] for ip in ip_addresses]
+    except socket.gaierror:
+        return []
+
+def transport(url: str) -> Tuple[int, dict, str]:
+    """Simulate HTTP transport by using urllib.
+    Returns (status_code, headers, body) tuple.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Unsupported scheme: {parsed.scheme}")
+    
+    try:
+        if parsed.scheme == 'http':
+            opener = urllib.request.HTTPOpener(urllib.request.HTTPHandler())
+        else:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            opener = urllib.request.HTTPSOpener(context)
+        
+        opener.add_header('User-Agent', 'Python-Script')
+        
+        req = urllib.request.Request(url)
+        response = opener.open(req, timeout=5)
+        
+        status = response.status
+        headers = dict(response.headers)
+        body = response.read().decode('utf-8', errors='replace')
+        
+        return (status, headers, body)
+    except urllib.error.HTTPError as e:
+        return (e.code, dict(e.headers), e.read().decode('utf-8', errors='replace'))
+    except Exception as e:
+        return (0, {}, "")
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """Fetch text from URL following redirects, validating scheme and host."""
+    current_url = url
+    
+    while True:
+        # Check scheme
+        parsed = urllib.parse.urlparse(current_url)
+        if parsed.scheme not in ('http', 'https'):
+            raise ValueError(f"Disallowed scheme: {parsed.scheme}")
+        
+        # Resolve host
+        hostnames = resolve_host(parsed.hostname or '')
+        if not hostnames:
+            raise ValueError("Resolved host has no IP address")
+        
+        # Get transport result
+        status, headers, body = transport(current_url)
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Non-200 status code: {status}")
+        
+        # Check for redirect
+        location = headers.get('Location')
+        if location:
+            next_url = urllib.parse.urljoin(current_url, location)
+            # Validate redirect location scheme
+            next_parsed = urllib.parse.urlparse(next_url)
+            if next_parsed.scheme not in ('http', 'https'):
+                raise ValueError(f"Disallowed redirect scheme: {next_parsed.scheme}")
+            # Validate redirect host
+            next_hostnames = resolve_host(next_parsed.hostname or '')
+            if not next_hostnames:
+                raise ValueError("Redirect host has no IP address")
+            current_url = next_url
+        else:
+            break
+    
+    return body

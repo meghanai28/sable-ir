@@ -1,0 +1,65 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Guard: Check scheme
+    if not url.startswith("http://") and not url.startswith("https://"):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Extract scheme and host
+    scheme = url.split("://")[0]
+    if scheme == "http":
+        port = 80
+    else:
+        port = 443
+    
+    # Parse host and path
+    if url.startswith("http://"):
+        rest = url[7:]
+    else:
+        rest = url[8:]
+    
+    # Handle port if specified in URL (though plan says default port, we parse for robustness)
+    if ":" in rest:
+        host_port = rest.split(":", 1)
+        host = host_port[0]
+        if host_port[1]:
+            # Port specified, but we use default port per spec "Accept HTTP or HTTPS on its default port"
+            # The spec says "Accept ... on its default port", implying we ignore explicit ports or treat them as non-standard?
+            # Re-reading: "Accept HTTP or HTTPS on its default port". This likely means we do not support non-default ports, or we simply use the default.
+            # Given the simplicity, we will just use the host and default port.
+            pass
+    else:
+        host = rest
+    
+    # Guard: Resolve host
+    ips = resolve_host(host)
+    if not ips:
+        raise ValueError("Could not resolve hostname")
+    
+    # ORDER: Create connection using default port
+    # We use the resolved IP to connect. Since we are on the "current host" (the host of the URL), we connect to that IP.
+    # The transport function takes a URL, so we pass the original URL or the IP+port.
+    # The plan says "SINK: opening an HTTP/HTTPS connection".
+    # We will construct the full URL with the resolved IP and default port to pass to transport.
+    # However, transport(url) is given. Does transport expect the original URL or the resolved one?
+    # The plan says "resolve the hostname... and raise ValueError unless resolve_host returns textual IP addresses".
+    # It doesn't explicitly say to change the URL passed to transport, but to open a connection.
+    # Usually, to connect to an IP, you use the IP in the URL or construct a new one.
+    # Let's assume we construct the URL with the resolved IP and default port.
+    
+    # Re-evaluating: "resolve the hostname to its IP address". This implies we use the IP for the connection.
+    # We construct a new URL with the IP and the default port.
+    new_url = f"{scheme}://{host}:{port}"
+    
+    # If the original URL had a path, we should append it.
+    if "/" in rest and not rest.startswith("/"):
+        new_url += rest
+    elif "/" in rest:
+        new_url += rest
+    
+    # Call transport
+    status, headers, body = transport(new_url)
+    
+    # Return body for status 200
+    if status == 200:
+        return body
+    else:
+        raise ValueError("Status code is not 200")

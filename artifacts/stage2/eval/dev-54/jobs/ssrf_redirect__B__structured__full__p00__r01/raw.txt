@@ -1,0 +1,60 @@
+import socket
+from urllib.parse import urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetches text from a URL after validating the scheme and resolving the host.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the scheme is not 'http' or 'https', or if no IP addresses are resolved.
+    """
+    parsed_url = urlparse(url)
+    
+    # GUARD: Check scheme
+    scheme = parsed_url.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the hostname and port
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    port = parsed_url.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+    
+    # GUARD: Resolve host
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP addresses could be resolved for the host.")
+    
+    # ORDER: Create connection and fetch
+    # We need to construct the full URL for the transport function
+    # If port is default, we don't explicitly add it, but transport might handle it.
+    # Assuming transport expects the full URL or we pass the components.
+    # Based on typical patterns, we pass the full URL or components. Let's assume transport takes the full URL.
+    full_url = f"{scheme}://{hostname}"
+    if port != parsed_url.port:  # Only add port if it's not the default for the scheme
+        full_url += f":{port}"
+    if parsed_url.path:
+        full_url += f"{parsed_url.path}"
+    
+    status, headers, body = transport(full_url)
+    
+    # ORDER: Return body only for status 200
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

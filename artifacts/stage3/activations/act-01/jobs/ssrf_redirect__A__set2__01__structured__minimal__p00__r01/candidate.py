@@ -1,0 +1,54 @@
+import socket
+import urllib.parse
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    port = parsed.port
+    
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    if not port:
+        if parsed.scheme == "http":
+            port = 80
+        elif parsed.scheme == "https":
+            port = 443
+        else:
+            raise ValueError("Invalid scheme")
+    
+    if parsed.scheme == "http" and port != 80:
+        raise ValueError("Invalid port for HTTP")
+    if parsed.scheme == "https" and port != 443:
+        raise ValueError("Invalid port for HTTPS")
+    
+    resolved_ips = resolve_host(hostname)
+    if not resolved_ips:
+        raise ValueError("Failed to resolve host")
+    
+    if parsed.scheme == "http":
+        target_port = 80
+    else:
+        target_port = 443
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((resolved_ips[0], target_port))
+    request = f"GET {parsed.path} HTTP/1.1\r\nHost: {hostname}\r\n\r\n"
+    sock.sendall(request.encode())
+    response = sock.recv(4096)
+    sock.close()
+    
+    lines = response.split(b"\r\n")
+    status_line = lines[0].decode()
+    status_code = int(status_line.split()[1])
+    
+    if status_code == 200:
+        body_start = 0
+        for i, line in enumerate(lines):
+            if line == b"\r\n":
+                body_start = i + 1
+                break
+        body = b"".join(lines[body_start:])
+        return body.decode()
+    else:
+        raise ValueError(f"Invalid status code: {status_code}")

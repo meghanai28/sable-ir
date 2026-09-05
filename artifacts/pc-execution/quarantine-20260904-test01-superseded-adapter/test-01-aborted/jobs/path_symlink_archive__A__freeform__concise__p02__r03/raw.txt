@@ -1,0 +1,165 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+def _normalize_and_validate_dest(dest_path: str) -> str:
+    """
+    Normalize the destination path and check for escape attempts.
+    Returns the absolute, normalized path if safe, raises ValueError otherwise.
+    """
+    # Resolve to absolute path
+    abs_dest = os.path.abspath(dest_path)
+    
+    # Ensure the directory exists
+    os.makedirs(abs_dest, exist_ok=True)
+    
+    # Check if the absolute path escapes the intended root (if any) or is just safe
+    # The requirement implies we treat dest_path as the root. We must ensure no .. escapes it.
+    # Since we use os.path.abspath, .. is resolved. We need to verify that the final
+    # absolute path is exactly what we expect and doesn't contain unexpected .. in its components
+    # relative to the starting point, but the safest check is to ensure the resolved path
+    # doesn't go above the starting point if the starting point was meant to be a directory.
+    # However, the spec says "normalize dest_path and raise an error if it escapes the resolved destination root".
+    # This implies we should treat the normalized path as the root.
+    # We just need to make sure the path is absolute and doesn't contain .. that would resolve outside.
+    
+    # A simple robust check: if the absolute path starts with the original dest_path (normalized)
+    # or if the original dest_path was absolute, we just ensure we don't go above it.
+    # Actually, the safest interpretation for "escapes the resolved destination root" is:
+    # If dest_path is relative, normalize it. If it contains .., resolve it. If the result
+    # is outside the "root" (which is typically the current dir or a specified base), fail.
+    # But here, dest_path IS the root. So we just need to ensure we don't create files outside
+    # of dest_path. The extraction logic will handle this, but we must validate the path itself.
+    
+    # Let's assume the "root" is the directory containing dest_path if dest_path is a file-like name,
+    # or dest_path itself if it's a directory.
+    # The spec says "dest_path may be absolute or contain .. segments".
+    # We must raise an error if it escapes the resolved destination root.
+    # This usually means if dest_path is something like "/tmp/..", we should reject it.
+    
+    # Normalize the path
+    normalized = os.path.normpath(dest_path)
+    
+    # If the normalized path is absolute, it's the root.
+    if os.path.isabs(normalized):
+        return normalized
+    
+    # If relative, we need a base. The spec doesn't explicitly give a base, but implies
+    # we shouldn't escape the "resolved destination root".
+    # In many secure implementations, if dest_path is relative, we resolve it relative to the cwd.
+    # However, to be safe against .., we should check if the normalized path goes outside the cwd.
+    # But the spec says "escapes the resolved destination root".
+    # Let's assume the root is the directory where the script is run, or simply ensure the
+    # normalized path doesn't have .. that resolves outside the intended scope.
+    # The most strict interpretation: if dest_path is relative, resolve it. If the result
+    # has any .. that would resolve outside the current directory, fail.
+    # Actually, simpler: just ensure the final absolute path is what we expect.
+    # If the user provides a relative path with .., we resolve it. If it goes outside the
+    # current working directory, that's an escape.
+    
+    # Let's resolve the absolute path.
+    abs_dest = os.path.abspath(normalized)
+    
+    # Check if it escapes the current directory (if dest_path was relative)
+    # If dest_path was absolute, abs_dest should equal normalized (with .. resolved).
+    # If abs_dest != normalized, it means .. was resolved to something else.
+    # But wait, os.path.abspath on "/tmp/.." returns "/tmp". That's fine.
+    # The danger is "/..".
+    
+    # Let's just ensure the absolute path is exactly the normalized path (with .. resolved)
+    # and doesn't go above the "root".
+    # Since we don't have a specific root other than the dest_path itself, we assume
+    # the dest_path is the root.
+    # We must ensure that after normalization, we don't have .. that resolves outside.
+    # If dest_path is absolute, we just normalize.
+    # If dest_path is relative, we resolve it. If the resolved path is outside cwd, fail.
+    
+    # To be safe, we can check if the normalized path starts with the cwd.
+    cwd = os.getcwd()
+    if not os.path.isabs(normalized):
+        # If relative, ensure it doesn't escape cwd
+        if not abs_dest.startswith(cwd):
+            raise ValueError(f"Destination path escapes current directory: {abs_dest}")
+    
+    return abs_dest
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with security validations.
+    Returns True on complete success, False on any failure (without writing outside dest_path).
+    """
+    try:
+        # Validate destination path first
+        abs_dest = _normalize_and_validate_dest(dest_path)
+        
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Resolve the member's path relative to dest_path
+                # We need to check the final path of the member's file/dir
+                # For directories, the path is the directory itself.
+                # For files, we check the directory they are in.
+                
+                # Calculate the potential destination for this member
+                # If member is a directory, we check if it escapes.
+                # If member is a file, we check if its directory escapes.
+                
+                # We need to resolve the path to check for ..
+                # The member.name is relative to the archive root.
+                # We append it to abs_dest.
+                
+                member_dest = os.path.join(abs_dest, member.name)
+                
+                # Resolve to absolute to check for ..
+                resolved_member_dest = os.path.normpath(os.path.abspath(member_dest))
+                
+                # Check if it escapes the destination root
+                if not resolved_member_dest.startswith(abs_dest):
+                    raise ValueError(f"Member {member.name} escapes destination: {resolved_member_dest}")
+                
+                # Check for symbolic links
+                if member.issym:
+                    # Symbolic link: check the target
+                    link_target = member.linkname
+                    resolved_link_target = os.path.normpath(os.path.join(abs_dest, link_target))
+                    if not resolved_link_target.startswith(abs_dest):
+                        raise ValueError(f"Symbolic link {member.name} escapes destination: {resolved_link_target}")
+                    # Also ensure the link target is not a directory that would be extracted as a file
+                    # Actually, the link target is checked against abs_dest.
+                    # We also need to ensure we don't follow the link to create a file outside.
+                    # But the link itself is stored as a symlink. The target is checked.
+                    # What if the target is outside? We check that.
+                    # What if the target is inside but points to a file? That's fine, it creates a symlink.
+                    pass
+                
+                # Check for hard links
+                if member.islnk:
+                    # Hard link: check the target
+                    link_target = member.linkname
+                    resolved_link_target = os.path.normpath(os.path.join(abs_dest, link_target))
+                    if not resolved_link_target.startswith(abs_dest):
+                        raise ValueError(f"Hard link {member.name} escapes destination: {resolved_link_target}")
+                    # Ensure we don't create a file outside
+                    pass
+                
+                # Check for device files, etc.
+                # The spec says "walk each member... and raise an error unless every member's resolved target remains inside"
+                # For non-file members, we generally skip extraction or fail.
+                # But standard tarfile.extractall extracts everything.
+                # We should probably skip non-file members or fail if they are dangerous.
+                # The spec says "extract a tar archive". Usually this implies extracting files.
+                # But if a member is a directory, we extract the directory.
+                # If a member is a symlink, we extract the symlink.
+                # If a member is a device file, we might skip or fail.
+                # Let's assume we only extract regular files and directories, and validate symlinks/hardlinks.
+                # If a member is not a file or directory, we might skip it or fail.
+                # The spec says "extract a tar archive". If it contains dangerous members, we fail.
+                # Let's be strict: if a member is not a regular file or directory, we might skip it?
+                # No, the spec says "raise an error unless every member's resolved target remains inside".
+                # This implies we validate the target. If there is no target (like for a directory), it's fine.
+                # If there is a target (like for a symlink), we validate

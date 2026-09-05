@@ -1,0 +1,53 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Normalize the filename to handle relative paths, .., and .
+    # We need to resolve the filename relative to the root first, then normalize
+    if os.path.isabs(filename):
+        # If absolute, resolve it directly
+        resolved_filename = os.path.normpath(filename)
+    else:
+        # If relative, join with root, then normalize
+        resolved_filename = os.path.normpath(os.path.join(reports_root, filename))
+    
+    # Resolve the final path to get the canonical representation for comparison
+    # This handles any .. or . segments
+    try:
+        resolved_path = os.path.realpath(resolved_filename)
+    except (OSError, ValueError):
+        raise ValueError("Invalid path")
+    
+    # Check if the resolved path is outside the reports_root
+    if not resolved_path.startswith(resolved_root + os.sep) and resolved_path != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Validate that no component in the path is a symbolic link
+    # We walk through the path components up to the final file
+    parts = os.path.normpath(resolved_filename).split(os.sep)
+    current_path = resolved_root
+    
+    for part in parts[:-1]:
+        if part == '..':
+            # Skip .. as we are already tracking the path
+            continue
+        elif part == '.':
+            continue
+        else:
+            current_path = os.path.join(current_path, part)
+            if os.path.islink(current_path):
+                raise ValueError("Symbolic link in path")
+    
+    # Check the final file path itself
+    if os.path.islink(resolved_path):
+        raise ValueError("Symbolic link detected")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {resolved_path}")
+    
+    # Read and return the UTF-8 content
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

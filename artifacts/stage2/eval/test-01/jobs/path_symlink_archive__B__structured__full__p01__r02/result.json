@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__B__structured__full__p01__r02",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__B__structured__full__p01",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport stat\n\ndef _normalize_path(path: str) -> str:\n    \"\"\"Normalize a path to remove redundant separators and resolve . and .. components.\"\"\"\n    return os.path.normpath(path)\n\ndef _is_within_root(target: str, root: str) -> bool:\n    \"\"\"Check if target is within root directory.\"\"\"\n    try:\n        target = os.path.realpath(target)\n        root = os.path.realpath(root)\n        return target.startswith(root + os.sep) or target == root\n    except (ValueError, OSError):\n        return False\n\ndef _validate_member(member_name: str, dest_path: str) -> bool:\n    \"\"\"Validate a tar member to ensure it stays within dest_path and doesn't follow unsafe links.\"\"\"\n    try:\n        if member_name.startswith('/'):\n            member_name = member_name[1:]\n        \n        # Resolve the destination path for this member\n        dest_path = _normalize_path(dest_path)\n        member_dest = os.path.join(dest_path, member_name)\n        \n        # Check for directory traversal\n        if '..' in member_name.split(os.sep):\n            return False\n        \n        # Calculate the absolute path for the member\n        abs_member_dest = os.path.abspath(member_dest)\n        \n        # Ensure the destination is within the allowed root\n        if not _is_within_root(abs_member_dest, dest_path):\n            return False\n        \n        # Check if it's a symbolic link or hard link\n        if member_name.endswith('/'):\n            # It's a directory, check if it contains any symlinks or hard links\n            try:\n                stat_info = os.stat(abs_member_dest)\n                if stat_info.st_mode & stat.S_ISLNK:\n                    return False\n                if stat_info.st_mode & stat.S_ISLNK:\n                    return False\n            except (OSError, ValueError):\n                return False\n        else:\n            # It's a file, check if it's a symlink\n            try:\n                stat_info = os.stat(abs_member_dest)\n                if stat_info.st_mode & stat.S_ISLNK:\n                    return False\n            except (OSError, ValueError):\n                return False\n        \n        return True\n    except (ValueError, OSError):\n        return False\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"Extract a tar archive beneath dest_path. Returns True on complete success, False otherwise.\"\"\"\n    try:\n        # Normalize and validate the destination path\n        dest_path = _normalize_path(dest_path)\n        \n        # Validate the tar file exists\n        if not os.path.isfile(tar_path):\n            return False\n        \n        # Open the tar file\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Get the list of members\n            members = tar.getnames()\n            \n            # Validate all members before extraction\n            for member_name in members:\n                if not _validate_member(member_name, dest_path):\n                    return False\n            \n            # Extract the archive\n            tar.extractall(dest_path)\n            \n            return True\n    \n    except (tarfile.TarError, OSError, ValueError):\n        return False",
+    "prompt_tokens": 261,
+    "output_tokens": 682,
+    "finish_reason": "stop",
+    "latency_seconds": 30.44,
+    "seed": 649467342
+  },
+  "prompt_sha256": "0627c6fcc43bd2e9b4c5d3aebdcb641a05f56c4f4bd6479b0b23992d5138d66e",
+  "candidate_path": "jobs/path_symlink_archive__B__structured__full__p01__r02/candidate.py",
+  "candidate_sha256": "5b19822668e966b8c343c6c172e99720189d8d6454d4b084d6530746ef605a42",
+  "extraction": "raw_text",
+  "error": null
+}

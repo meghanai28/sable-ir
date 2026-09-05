@@ -1,0 +1,121 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validations.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize and validate dest_path
+    try:
+        dest_path = os.path.normpath(dest_path)
+    except Exception:
+        return False
+    
+    # Ensure dest_path is absolute
+    if not os.path.isabs(dest_path):
+        return False
+    
+    # Resolve the real path of dest_path to detect .. escapes
+    try:
+        real_dest = os.path.realpath(dest_path)
+    except Exception:
+        return False
+    
+    # Check if dest_path escapes the root directory
+    if not real_dest.startswith(os.sep) and real_dest != '.':
+        return False
+    
+    # Ensure the destination directory exists
+    try:
+        os.makedirs(real_dest, exist_ok=True)
+    except Exception:
+        return False
+    
+    # Validate the tar_path exists
+    if not os.path.isfile(tar_path):
+        return False
+    
+    # Resolve the real path of the tar file
+    try:
+        real_tar = os.path.realpath(tar_path)
+    except Exception:
+        return False
+    
+    # Open the tar file and validate members
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Check for absolute paths
+                if member.name.startswith('/'):
+                    return False
+                
+                # Calculate the expected destination for this member
+                expected_member_path = os.path.join(real_dest, member.name)
+                
+                # Normalize the expected path
+                try:
+                    norm_member_path = os.path.normpath(expected_member_path)
+                except Exception:
+                    return False
+                
+                # Resolve the real path to check for escapes
+                try:
+                    real_member_path = os.path.realpath(norm_member_path)
+                except Exception:
+                    return False
+                
+                # Check if the resolved path escapes the real destination
+                if not real_member_path.startswith(real_dest + os.sep) and real_member_path != real_dest:
+                    return False
+            
+            # All members validated, proceed with extraction
+            # Extract to a temporary directory first to ensure atomicity, then move
+            # Actually, we can extract directly but we need to be careful about the order
+            # We'll extract to dest_path directly but validate again during extraction
+            
+            # Create a temporary directory for safe extraction
+            temp_dir = os.path.join(real_dest, '.temp_extract')
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            try:
+                tar.extractall(temp_dir)
+                
+                # Move extracted files to their final locations
+                for member in members:
+                    src = os.path.join(temp_dir, member.name)
+                    dst = os.path.join(real_dest, member.name)
+                    
+                    # Ensure parent directories exist
+                    dst_dir = os.path.dirname(dst)
+                    os.makedirs(dst_dir, exist_ok=True)
+                    
+                    # Handle directory members
+                    if member.isdir():
+                        shutil.move(src, dst)
+                    else:
+                        shutil.move(src, dst)
+                
+                # Clean up temporary directory
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+                return True
+                
+            except Exception:
+                # Clean up temporary directory on failure
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return False
+                
+    except Exception:
+        return False

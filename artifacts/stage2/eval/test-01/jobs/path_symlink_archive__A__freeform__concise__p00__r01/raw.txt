@@ -1,0 +1,106 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Returns True only if extraction completes successfully without any members
+    being written outside dest_path. Returns False if validation fails or
+    extraction is interrupted.
+    """
+    try:
+        # Normalize and validate dest_path immediately
+        dest_path = os.path.normpath(dest_path)
+        
+        # Check if dest_path escapes the root directory
+        if not dest_path.startswith(os.sep) and not dest_path.startswith('.'):
+            # On Windows, paths start with drive letter; on Unix, start with /
+            # We need to ensure it's an absolute path
+            if not os.path.isabs(dest_path):
+                raise ValueError("dest_path must be an absolute path")
+        
+        # Ensure dest_path is within root (no .. escapes)
+        # We check if the normalized path starts with root
+        if not (dest_path.startswith(os.sep) or dest_path.startswith('/')):
+            # This handles both Unix and Windows absolute paths
+            pass
+        
+        # Get the absolute root to ensure we don't escape
+        root = os.path.abspath(os.sep)
+        if not dest_path.startswith(root):
+            raise ValueError("dest_path escapes the root directory")
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Resolve the member's name relative to dest_path
+                member_dir = os.path.dirname(member.name)
+                member_base = os.path.basename(member.name)
+                
+                # Construct the full path for the member
+                full_member_path = os.path.join(dest_path, member_dir, member_base)
+                
+                # Normalize the path to handle .. and .
+                normalized_member_path = os.path.normpath(full_member_path)
+                
+                # Check if the normalized path escapes dest_path
+                if not normalized_member_path.startswith(os.path.normpath(dest_path)):
+                    raise ValueError(f"Archive member '{member.name}' would escape dest_path")
+                
+                # Check for absolute paths in member names
+                if member.name.startswith(os.sep) or member.name.startswith('/'):
+                    raise ValueError(f"Archive member '{member.name}' has an absolute path")
+                
+                # Check for symlinks and hardlinks that point outside dest_path
+                if member.isdir() or member.issym() or member.ishardlink():
+                    # For symlinks and hardlinks, we need to check the target
+                    # Note: We can't fully resolve symlinks without following them,
+                    # but we can check if the symlink target points outside dest_path
+                    if member.issym():
+                        # Get the symlink target
+                        try:
+                            link_target = member.linkname
+                            # Normalize the target
+                            normalized_target = os.path.normpath(link_target)
+                            # Check if the target escapes dest_path
+                            if not normalized_target.startswith(os.path.normpath(dest_path)):
+                                raise ValueError(f"Symbolic link '{member.name}' points outside dest_path")
+                        except Exception:
+                            raise ValueError(f"Could not resolve symlink target for '{member.name}'")
+                    elif member.ishardlink():
+                        # Hardlinks point to another file in the archive
+                        # We need to check if the hardlink target is within dest_path
+                        try:
+                            link_target = member.linkname
+                            normalized_target = os.path.normpath(link_target)
+                            if not normalized_target.startswith(os.path.normpath(dest_path)):
+                                raise ValueError(f"Hard link '{member.name}' points outside dest_path")
+                        except Exception:
+                            raise ValueError(f"Could not resolve hardlink target for '{member.name}'")
+            
+            # If validation passes, extract the archive
+            for member in tar:
+                member_dir = os.path.dirname(member.name)
+                member_base = os.path.basename(member.name)
+                full_member_path = os.path.join(dest_path, member_dir, member_base)
+                normalized_member_path = os.path.normpath(full_member_path)
+                
+                if not normalized_member_path.startswith(os.path.normpath(dest_path)):
+                    raise ValueError(f"During extraction, member '{member.name}' would escape dest_path")
+                
+                member.extract(tarfile.extractpath, member_dir, member_base, full_member_path, normalized_member_path, tar)
+            
+            return True
+            
+    except Exception as e:
+        # Clean up any partial extraction if it occurred
+        if os.path.exists(dest_path):
+            shutil.rmtree(dest_path)
+        raise ValueError(f"Extraction failed: {str(e)}")

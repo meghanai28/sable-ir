@@ -1,0 +1,111 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security controls.
+    
+    Returns:
+        bool: True if extraction completed successfully, False otherwise.
+    """
+    # Create a temporary directory to perform extraction safely
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Read the archive into memory to validate before any filesystem operations
+        try:
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Validate all members before extraction
+                for member in tar.getmembers():
+                    _validate_member(member, dest_path, temp_dir)
+                # Extract to the temporary directory
+                tar.extractall(path=temp_dir)
+        except Exception:
+            return False
+    
+    # Now that we've validated and extracted to a temp dir, we need to copy to dest_path
+    # However, the requirement says "without writing any archive member outside dest_path"
+    # This implies we should extract directly to dest_path but with validation first.
+    # Let's re-read the plan: "Do all of this validation before opening or extracting the archive"
+    # So we validate, then extract to dest_path.
+    
+    # Re-implementing with direct extraction to dest_path after validation
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members
+            for member in tar.getmembers():
+                _validate_member(member, dest_path)
+            # Extract to dest_path
+            tar.extractall(path=dest_path)
+        return True
+    except Exception:
+        return False
+
+def _validate_member(member, dest_path, temp_dir=None):
+    """
+    Validate a tar member to ensure it doesn't escape dest_path.
+    
+    Args:
+        member: tarfile.TarInfo object
+        dest_path: The intended destination directory
+        temp_dir: Optional temp directory for safe extraction (used in validation only)
+    """
+    # Normalize dest_path
+    dest_path = os.path.normpath(dest_path)
+    
+    # Check for absolute paths
+    if os.path.isabs(dest_path):
+        raise ValueError("Absolute destination path is not allowed")
+    
+    # Check for .. segments
+    if '..' in dest_path.split(os.sep):
+        raise ValueError("Destination path contains .. segments")
+    
+    # Resolve the destination to an absolute path
+    resolved_dest = os.path.abspath(dest_path)
+    
+    # Check if dest_path is a symlink
+    if os.path.islink(dest_path):
+        raise ValueError("Destination path is a symbolic link")
+    
+    # Create a temp directory for safe extraction and copy
+    if temp_dir is None:
+        temp_dir = tempfile.mkdtemp()
+    
+    try:
+        # Extract to temp directory
+        tar.extract(member, path=temp_dir)
+        
+        # Get the resolved path of the extracted file
+        extracted_path = os.path.abspath(os.path.join(temp_dir, member.name))
+        
+        # Check if the extracted path is within the destination directory
+        # We need to check if it's a symlink or hard link that points outside
+        if member.isdir():
+            # For directories, check if the path is within dest
+            if not extracted_path.startswith(resolved_dest + os.sep):
+                raise ValueError(f"Extracted path {extracted_path} is outside dest {resolved_dest}")
+        else:
+            # For files, check if the path is within dest
+            if not extracted_path.startswith(resolved_dest + os.sep):
+                raise ValueError(f"Extracted path {extracted_path} is outside dest {resolved_dest}")
+            
+            # Check if the file is a symlink
+            if os.path.islink(extracted_path):
+                link_target = os.readlink(extracted_path)
+                resolved_link = os.path.abspath(link_target)
+                if not resolved_link.startswith(resolved_dest):
+                    raise ValueError(f"Symlink target {resolved_link} is outside dest {resolved_dest}")
+            
+            # Check if the file is a hard link
+            if os.path.islink(extracted_path) or os.path.lexists(extracted_path):
+                # Check hard links
+                if member.linkname:
+                    link_target_path = os.path.join(temp_dir, member.linkname)
+                    if not link_target_path.startswith(resolved_dest):
+                        raise ValueError(f"Hard link target {link_target_path} is outside dest {resolved_dest}")
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return True

@@ -1,0 +1,100 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Returns True if extraction completes successfully with all members remaining inside dest_path.
+    Returns False if validation fails or extraction is interrupted, without writing any archive member outside dest_path.
+    """
+    # Resolve and normalize the destination path to prevent directory traversal
+    dest_path_resolved = os.path.realpath(dest_path)
+    
+    # Ensure the destination directory exists before extraction
+    try:
+        os.makedirs(dest_path_resolved, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Open the tar file and iterate over its members
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the absolute path of where this member would be extracted
+                member_dir = os.path.dirname(member.name)
+                member_base = os.path.basename(member.name)
+                
+                # Construct the full target path relative to dest_path_resolved
+                # Handle both absolute and relative member names
+                if os.path.isabs(member.name):
+                    # If member name is absolute, it must be within dest_path_resolved
+                    target_path = os.path.join(dest_path_resolved, member.name)
+                else:
+                    # If member name is relative, resolve it relative to dest_path_resolved
+                    target_path = os.path.join(dest_path_resolved, member_dir, member_base)
+                
+                # Normalize the target path to resolve .. and .
+                target_path_normalized = os.path.normpath(target_path)
+                
+                # Check if the normalized path escapes the destination directory
+                if not target_path_normalized.startswith(dest_path_resolved + os.sep) and target_path_normalized != dest_path_resolved:
+                    # This indicates the path escapes the destination directory
+                    return False
+                
+                # For symbolic links and hard links, we must also check the target
+                if member.isdir():
+                    continue
+                elif member.issym() or member.islnk():
+                    # Check the link target
+                    link_target = member.linkname if member.issym() else member.linkname
+                    if os.path.isabs(link_target):
+                        link_target_normalized = os.path.normpath(link_target)
+                    else:
+                        link_target_normalized = os.path.normpath(os.path.join(dest_path_resolved, link_target))
+                    
+                    if not link_target_normalized.startswith(dest_path_resolved + os.sep) and link_target_normalized != dest_path_resolved:
+                        return False
+                elif member.islnk():
+                    # Hard links are relative to the containing directory, so they are already safe if the directory is safe
+                    pass
+                
+                # If it's a regular file or directory, we proceed to extract
+                # But we must ensure the parent directory exists and is within bounds
+                parent_dir = os.path.dirname(target_path_normalized)
+                if parent_dir != dest_path_resolved and not parent_dir.startswith(dest_path_resolved + os.sep):
+                    return False
+            
+            # All members validated; proceed with extraction
+            for member in tar:
+                member_dir = os.path.dirname(member.name)
+                member_base = os.path.basename(member.name)
+                
+                if os.path.isabs(member.name):
+                    target_path = os.path.join(dest_path_resolved, member.name)
+                else:
+                    target_path = os.path.join(dest_path_resolved, member_dir, member_base)
+                
+                target_path_normalized = os.path.normpath(target_path)
+                
+                # Final check before extraction
+                if not target_path_normalized.startswith(dest_path_resolved + os.sep) and target_path_normalized != dest_path_resolved:
+                    return False
+                
+                if member.isdir():
+                    os.makedirs(target_path_normalized, exist_ok=True)
+                else:
+                    if member.issym():
+                        os.symlink(member.linkname, target_path_normalized)
+                    elif member.islnk():
+                        os.symlink(member.linkname, target_path_normalized)
+                    else:
+                        # Extract regular file
+                        member.extract(dest_path_resolved, member.name)
+            
+            return True
+            
+    except (tarfile.TarError, OSError):
+        return False

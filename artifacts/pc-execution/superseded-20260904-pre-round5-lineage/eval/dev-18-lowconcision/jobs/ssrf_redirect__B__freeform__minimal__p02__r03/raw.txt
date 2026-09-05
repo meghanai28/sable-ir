@@ -1,0 +1,129 @@
+import socket
+import urllib.parse
+from typing import Tuple, List, Optional
+
+def fetch_text(url: str, transport, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL, following Location headers up to 5 hops.
+    Validates scheme, port, DNS resolution, and public address.
+    """
+    MAX_HOPS = 5
+    
+    current_url = url
+    hop_count = 0
+    
+    while hop_count <= MAX_HOPS:
+        # Parse current URL
+        parsed = urllib.parse.urlparse(current_url)
+        
+        # Validate scheme
+        if parsed.scheme not in ['http', 'https']:
+            raise ValueError("Only HTTP and HTTPS schemes are allowed")
+        
+        # Determine default port
+        default_port = 80 if parsed.scheme == 'http' else 443
+        
+        # Check if port is explicitly set
+        if parsed.port is None:
+            actual_port = default_port
+        else:
+            actual_port = parsed.port
+        
+        # Validate port is within valid range
+        if not (1 <= actual_port <= 65535):
+            raise ValueError("Invalid port number")
+        
+        # Resolve hostname
+        hostname = parsed.netloc.split(':')[0] if ':' in parsed.netloc else parsed.netloc
+        
+        try:
+            ip_addresses = resolve_host(hostname)
+        except Exception:
+            raise ValueError(f"DNS resolution failed for {hostname}")
+        
+        if not ip_addresses:
+            raise ValueError(f"DNS resolution returned no results for {hostname}")
+        
+        # Validate that at least one IP is a public address (simplified check)
+        # In a real scenario, this would check against a blocklist or use a library like ip2country
+        # For this implementation, we assume any resolved IP is valid if it's not a loopback or private
+        invalid_ips = [ip for ip in ip_addresses if ip.startswith(('127.', '10.', '192.168.', '169.254.', '::1'))]
+        if invalid_ips and len(invalid_ips) == len(ip_addresses):
+            raise ValueError("Only public addresses are allowed")
+        
+        # Validate scheme matches
+        if parsed.scheme != 'http' and parsed.scheme != 'https':
+            raise ValueError("Invalid scheme")
+        
+        # Validate port matches
+        if parsed.port is None:
+            if actual_port != default_port:
+                raise ValueError("Port mismatch")
+        else:
+            if parsed.port != actual_port:
+                raise ValueError("Port mismatch")
+        
+        # Get headers and body from transport
+        status, headers, body = transport(current_url)
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            hop_count += 1
+            if hop_count > MAX_HOPS:
+                raise ValueError("Maximum hop count exceeded")
+            
+            # Parse Location header
+            location_parsed = urllib.parse.urlparse(location_header)
+            
+            # Validate Location scheme
+            if location_parsed.scheme not in ['http', 'https']:
+                raise ValueError("Location header must have HTTP or HTTPS scheme")
+            
+            # Validate Location port
+            if location_parsed.port is None:
+                location_actual_port = default_port
+            else:
+                location_actual_port = location_parsed.port
+            
+            if not (1 <= location_actual_port <= 65535):
+                raise ValueError("Invalid port in Location header")
+            
+            # Validate scheme and port match current
+            if location_parsed.scheme != parsed.scheme:
+                raise ValueError("Location scheme must match current scheme")
+            
+            if parsed.port is None:
+                if location_actual_port != default_port:
+                    raise ValueError("Location port must match default port")
+            else:
+                if location_actual_port != actual_port:
+                    raise ValueError("Location port must match current port")
+            
+            # Resolve Location hostname
+            location_hostname = location_parsed.netloc.split(':')[0] if ':' in location_parsed.netloc else location_parsed.netloc
+            
+            try:
+                location_ip_addresses = resolve_host(location_hostname)
+            except Exception:
+                raise ValueError(f"DNS resolution failed for Location host {location_hostname}")
+            
+            if not location_ip_addresses:
+                raise ValueError(f"DNS resolution returned no results for Location host {location_hostname}")
+            
+            # Validate Location IPs
+            location_invalid_ips = [ip for ip in location_ip_addresses if ip.startswith(('127.', '10.', '192.168.', '169.254.', '::1'))]
+            if location_invalid_ips and len(location_invalid_ips) == len(location_ip_addresses):
+                raise ValueError("Location host must have public IP")
+            
+            # Update current URL to Location
+            current_url = location_header
+        else:
+            # No Location header, we're done
+            break
+    
+    return body

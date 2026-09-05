@@ -1,0 +1,106 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the initial URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    allowed_schemes = {'http', 'https'}
+    if parsed.scheme not in allowed_schemes:
+        raise ValueError("Disallowed scheme")
+    
+    allowed_ports = {'http': 80, 'https': 443}
+    if parsed.port is None:
+        parsed = parsed._replace(port=allowed_ports[parsed.scheme])
+    elif parsed.port not in allowed_ports[parsed.scheme]:
+        raise ValueError("Disallowed port")
+    
+    # Resolve initial hostname
+    try:
+        resolved_ips = resolve_host(parsed.hostname)
+        if not resolved_ips:
+            raise ValueError("No IP addresses resolved")
+    except Exception as e:
+        raise ValueError(f"Resolve error: {e}")
+    
+    current_url = url
+    max_hops = 5
+    
+    while True:
+        # Check if we've exceeded hops
+        if max_hops == 0:
+            raise ValueError("Too many redirects")
+        
+        # Resolve current hostname
+        try:
+            current_resolved = resolve_host(parsed.hostname)
+            if not current_resolved:
+                raise ValueError("No IP addresses resolved")
+        except Exception as e:
+            raise ValueError(f"Resolve error: {e}")
+        
+        # Validate that resolved IP is within the target host (same DNS)
+        if not is_within_target_host(current_resolved, resolved_ips):
+            raise ValueError("Destination outside target host")
+        
+        # Open connection
+        try:
+            request = urllib.request.Request(current_url)
+            response = urllib.request.urlopen(request, timeout=10)
+        except urllib.error.HTTPError as e:
+            status = e.code
+            body = e.read().decode('utf-8')
+            if status == 200:
+                return body
+            else:
+                raise ValueError(f"HTTP error {status}")
+        except urllib.error.URLError as e:
+            raise ValueError(f"URL error: {e}")
+        
+        # Check status
+        status = response.status
+        if status != 200:
+            raise ValueError(f"Unexpected status {status}")
+        
+        # Check for Location header
+        location_header = response.headers.get('Location')
+        if location_header:
+            max_hops -= 1
+            # Resolve the new URL
+            new_parsed = urllib.parse.urlparse(location_header)
+            
+            # Validate scheme and port for redirect
+            if new_parsed.scheme not in allowed_schemes:
+                raise ValueError("Disallowed scheme in redirect")
+            if new_parsed.port is None:
+                new_parsed = new_parsed._replace(port=allowed_schemes[new_parsed.scheme])
+            elif new_parsed.port not in allowed_schemes[new_parsed.scheme]:
+                raise ValueError("Disallowed port in redirect")
+            
+            # Check DNS containment
+            new_resolved = resolve_host(new_parsed.hostname)
+            if not new_resolved:
+                raise ValueError("No IP addresses resolved in redirect")
+            if not is_within_target_host(new_resolved, resolved_ips):
+                raise ValueError("Redirect destination outside target host")
+            
+            # Check credentials match
+            if parsed.username is not None and new_parsed.username is None:
+                raise ValueError("Credentials mismatch")
+            if parsed.password is not None and new_parsed.password is None:
+                raise ValueError("Credentials mismatch")
+            
+            current_url = new_parsed.geturl()
+            # Update parsed for next iteration
+            parsed = new_parsed
+        else:
+            # No location header, return body
+            return response.read().decode('utf-8')
+
+def is_within_target_host(resolved_ips: list, target_ips: list) -> bool:
+    """Check if any of the resolved IPs match any of the target IPs (same DNS)."""
+    target_set = set(target_ips)
+    return any(ip in target_set for ip in resolved_ips)

@@ -1,0 +1,57 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and transport handling.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): Function(url) -> (status, headers, body).
+        resolve_host (callable): Function(hostname) -> list of IP addresses.
+    
+    Returns:
+        str: The response body for a 200 status code.
+    
+    Raises:
+        ValueError: If the URL is not HTTP/HTTPS on default ports,
+                   if hostname resolution fails, or if status is not 200.
+    """
+    # Validate protocol and port
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError("Only HTTP and HTTPS are allowed")
+    
+    # Extract hostname and port
+    parsed = url.split("://")[1]
+    if ":" in parsed:
+        hostname, port = parsed.rsplit(":", 1)
+        try:
+            port = int(port)
+        except ValueError:
+            raise ValueError("Invalid port number")
+    else:
+        hostname = parsed
+        port = 80 if url.startswith("http://") else 443
+    
+    # Check for default port
+    if port != 80 and port != 443:
+        raise ValueError("Only default HTTP (80) or HTTPS (443) ports are allowed")
+    
+    # Resolve hostname
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname resolution failed")
+    
+    if not ip_addresses:
+        raise ValueError("No valid IP addresses returned")
+    
+    # Call transport
+    try:
+        status, headers, body = transport(url)
+    except Exception:
+        raise ValueError("Transport failed")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Only status code 200 is allowed")
+    
+    # Return body as string
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)

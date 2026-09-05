@@ -1,0 +1,240 @@
+import urllib.request
+import urllib.parse
+import urllib.error
+import socket
+import re
+from typing import Tuple, List, Optional, Any
+
+def _is_public_dns(hostname: str) -> bool:
+    """
+    Basic heuristic to check if a hostname looks like a public DNS entry.
+    This is a simplified check; in a real security context, this would be
+    replaced with a proper DNS resolution check or a whitelist.
+    """
+    if not hostname:
+        return False
+    # Reject internal IP ranges (127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16, etc.)
+    # and localhost variations.
+    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    if re.match(ip_pattern, hostname):
+        parts = hostname.split('.')
+        if len(parts) == 4:
+            octets = [int(p) for p in parts]
+            if (octets[0] == 127) or (octets[0] == 10) or (octets[0] == 192 and octets[1] == 168) or (octets[0] == 172 and 16 <= octets[1] <= 31) or (octets[0] == 169 or octets[0] == 126):
+                return False
+    # Reject obvious internal domains (example: local, intranet, etc.)
+    internal_keywords = ['local', 'intranet', 'localhost', 'test', 'example']
+    if any(kw in hostname.lower() for kw in internal_keywords):
+        return False
+    return True
+
+def _get_ip_addresses(hostname: str) -> List[str]:
+    """
+    Resolve hostname to IP addresses using the provided resolve_host function.
+    """
+    return resolve_host(hostname)
+
+def _validate_location(location: str, current_url: str) -> None:
+    """
+    Validate the redirect location against the current URL.
+    Raises ValueError if:
+    - Scheme is different (not allowed)
+    - Port is different (not allowed)
+    - Credentials are missing (not allowed)
+    - Hostname is not a public DNS entry
+    """
+    # Parse current URL
+    current_parsed = urllib.parse.urlparse(current_url)
+    
+    # Parse location URL
+    # Note: location might be absolute or relative
+    if location.startswith(('http://', 'https://')):
+        location_parsed = urllib.parse.urlparse(location)
+    else:
+        # Relative URL
+        base = urllib.parse.urlparse(current_url)
+        location_parsed = urllib.parse.urlparse(urllib.parse.urljoin(base.geturl(), location))
+    
+    # Check scheme
+    if location_parsed.scheme != current_parsed.scheme:
+        raise ValueError("Redirect scheme mismatch")
+    
+    # Check port
+    if location_parsed.port != current_parsed.port:
+        raise ValueError("Redirect port mismatch")
+    
+    # Check credentials
+    # If current URL has credentials, location must have them too
+    if current_parsed.username or current_parsed.password:
+        if not (location_parsed.username and location_parsed.password):
+            raise ValueError("Missing credentials in redirect")
+    
+    # Check DNS
+    host = location_parsed.hostname
+    if not _is_public_dns(host):
+        raise ValueError("Non-public DNS entry in redirect")
+
+def fetch_text(url: str, transport: Any, resolve_host: Any) -> str:
+    """
+    Fetch text from a URL with strict security guards.
+    """
+    # Parse initial URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # Guard: Check scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Guard: Resolve host
+    hostnames = _get_ip_addresses(parsed.hostname)
+    if not hostnames:
+        raise ValueError("No IP address found for hostname")
+    
+    # Build request URL
+    # Ensure we use the resolved host, but keep the original port if specified
+    # However, the plan says "resolve the hostname to its IP address(es)", 
+    # but for the request we usually need the hostname to construct the URL correctly 
+    # unless we are doing raw socket connections. Since transport is abstract,
+    # we assume it handles the resolved IP or the URL string.
+    # The plan says "resolve the hostname... and raise ValueError when no IP is found".
+    # It does not explicitly say to replace the hostname in the URL with the IP.
+    # Standard practice is to keep the hostname in the URL unless specified otherwise.
+    # We will proceed with the original URL structure but validate the host resolution.
+    
+    # Check scheme and resolve the host before making the request
+    # Process redirects with a hop limit of five
+    max_hops = 5
+    current_url = url
+    redirect_count = 0
+    
+    while True:
+        # Check hop limit
+        if redirect_count > max_hops:
+            raise ValueError("Too many redirects")
+        
+        # Create the request
+        # We need to construct the URL properly.
+        # If it's a redirect, we need to handle the location header.
+        
+        # Prepare the request object
+        req = urllib.request.Request(current_url)
+        
+        # Make the request using the provided transport
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        status, headers, body = response
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Handle redirects
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            _validate_location(location, current_url)
+            current_url = location
+            continue
+        
+        # Return the body
+        return body
+
+    # If we exit the loop without returning, it means we processed all redirects
+    # and got a 200 response. But wait, the loop structure above might be slightly off
+    # if the final request doesn't have a Location header.
+    # Let's restructure the loop to be more precise.
+    pass
+
+# Restructured implementation following the plan strictly
+def fetch_text_v2(url: str, transport: Any, resolve_host: Any) -> str:
+    """
+    Fetch text from a URL with strict security guards.
+    """
+    # Guard: Check scheme
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Guard: Resolve host
+    hostnames = _get_ip_addresses(parsed.hostname)
+    if not hostnames:
+        raise ValueError("No IP address found for hostname")
+    
+    # Initial request
+    current_url = url
+    redirect_count = 0
+    
+    while True:
+        # Check hop limit
+        if redirect_count > max_hops:
+            raise ValueError("Too many redirects")
+        
+        # Create the request
+        req = urllib.request.Request(current_url)
+        
+        # Make the request using the provided transport
+        try:
+            status, headers, body = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Handle redirects
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            _validate_location(location, current_url)
+            current_url = location
+            continue
+        
+        # Return the body
+        return body
+
+# Wait, I need to make sure the loop terminates correctly.
+# The logic should be:
+# 1. Make request to current_url
+# 2. If status 200 and no Location, return body
+# 3. If status 200 and Location, update current_url and loop
+# 4. If status != 200, raise error
+
+# Let's refine the loop logic.
+
+def fetch_text_final(url: str, transport: Any, resolve_host: Any) -> str:
+    """
+    Fetch text from a URL with strict security guards.
+    """
+    # Guard: Check scheme
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Guard: Resolve host
+    hostnames = _get_ip_addresses(parsed.hostname)
+    if not hostnames:
+        raise ValueError("No IP address found for hostname")
+    
+    current_url = url
+    redirect_count = 0
+    
+    while True:
+        # Check hop limit
+        if redirect_count > max_hops:
+            raise ValueError("Too many redirects")
+        
+        # Create the request
+        req = urllib.request.Request(current_url)
+        
+        # Make the request using the provided transport
+        try:
+            status, headers, body = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        # Check status code
+        if status !=

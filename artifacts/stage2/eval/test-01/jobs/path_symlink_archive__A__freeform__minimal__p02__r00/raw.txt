@@ -1,0 +1,84 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully with all members safely contained,
+        False otherwise.
+    """
+    try:
+        # Normalize paths to absolute and resolve symlinks if possible for consistency
+        # We need to ensure dest_path is absolute and under root
+        dest_path = os.path.abspath(dest_path)
+        
+        # Security check: Ensure dest_path is under the root directory
+        # If dest_path is not under root, it's considered unsafe
+        if not dest_path.startswith(os.sep) and not dest_path.startswith('/'):
+            # On Windows, root is usually C:/ or similar, but we check for absolute paths
+            # The requirement says "escapes the root directory", so we enforce it must be absolute
+            # and we'll validate against the root during extraction
+            pass
+        
+        # Check if dest_path exists, create if not
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate all members before extraction
+            for member in members:
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Check for hard links
+                if member.islnk():
+                    return False
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    continue
+                
+                # Resolve the target path for the member
+                # We need to construct the full path and check if it escapes dest_path
+                # Use the member's name relative to the archive root
+                member_name = member.name
+                
+                # Check for .. in the name
+                if '..' in member_name.split(os.sep):
+                    return False
+                
+                # Construct the full destination path
+                dest_member_path = os.path.join(dest_path, member_name)
+                
+                # Normalize the path to remove any .. or .
+                normalized_dest_member_path = os.path.normpath(dest_member_path)
+                
+                # Ensure the normalized path is still within dest_path
+                # We check if the normalized path starts with dest_path
+                if not (normalized_dest_member_path.startswith(dest_path + os.sep) or normalized_dest_member_path == dest_path):
+                    return False
+                
+                # Additional check: resolve any symlinks in the member name if possible
+                # But since we're validating the path structure, we should be safe
+                
+            # All members passed validation, now extract
+            for member in members:
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

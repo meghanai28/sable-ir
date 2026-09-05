@@ -1,0 +1,89 @@
+import socket
+import urllib.parse
+from typing import Tuple, Any
+
+def fetch_text(url: str, transport: Any, resolve_host: Any) -> str:
+    """
+    Fetch text from a URL with strict validation of scheme and port.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status code 200.
+    
+    Raises:
+        ValueError: If the scheme/port is invalid, resolution fails, or status is not 200.
+    """
+    # Parse the URL to extract scheme and port
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Validate port
+    allowed_ports = {80 if scheme == 'http' else 443}
+    if port not in allowed_ports:
+        raise ValueError(f"Port {port} not allowed for scheme {scheme}")
+    
+    # Extract hostname
+    hostname = parsed.hostname
+    
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve hostname
+    try:
+        resolved_ips = resolve_host(hostname)
+        if not resolved_ips:
+            raise ValueError(f"Could not resolve hostname: {hostname}")
+    except Exception:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+    
+    # The plan states: "a resolved address outside the allowed scheme/port combination is invalid"
+    # Since we are validating the scheme and port against the URL's scheme/port, 
+    # and the resolved IP is just a network address, the constraint implies we must 
+    # ensure the connection we make corresponds to the validated scheme/port.
+    # However, the transport function is caller-supplied and handles the actual connection.
+    # The validation here ensures we don't accept a URL pointing to port 8080 for http,
+    # or port 443 for https. The resolved IP is just the network identity.
+    # The critical check is that we only call transport on the validated scheme/port.
+    
+    # Construct the URL for the transport call, ensuring we use the validated port
+    # If the original URL had a port, we use it only if it matches the default, otherwise use default
+    # But the input validation already rejected non-default ports, so we can use the parsed netloc
+    # with the default port explicitly set to ensure consistency.
+    # Actually, urllib.parse.urlunparse with the validated port is safer.
+    
+    # Reconstruct netloc with the validated port (default if not specified in input)
+    # If input had port 80, use 80. If input had no port, use 80 (for http) or 443 (for https).
+    # The parsed.port will be None if not specified.
+    if port is None:
+        port = 80 if scheme == 'http' else 443
+    
+    # Create a valid URL string for the transport call
+    # We need to ensure the transport sees the correct scheme and port
+    # The transport function signature is transport(url).
+    # We pass the URL with the validated scheme and port.
+    # Note: The input url might have been "http://example.com" (no port) or "http://example.com:80".
+    # Our validation passed. We just need to call transport with a URL that matches the allowed scheme/port.
+    # We will construct a standard URL with the default port.
+    reconstructed_url = f"{scheme}://{hostname}:{port}"
+    if parsed.query:
+        reconstructed_url += f"?{parsed.query}"
+    if parsed.fragment:
+        reconstructed_url += f"#{parsed.fragment}"
+    
+    # Call the transport function
+    status, headers, body = transport(reconstructed_url)
+    
+    # Validate status code
+    if status != 200:
+        raise ValueError(f"Invalid status code: {status}")
+    
+    return body

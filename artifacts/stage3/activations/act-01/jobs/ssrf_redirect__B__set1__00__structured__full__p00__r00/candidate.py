@@ -1,0 +1,119 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with safety checks against open redirect and DNS rebinding.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, DNS resolution fails, or unsafe redirects occur.
+    """
+    # Parse the initial URL to get scheme, netloc, and path
+    from urllib.parse import urlparse, urljoin, ParseResult
+    
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Disallowed scheme")
+    
+    initial_netloc = parsed.netloc
+    initial_port = parsed.port
+    initial_path = parsed.path
+    
+    # Resolve the initial hostname
+    if not resolve_host(initial_netloc):
+        raise ValueError("DNS resolution failed")
+    
+    # Validate the initial host against the resolved IPs (basic check for IP injection)
+    # We assume the transport/resolve_host functions are safe enough for the initial request
+    # but we must ensure we don't redirect to an IP address if the original was a domain,
+    # and vice versa, to prevent DNS rebinding.
+    
+    current_url = url
+    current_scheme = scheme
+    current_netloc = initial_netloc
+    current_port = initial_port
+    current_path = initial_path
+    max_hops = 5
+    hops = 0
+    
+    while hops < max_hops:
+        # Extract the Location header if present
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        location_header = headers.get('Location')
+        
+        if location_header is None:
+            # No redirect, return the body
+            return body
+        
+        # Parse the Location header
+        redirect_url = location_header
+        redirect_parsed = urlparse(redirect_url)
+        
+        # Check scheme and port
+        redirect_scheme = redirect_parsed.scheme.lower()
+        if redirect_scheme not in ('http', 'https'):
+            raise ValueError("Disallowed scheme in redirect")
+        
+        redirect_netloc = redirect_parsed.netloc
+        redirect_port = redirect_parsed.port
+        
+        # Validate DNS rebinding: The new host must match the original host or be the same IP
+        # If the original was a domain, the new host must be the same domain (or a subdomain)
+        # If the original was an IP, the new host must be an IP and match the original IP
+        if not (redirect_netloc == initial_netloc or 
+                (not redirect_netloc.endswith('.') and not initial_netloc.endswith('.') and 
+                 redirect_netloc == initial_netloc)):
+            # More robust check: If the original netloc is a domain, the new one must be a domain
+            # and either identical or a subdomain. If the original is an IP, the new one must be an IP
+            # and match.
+            if initial_netloc.endswith('.') and not redirect_netloc.endswith('.'):
+                raise ValueError("DNS rebinding detected: Domain to IP redirect")
+            if not initial_netloc.endswith('.') and redirect_netloc.endswith('.'):
+                raise ValueError("DNS rebinding detected: IP to Domain redirect")
+            if not initial_netloc.endswith('.') and not redirect_netloc.endswith('.'):
+                raise ValueError("DNS rebinding detected: IP to IP redirect")
+        
+        # Check if the scheme and port match the initial destination
+        if redirect_scheme != current_scheme or redirect_port != current_port:
+            raise ValueError("Redirect scheme or port mismatch")
+        
+        # Construct the new URL
+        new_path = redirect_parsed.path
+        if not new_path:
+            new_path = '/'
+        if '?' in redirect_parsed.path:
+            new_path = redirect_parsed.path.split('?')[0]
+        
+        new_query = redirect_parsed.query
+        if not new_query:
+            new_query = ''
+        
+        new_fragment = redirect_parsed.fragment
+        if not new_fragment:
+            new_fragment = ''
+        
+        # Join the new path with the base URL
+        new_url = urljoin(current_url, redirect_url)
+        new_parsed = urlparse(new_url)
+        
+        # Update current URL for next hop
+        current_url = new_url
+        current_scheme = new_parsed.scheme
+        current_netloc = new_parsed.netloc
+        current_port = new_parsed.port
+        current_path = new_parsed.path
+        
+        hops += 1
+    
+    # Return the body
+    return body

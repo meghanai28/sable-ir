@@ -1,0 +1,70 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive will be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        
+    Raises:
+        ValueError: If the destination path escapes the allowed root.
+        tarfile.TarError: If the archive is corrupted or contains invalid entries.
+    """
+    # Normalize and resolve the destination path to ensure it's a valid directory
+    dest_path = os.path.normpath(dest_path)
+    dest_root = os.path.abspath(dest_path)
+    
+    # Ensure the destination directory exists
+    if not os.path.isdir(dest_root):
+        os.makedirs(dest_root, exist_ok=True)
+    
+    # Validate that the destination path does not escape the root
+    if not dest_root.startswith(os.path.abspath(os.path.dirname(dest_path))):
+        # Additional check to prevent .. traversal
+        if ".." in dest_path or not dest_root.startswith(os.path.abspath(os.path.dirname(dest_path))):
+            raise ValueError("Destination path escapes the allowed root.")
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of members in the archive
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Resolve the target path for the member
+                member_path = os.path.join(dest_root, member.name)
+                
+                # Check for absolute paths or paths that escape the destination
+                if member.isdir:
+                    # For directories, check if the name starts with ..
+                    if member.name.startswith('..') or '..' in member.name:
+                        raise ValueError(f"Invalid directory path: {member.name}")
+                elif member.isfile:
+                    # For files, check if the name starts with .. or contains ..
+                    if member.name.startswith('..') or '..' in member.name:
+                        raise ValueError(f"Invalid file path: {member.name}")
+                elif member.issym() or member.islnk():
+                    # For symlinks and hardlinks, check if the target is within the destination
+                    target = member.linkname
+                    if target.startswith('..') or '..' in target:
+                        raise ValueError(f"Invalid symlink/hardlink target: {target}")
+                    # Resolve the target relative to the destination
+                    resolved_target = os.path.normpath(os.path.join(dest_root, target))
+                    if not resolved_target.startswith(dest_root) or resolved_target.endswith(os.sep) or resolved_target == dest_root:
+                        raise ValueError(f"Symlink/hardlink target escapes destination: {target}")
+            
+            # Extract the archive
+            tar.extractall(path=dest_root)
+            
+            return True
+            
+    except Exception as e:
+        return False

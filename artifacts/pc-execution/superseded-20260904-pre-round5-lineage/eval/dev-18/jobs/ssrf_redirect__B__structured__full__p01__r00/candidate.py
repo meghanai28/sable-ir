@@ -1,0 +1,195 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security controls.
+    
+    Args:
+        url: The target URL string.
+        transport: A function(url) -> (status, headers, body) that handles the HTTP request.
+        resolve_host: A function(hostname) -> list of IP strings that resolves hostnames.
+    
+    Returns:
+        The body text for a successful (200) response.
+    
+    Raises:
+        ValueError: If the URL is absolute, points outside the target host,
+                    fails DNS resolution, or violates redirect policies.
+    """
+    # Parse the initial URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    
+    # Guard: Reject absolute URLs (scheme must be http or https)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS URLs are allowed")
+    
+    # Guard: Resolve hostname and check DNS resolution
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve hostname: {hostname}")
+    
+    if not resolved_ips:
+        raise ValueError(f"No IP addresses found for hostname: {hostname}")
+    
+    # Helper to get the canonical scheme, port, and host (without port) for comparison
+    def get_target_scheme_port_host(parsed_url):
+        scheme = parsed_url.scheme
+        netloc = parsed_url.netloc
+        # Extract host and port from netloc
+        if ':' in netloc:
+            host, port = netloc.rsplit(':', 1)
+        else:
+            host = netloc
+            port = '80' if scheme == 'http' else '443'
+        return scheme, port, host
+
+    # Initial target configuration
+    initial_scheme, initial_port, initial_host = get_target_scheme_port_host(parsed)
+    
+    # Current URL state for redirect resolution
+    current_url = parsed
+    max_redirects = 5
+    redirect_count = 0
+    
+    while redirect_count <= max_redirects:
+        # Resolve the current hostname again to ensure it matches the resolved IPs
+        # This handles cases where the initial lookup might differ from the actual request
+        current_hostname = current_url.netloc
+        try:
+            current_resolved = resolve_host(current_hostname)
+        except Exception:
+            raise ValueError(f"Failed to resolve hostname during request: {current_hostname}")
+        
+        if not current_resolved:
+            raise ValueError(f"No IP addresses found for hostname: {current_hostname}")
+        
+        # Check if the resolved IPs match the initial resolved IPs (or a subset)
+        # The requirement implies the DNS must resolve to the same target.
+        # We compare the set of resolved IPs to ensure no external resolution occurs.
+        initial_set = set(resolved_ips)
+        current_set = set(current_resolved)
+        
+        # If the current resolution differs significantly from the initial, raise error
+        # (Strict interpretation: the DNS lookup must be consistent with the initial check)
+        if not (current_set.issubset(initial_set) and initial_set.issubset(current_set)):
+            # Allow exact match or subset if the initial was a wildcard, but strict security 
+            # usually requires the exact same set or a known safe set. 
+            # Given the spec "resolve_host ... unless it resolves to an IP address", 
+            # we assume the resolver is consistent. If it resolves to a different IP, it's suspicious.
+            if initial_set != current_set:
+                raise ValueError(f"DNS resolution changed unexpectedly for {current_hostname}")
+        
+        # If we are not the first iteration, validate the redirect
+        if redirect_count > 0:
+            # Check scheme
+            if current_url.scheme != initial_scheme:
+                raise ValueError("Redirect to different scheme not allowed")
+            
+            # Check host (must be same host)
+            if current_url.netloc != initial_host:
+                raise ValueError("Redirect to different host not allowed")
+            
+            # Check port
+            if current_url.port != initial_port:
+                raise ValueError("Redirect to different port not allowed")
+            
+            # Check credentials (must be same)
+            if current_url.username != initial_host.split(':')[0] if ':' in initial_host else '': # Simplified check
+                # Actually, we should check the parsed netloc's username/password against the initial
+                # But the spec says "same scheme, port, credentials, and DNS"
+                # Let's re-parse the initial for credentials
+                pass
+            
+            # Re-evaluate credentials properly
+            initial_netloc = initial_host
+            if '@' in initial_netloc:
+                initial_creds = initial_netloc.split('@')[0]
+            else:
+                initial_creds = ''
+            
+            current_netloc = current_url.netloc
+            if '@' in current_netloc:
+                current_creds = current_netloc.split('@')[0]
+            else:
+                current_creds = ''
+            
+            if initial_creds != current_creds:
+                raise ValueError("Redirect to different credentials not allowed")
+        
+        # Prepare the new URL for the next iteration
+        current_url = current_url._replace(netloc=current_url.netloc) # Keep netloc as is for transport
+        
+        # Check for redirect status
+        status, headers, body = transport(url)
+        
+        if status == 301 or status == 302 or status == 303 or status == 307:
+            redirect_count += 1
+            # Extract Location header
+            location = None
+            for key, value in headers.items():
+                if key.lower() == 'location':
+                    location = value
+                    break
+            
+            if not location:
+                raise ValueError("Redirect without Location header")
+            
+            # Resolve the redirect URL
+            new_parsed = urllib.parse.urlparse(location)
+            
+            # Guard: Reject absolute URLs in redirect (must be relative)
+            if new_parsed.scheme:
+                raise ValueError("Absolute redirect URL not allowed")
+            
+            # Resolve against current URL
+            new_parsed = urllib.parse.urljoin(current_url.geturl(), location)
+            new_parsed = urllib.parse.urlparse(new_parsed)
+            
+            # Check scheme, port, credentials, and DNS against initial
+            new_scheme, new_port, new_host = get_target_scheme_port_host(new_parsed)
+            
+            if new_scheme != initial_scheme:
+                raise ValueError("Redirect to different scheme not allowed")
+            if new_host != initial_host:
+                raise ValueError("Redirect to different host not allowed")
+            if new_port != initial_port:
+                raise ValueError("Redirect to different port not allowed")
+            
+            # Update current_url for next iteration
+            current_url = new_parsed
+            url = new_parsed.geturl()
+            
+            if redirect_count >= max_redirects:
+                raise ValueError("Maximum redirect limit exceeded")
+        else:
+            break
+    
+    # Final check before opening connection
+    # Re-resolve hostname one last time to ensure consistency
+    final_hostname = current_url.netloc
+    try:
+        final_resolved = resolve_host(final_hostname)
+    except Exception:
+        raise ValueError(f"Failed to resolve final hostname: {final_hostname}")
+    
+    if not final_resolved:
+        raise ValueError(f"No IP addresses found for final hostname: {final_hostname}")
+    
+    if set(final_resolved) != set(resolved_ips):
+        raise ValueError("Final DNS resolution does not match initial resolution")
+    
+    # Open the connection
+    status, headers, body = transport(url)
+    
+    # Guard: Return body only for status 200
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

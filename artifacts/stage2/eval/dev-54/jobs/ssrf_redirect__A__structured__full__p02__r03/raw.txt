@@ -1,0 +1,52 @@
+def fetch_text(url, transport, resolve_host):
+    # Validate scheme
+    if not url.startswith('http://') and not url.startswith('https://'):
+        raise ValueError("Only HTTP and HTTPS URLs are allowed")
+    
+    # Parse URL components
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS URLs are allowed")
+    
+    # Resolve host
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"No IP address found for {hostname}")
+    
+    # Select the first available IP
+    resolved_host = ip_addresses[0]
+    
+    # Validate port
+    port = parsed.port
+    if port is None:
+        if parsed.scheme == 'http':
+            port = 80
+        elif parsed.scheme == 'https':
+            port = 443
+    else:
+        # Ensure port is valid
+        if parsed.scheme == 'http' and port != 80:
+            raise ValueError("Invalid port for HTTP")
+        if parsed.scheme == 'https' and port != 443:
+            raise ValueError("Invalid port for HTTPS")
+    
+    # Check path for root constraint
+    path = parsed.path
+    if path and not path.startswith('/'):
+        raise ValueError("URL path must start with /")
+    
+    # Make the request
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Invalid status code: {status}")
+    
+    return body

@@ -1,0 +1,91 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate scheme and port
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only http and https schemes are allowed")
+    
+    # Check if scheme is on default port
+    default_port = {'http': 80, 'https': 443}.get(scheme)
+    if parsed.port is not None and parsed.port != default_port:
+        raise ValueError("Only default ports are allowed for the scheme")
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not ips:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # Check if any resolved IP belongs to the default port
+    # Note: The plan says "raise ValueError if the host's resolved IP does not belong to the default port"
+    # This is logically impossible for IP addresses (IPs don't have ports), but we interpret this as:
+    # If the scheme is http, we must ensure we are not accidentally accessing https on 443, etc.
+    # However, the plan phrasing is ambiguous. A reasonable interpretation is that we just proceed
+    # if the scheme matches the port constraint (already checked above).
+    # Re-reading: "raise ValueError if the host's resolved IP does not belong to the default port"
+    # Since IPs are just strings of numbers, they don't "belong" to a port. This likely means
+    # we should ensure that if we are using http://, we are not on port 443 (already checked),
+    # and if we are using https://, we are not on port 80 (already checked).
+    # The check `parsed.port != default_port` handles the port constraint.
+    
+    # Resolve the target's host and path components beneath the requested scheme's default port
+    # The plan says: "Resolve the target's host and path components beneath the requested scheme's default port"
+    # This likely refers to ensuring the path doesn't try to escape to a different scheme or port
+    # that violates the default port constraint. Since we parsed the URL and validated the scheme/port,
+    # we proceed with the request. The path is handled by the underlying transport.
+    
+    # Fetch the URL
+    try:
+        # Use the transport to get the response
+        response = transport(url)
+        status, headers, body = response
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for redirects
+        # "Do not follow redirects: check the initial public HTTP destination, accept it only when status is 200, and raise ValueError unless the Location header is absolute and does not start with javascript: or data:"
+        # This instruction is slightly confusing. It says "Do not follow redirects" but then talks about checking Location header.
+        # Interpretation: We are making a single request. If there is a redirect (3xx status), we raise ValueError.
+        # If status is 200, we proceed.
+        # The part about "unless the Location header is absolute..." seems to imply a check if a redirect were present,
+        # but since we don't follow redirects and status must be 200, we don't process Location headers.
+        # However, if the request was to a URL that might contain a redirect, we just return the body for 200.
+        
+        # Wait, re-reading the plan carefully: "check the initial public HTTP destination, accept it only when status is 200, and raise ValueError unless the Location header is absolute and does not start with javascript: or data:"
+        # This might mean: If the response is a redirect (3xx), we should check the Location header?
+        # But the instruction says "Do not follow redirects".
+        # Let's assume: If status is not 200, raise ValueError.
+        # If status is 200, return body.
+        # The redirect check might be a red herring or implies that if a redirect occurred, we reject it entirely?
+        # "raise ValueError unless the Location header is absolute and does not start with javascript: or data:"
+        # This "unless" clause suggests that if a redirect header exists, we might accept it?
+        # But "Do not follow redirects" contradicts this.
+        # Most logical interpretation for a secure fetcher: If status is 3xx, raise ValueError.
+        # If status is 200, return body.
+        # The text about Location headers might be describing a scenario where a redirect is present, but since we don't follow, we ignore it.
+        # Or, it could mean: If the response has a Location header (redirect), we should check if it's safe, but since we don't follow, we just raise ValueError for non-200 anyway.
+        # Let's stick to: status must be 200.
+        
+        # Return the body text
+        return body.decode('utf-8')
+        
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP error occurred: {e.code}")
+    except Exception as e:
+        raise ValueError(f"Fetch failed: {str(e)}")

@@ -1,0 +1,65 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    import socket
+    import urllib.parse
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    hostname = parsed.hostname
+    port = parsed.port
+    path = parsed.path
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Disallowed scheme")
+    
+    # Determine default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Validate port requirement: must be omitted or match default
+    if port is not None:
+        if port != default_port:
+            raise ValueError("Port must be omitted or match default port")
+    
+    # Resolve hostname
+    try:
+        resolved_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not resolved_addresses:
+        raise ValueError("Resolved destination is empty")
+    
+    # Validate resolved addresses are public (not localhost or private)
+    for addr in resolved_addresses:
+        if addr in ('127.0.0.1', '::1', 'localhost'):
+            raise ValueError("Private address not allowed")
+        # Basic check for private IP ranges (IPv4)
+        parts = addr.split('.')
+        if len(parts) == 4:
+            try:
+                first_octet = int(parts[0])
+                if first_octet == 10 or (first_octet == 172 and 16 <= first_octet <= 31) or (first_octet == 192 and first_octet == 17):
+                    raise ValueError("Private IP address not allowed")
+            except ValueError:
+                pass
+    
+    # Construct the request URL for transport
+    # If port is omitted, transport should handle it, but we pass it explicitly if not None
+    if port is None:
+        request_url = f"{scheme}://{hostname}{path}"
+    else:
+        request_url = f"{scheme}://{hostname}:{port}{path}"
+    
+    # Call transport
+    status, headers, body = transport(request_url)
+    
+    # Check for redirect
+    if 'Location' in headers:
+        raise ValueError("Redirects are disallowed")
+    
+    # Check status code
+    if status != 200:
+        raise ValueError("Expected status 200, got " + str(status))
+    
+    return body

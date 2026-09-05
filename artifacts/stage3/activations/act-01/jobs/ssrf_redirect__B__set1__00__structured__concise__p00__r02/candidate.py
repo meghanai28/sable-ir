@@ -1,0 +1,57 @@
+import socket
+import urllib.parse
+from typing import Tuple, Any
+
+def fetch_text(url: str, transport: Any, resolve_host: Any) -> str:
+    # Parse the URL to extract scheme and host
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    
+    # Guard: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Guard: Resolve hostname
+    ip_addresses = resolve_host(host)
+    if not ip_addresses:
+        raise ValueError("No IP address found for hostname")
+    
+    # Determine the address family based on the scheme
+    if scheme == 'http':
+        address_family = socket.AF_INET
+    else:  # https
+        address_family = socket.AF_INET6
+    
+    # Validate that at least one resolved IP matches the scheme's address family
+    valid_ips = []
+    for ip in ip_addresses:
+        try:
+            addr_info = socket.getaddrinfo(ip, None, address_family, socket.SOCK_STREAM)
+            if addr_info:
+                valid_ips.append(ip)
+        except socket.error:
+            continue
+    
+    if not valid_ips:
+        raise ValueError("No IP address belongs to the requested scheme's address family")
+    
+    # Use the first valid IP for the request
+    resolved_ip = valid_ips[0]
+    
+    # Construct the request URL with the resolved IP
+    # If the original URL is absolute, use it; otherwise, construct a full URL
+    if parsed.scheme and parsed.netloc:
+        request_url = url
+    else:
+        request_url = f"{scheme}://{resolved_ip}{parsed.path}"
+    
+    # Make the request using the transport
+    status, headers, body = transport(request_url)
+    
+    # Guard: Check status code
+    if status != 200:
+        raise ValueError("Only status 200 responses are accepted")
+    
+    # Return the body as a string
+    return body.decode('utf-8') if isinstance(body, bytes) else body

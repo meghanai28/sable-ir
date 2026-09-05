@@ -1,0 +1,174 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import http.client
+import ssl
+import re
+
+def _is_valid_ip(ip_str):
+    """Check if a string is a valid IPv4 or IPv6 address."""
+    if ':' in ip_str:
+        # IPv6
+        return re.match(r'^[0-9a-fA-F:]+$', ip_str) is not None
+    else:
+        # IPv4
+        parts = ip_str.split('.')
+        if len(parts) != 4:
+            return False
+        for part in parts:
+            if not part.isdigit():
+                return False
+            num = int(part)
+            if num < 0 or num > 255:
+                return False
+        return True
+
+def _resolve_host(hostname):
+    """Resolve hostname to IP addresses using the supplied resolve_host function."""
+    return resolve_host(hostname)
+
+def _validate_ip_list(ip_list):
+    """Validate that all resolved IPs are valid."""
+    for ip in ip_list:
+        if not _is_valid_ip(ip):
+            raise ValueError(f"Invalid IP address: {ip}")
+    return True
+
+def _get_default_port(scheme):
+    """Get the default port for a scheme."""
+    if scheme == 'http':
+        return 80
+    elif scheme == 'https':
+        return 443
+    return None
+
+def _parse_url(url):
+    """Parse URL into scheme, netloc, path, params, query, fragment."""
+    parsed = urllib.parse.urlparse(url)
+    return {
+        'scheme': parsed.scheme,
+        'host': parsed.netloc,
+        'port': parsed.port,
+        'path': parsed.path,
+        'query': parsed.query,
+        'fragment': parsed.fragment
+    }
+
+def _resolve_location(current_url, location_header):
+    """Resolve a Location header against the current URL."""
+    full_url = current_url + location_header
+    parsed = _parse_url(full_url)
+    return parsed
+
+def _check_redirection(current_parsed, new_parsed):
+    """Check if the new URL is a valid redirection."""
+    # Same scheme
+    if current_parsed['scheme'] != new_parsed['scheme']:
+        return False
+    
+    # Same port (default or specified)
+    current_port = current_parsed['port']
+    new_port = new_parsed['port']
+    
+    if current_port is None and new_port is None:
+        pass  # Both default, ok
+    elif current_port is None:
+        if new_port != _get_default_port(new_parsed['scheme']):
+            return False
+    elif new_port is None:
+        if current_port != new_port:
+            return False
+    else:
+        if current_port != new_port:
+            return False
+    
+    # Same host
+    if current_parsed['host'] != new_parsed['host']:
+        return False
+    
+    return True
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL.
+    
+    Args:
+        url: The URL to fetch (absolute or relative).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (invalid scheme, port, or invalid IPs).
+    """
+    # Parse the initial URL
+    initial_parsed = _parse_url(url)
+    
+    # Validate scheme
+    if initial_parsed['scheme'] not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve host
+    hostnames = resolve_host(initial_parsed['host'])
+    
+    # Validate IPs
+    if not hostnames:
+        raise ValueError("No IP addresses resolved")
+    
+    for ip in hostnames:
+        if not _is_valid_ip(ip):
+            raise ValueError(f"Invalid IP address: {ip}")
+    
+    # Determine the scheme and port for validation
+    scheme = initial_parsed['scheme']
+    port = initial_parsed['port']
+    
+    # If port is not specified, use default
+    if port is None:
+        port = _get_default_port(scheme)
+    
+    # Call transport
+    status, headers, body = transport(url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Check for Location headers and follow redirects (max 5 hops)
+    location_count = 0
+    current_url = url
+    current_parsed = initial_parsed
+    
+    while 'Location' in headers:
+        location_count += 1
+        if location_count > 5:
+            raise ValueError("Too many redirects")
+        
+        location_header = headers['Location']
+        
+        # Resolve the new URL
+        new_parsed = _resolve_location(current_url, location_header)
+        
+        # Check if the new URL is valid
+        if not _check_redirection(current_parsed, new_parsed):
+            raise ValueError("Invalid redirect destination")
+        
+        # Update current URL and parsed info
+        current_url = new_parsed['scheme'] + '://' + new_parsed['host']
+        if new_parsed['port']:
+            current_url += f":{new_parsed['port']}"
+        current_url += new_parsed['path']
+        if new_parsed['query']:
+            current_url += f"?{new_parsed['query']}"
+        current_parsed = new_parsed
+        
+        # Re-fetch the URL
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code after redirect: {status}")
+    
+    return body

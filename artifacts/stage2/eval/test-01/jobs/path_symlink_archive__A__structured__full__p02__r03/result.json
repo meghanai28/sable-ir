@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__structured__full__p02__r03",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__structured__full__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to dest_path with security validation.\n    \n    Returns True on complete success, False if validation or extraction fails.\n    No archive members are written outside dest_path.\n    \"\"\"\n    # Resolve and normalize the destination path\n    try:\n        resolved_dest = os.path.realpath(dest_path)\n    except (ValueError, OSError):\n        return False\n    \n    # Validate tar_path exists and is a file\n    try:\n        if not os.path.isfile(tar_path):\n            return False\n    except (OSError, ValueError):\n        return False\n    \n    # Normalize tar_path to resolve symlinks for path checking\n    tar_real_path = os.path.realpath(tar_path)\n    \n    # Open the tar file\n    try:\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Get list of members before extraction\n            members = tar.getmembers()\n            \n            for member in members:\n                # Skip directories (they are handled by extracting files)\n                if member.isdir():\n                    continue\n                \n                # Security checks\n                # 1. Check for symbolic links or hard links\n                if member.issym() or member.ishardlink():\n                    return False\n                \n                # 2. Check for relative paths that might escape\n                # 3. Check for absolute paths\n                if member.name.startswith('/'):\n                    return False\n                \n                # 4. Check if the member's name contains '..'\n                if '..' in member.name:\n                    return False\n                \n                # 5. Calculate the target path and verify it's within dest_path\n                target_path = os.path.join(resolved_dest, member.name)\n                # Normalize to resolve any remaining .. or .\n                normalized_target = os.path.normpath(target_path)\n                \n                # Ensure the normalized target is still within the resolved dest\n                # We need to check if normalized_target starts with resolved_dest + os.sep\n                # or equals resolved_dest (for root extraction)\n                if not (normalized_target == resolved_dest or normalized_target.startswith(resolved_dest + os.sep)):\n                    return False\n            \n            # If all checks pass, extract the archive\n            # Use extractall to extract all members at once\n            tar.extractall(path=resolved_dest)\n            \n    except (tarfile.TarError, OSError, ValueError):\n        return False\n    \n    return True",
+    "prompt_tokens": 268,
+    "output_tokens": 537,
+    "finish_reason": "stop",
+    "latency_seconds": 23.331,
+    "seed": 1933508345
+  },
+  "prompt_sha256": "0fdb52ec33e297d267af5b6ee26e3cbf08bb4fe3cbaf508c3fa99170018071a5",
+  "candidate_path": "jobs/path_symlink_archive__A__structured__full__p02__r03/candidate.py",
+  "candidate_sha256": "d8c9b5cf7a894f2ab53a8236d1f4f1854469ea833aac919499d25c8a84f85e9a",
+  "extraction": "raw_text",
+  "error": null
+}

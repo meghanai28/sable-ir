@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__B__set2__01__structured__minimal__p00__r01",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__B__set2__01__structured__minimal__p00",
+  "status": "generated",
+  "generation": {
+    "text": "def fetch_text(url: str, transport, resolve_host) -> str:\n    \"\"\"\n    Fetch text from a URL with strict security constraints.\n    \n    Args:\n        url: The target URL string.\n        transport: A callable that returns (status, headers, body) for a given URL.\n        resolve_host: A callable that returns textual IP addresses for a given hostname.\n    \n    Returns:\n        The body of the HTTP response if status is 200.\n    \n    Raises:\n        ValueError: If the request violates security policies (scheme, port, path, DNS).\n    \"\"\"\n    from urllib.parse import urlparse, urljoin, urlunparse\n    \n    # Parse the source URL\n    source_parsed = urlparse(url)\n    \n    # GUARD: Check scheme and port\n    scheme = source_parsed.scheme.lower()\n    if scheme in ('http', 'https'):\n        port = source_parsed.port\n        if port is None:\n            # Default port for HTTP is 80, HTTPS is 443\n            if scheme == 'http':\n                default_port = 80\n            else:\n                default_port = 443\n            if port == default_port:\n                raise ValueError(f\"Access to {scheme} on default port is disallowed\")\n        else:\n            # If a non-default port is specified, it's allowed by the guard logic\n            # \"raise ValueError if scheme is http or https and port is the default port\"\n            pass\n    \n    # Check for DNS embedding in hostname\n    hostname = source_parsed.hostname\n    if hostname:\n        try:\n            ip_addresses = resolve_host(hostname)\n            if isinstance(ip_addresses, str):\n                ip_addresses = [ip_addresses]\n            for ip in ip_addresses:\n                if '.' in ip or ':' in ip:\n                    raise ValueError(f\"DNS segment detected in resolved IP: {ip}\")\n        except Exception:\n            raise ValueError(\"Invalid hostname resolution\")\n    \n    # Check path traversal\n    # The plan says: \"join the requested URL with the referring URL and raise ValueError unless the joined URL remains beneath the referring URL\"\n    # Since we don't have a referring URL in this function signature, we interpret this as:\n    # If the URL contains '..' segments, it might be unsafe. However, the strict interpretation \n    # usually requires a base URL. Without a base, we can't strictly validate \"beneath\".\n    # But the prompt says \"Accept HTTP or HTTPS on its default port...\". \n    # Let's assume the \"referring URL\" is the current context or we treat the URL itself.\n    # A common security guard is to reject '..' in the path if it's not the root.\n    # Given the constraints, we will check for '..' in the path relative to the root.\n    path = source_parsed.path\n    if '..' in path:\n        raise ValueError(\"Path traversal detected\")\n    \n    # ORDER: Check scheme and port before creating the request (already done above)\n    \n    # Fetch the URL\n    status, headers, body = transport(url)\n    \n    # EFFECT: Return the body for status 200\n    if status == 200:\n        return body\n    else:\n        raise ValueError(f\"HTTP status {status} is not 200\")",
+    "prompt_tokens": 276,
+    "output_tokens": 717,
+    "finish_reason": "stop",
+    "latency_seconds": 36.144,
+    "seed": 179687690
+  },
+  "prompt_sha256": "e562ace89426f16d3e98bc150f7ce5a34803c9f149e61e95dcbf1c05a18496a5",
+  "candidate_path": "jobs/ssrf_redirect__B__set2__01__structured__minimal__p00__r01/candidate.py",
+  "candidate_sha256": "9948e0d0c4fa127a005e45820307be61b06a13c7c529736183d667065db60332",
+  "extraction": "raw_text",
+  "error": null
+}

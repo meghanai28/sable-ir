@@ -1,0 +1,69 @@
+import urllib.parse
+import socket
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise ValueError("Malformed URL")
+
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+
+    # Validate port
+    if scheme == 'http':
+        expected_port = 80
+    elif scheme == 'https':
+        expected_port = 443
+    else:
+        raise ValueError(f"Unknown scheme: {scheme}")
+
+    if port is None:
+        port = expected_port
+    elif port != expected_port:
+        raise ValueError(f"Disallowed port {port} for scheme {scheme}")
+
+    # Resolve host
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Missing hostname in URL")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Use the first resolved IP
+    resolved_host = ip_addresses[0]
+
+    # Build the full URL for the request
+    # We do not follow redirects as per instructions
+    full_url = parsed.geturl()
+
+    # Create the request
+    req = urllib.request.Request(full_url)
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            status = int(response.status)
+            if status != 200:
+                raise ValueError(f"Unexpected status code: {status}")
+            
+            # Read and return the body
+            body = response.read().decode('utf-8', errors='replace')
+            return body
+    except urllib.error.HTTPError as e:
+        status = e.code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        return e.read().decode('utf-8', errors='replace')
+    except urllib.error.URLError as e:
+        raise ValueError(f"Network error: {e.reason}")
+    except Exception as e:
+        raise ValueError(f"Request failed: {str(e)}")

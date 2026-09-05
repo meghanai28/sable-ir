@@ -1,0 +1,84 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize the destination path to remove trailing slashes and resolve symlinks if necessary
+    # We will resolve the canonical path of the destination directory to ensure no .. escapes
+    try:
+        # Resolve the destination path to its canonical form to detect .. escapes
+        dest_canonical = os.path.realpath(dest_path)
+    except (OSError, ValueError):
+        return False
+
+    # Create a temporary directory to hold the extraction
+    with tempfile.TemporaryDirectory() as temp_extract_dir:
+        try:
+            # Open the tar file
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Get all members of the tar
+                members = tar.getmembers()
+                
+                # Validate each member's path before extraction
+                for member in members:
+                    # Get the member's name
+                    member_name = member.name
+                    
+                    # Construct the full path within the destination directory
+                    # We need to join dest_path and member_name, then resolve it
+                    # First, join the paths
+                    full_member_path = os.path.join(dest_canonical, member_name)
+                    
+                    # Resolve the canonical path of the member
+                    try:
+                        resolved_member_path = os.path.realpath(full_member_path)
+                    except (OSError, ValueError):
+                        return False
+                    
+                    # Check if the resolved path is within the destination directory
+                    if not resolved_member_path.startswith(dest_canonical + os.sep) and resolved_member_path != dest_canonical:
+                        return False
+                
+                # If validation passes, extract the archive
+                # Use the temporary directory to prevent any side effects during validation
+                # However, the requirement says "without writing any archive member outside dest_path"
+                # We must extract directly to dest_path but validate paths first.
+                # The safest way is to validate paths against dest_path, then extract to dest_path.
+                
+                # Extract the archive to the destination
+                # We need to ensure we don't extract to the temp directory but to dest_path
+                # But the validation was done against dest_canonical.
+                # We can extract to dest_path directly.
+                
+                # Extract members one by one to have more control
+                for member in members:
+                    member_dir = os.path.dirname(member.name)
+                    if member_dir:
+                        # Create directories if needed
+                        full_member_dir = os.path.join(dest_canonical, member_dir)
+                        if not os.path.exists(full_member_dir):
+                            os.makedirs(full_member_dir)
+                    member_path = os.path.join(dest_canonical, member.name)
+                    
+                    # Extract the member
+                    tar.extract(member, dest_path)
+                    
+                    # After extraction, verify the file is in the correct location
+                    # This step is redundant if we trust the tarfile module, but good for safety
+                    # Actually, tarfile.extract() writes to the destination we specified.
+                    # We already validated the paths before extraction.
+                    
+                return True
+                
+        except (tarfile.TarError, OSError, IOError):
+            return False

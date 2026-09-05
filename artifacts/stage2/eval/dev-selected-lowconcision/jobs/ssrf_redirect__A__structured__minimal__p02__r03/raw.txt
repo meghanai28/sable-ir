@@ -1,0 +1,94 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with safety checks.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, resolve_host returns no IPs,
+                    or the resolved host escapes the configured root.
+    """
+    # Parse the URL to get the scheme and host
+    from urllib.parse import urlparse
+    
+    parsed_url = urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    host = parsed_url.hostname
+    
+    # Validate scheme (HTTP or HTTPS on default port)
+    if scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve host
+    ip_addresses = resolve_host(host)
+    if not ip_addresses:
+        raise ValueError("resolve_host returned no IP addresses")
+    
+    # Determine the root for containment checking
+    # Since no specific root is passed in the function signature, we assume a default or require it.
+    # Based on the plan "check the resolved host beneath the configured root", 
+    # we must have a root. The plan says "raise ValueError if it escapes the root".
+    # Without an explicit root parameter in the function, we cannot enforce a custom root.
+    # However, the instruction says "Use the supplied plan". The plan mentions "configured root".
+    # We will assume the root is derived from the URL's netloc if possible, or we treat the 
+    # initial host as the root and check subsequent redirects against it.
+    # A strict interpretation of "beneath the configured root" without a parameter implies
+    # that the initial host is the root, or the URL itself must not contain path traversal
+    # relative to a base.
+    # Given the constraints, we will treat the initial host as the root.
+    # If the URL has a path, we must ensure the final host (after redirects) is the same 
+    # or within the root. The plan says "check the resolved host beneath the configured root".
+    # We'll assume the root is the host part of the initial URL.
+    
+    root_host = host
+    
+    # Check if the initial host escapes the root (trivially true if root is the host itself)
+    # But if the URL is relative or has path, we need to check if the host changes.
+    # The plan says "check the resolved host beneath the configured root".
+    # We will assume the root is the host from the initial URL.
+    
+    # Open connection
+    status, headers, body = transport(url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    # Check for redirects
+    location_header = headers.get('Location')
+    if location_header:
+        # Follow redirect only if status is exactly 200 (already checked)
+        # Parse the new destination
+        new_url = location_header
+        new_parsed = urlparse(new_url)
+        new_host = new_parsed.hostname
+        
+        if not new_host:
+            raise ValueError("Invalid redirect URL")
+        
+        # Check if the new destination remains beneath the root
+        # The root is the original host. The new host must be the same or within the root.
+        # Since we don't have a configurable root, we assume the root is the original host.
+        # If the new host is different, it escapes the root.
+        if new_host != root_host:
+            raise ValueError("Redirect points outside the root")
+        
+        # Update URL and repeat checks for the new host
+        url = new_url
+        host = new_host
+        ip_addresses = resolve_host(host)
+        if not ip_addresses:
+            raise ValueError("resolve_host returned no IP addresses")
+        
+        # Check if the new host escapes the root
+        if new_host != root_host:
+            raise ValueError("Redirect points outside the root")
+    
+    # Return the body
+    return body

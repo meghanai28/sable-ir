@@ -1,0 +1,64 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, ensuring no path traversal vulnerabilities.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if any validation or extraction fails.
+    """
+    # Normalize and resolve the destination path to a canonical absolute path
+    try:
+        dest_path = os.path.realpath(dest_path)
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+    except (OSError, ValueError):
+        return False
+
+    # Validate the tar file exists and is readable
+    if not os.path.isfile(tar_path):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # List all members to inspect before extraction
+            members = tar.getnames()
+            
+            # Normalize each member's target path
+            for member in members:
+                # Get the member's path (strip trailing slash if present)
+                member_path = member.rstrip('/')
+                
+                # Construct the full target path
+                full_target = os.path.normpath(os.path.join(dest_path, member_path))
+                
+                # Resolve to canonical path to check for .. escapes
+                try:
+                    canonical_target = os.path.realpath(full_target)
+                except (OSError, ValueError):
+                    return False
+                
+                # Ensure the canonical target is within the destination directory
+                if not canonical_target.startswith(os.path.dirname(dest_path) + os.sep) and canonical_target != dest_path:
+                    # Additional check for exact match if dest_path is a directory
+                    if not canonical_target.startswith(os.path.dirname(dest_path)):
+                        return False
+                elif canonical_target != dest_path and not canonical_target.startswith(os.path.dirname(dest_path) + os.sep):
+                    return False
+            
+            # Perform the extraction with safety checks
+            try:
+                tar.extractall(dest_path)
+                return True
+            except (tarfile.TarError, OSError):
+                return False
+                
+    except (tarfile.TarError, OSError, ValueError):
+        return False

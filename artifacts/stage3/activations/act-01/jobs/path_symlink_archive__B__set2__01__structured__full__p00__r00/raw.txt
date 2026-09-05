@@ -1,0 +1,60 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with safety checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize and resolve the destination path
+    try:
+        # Ensure dest_path is an absolute path
+        if not os.path.isabs(dest_path):
+            dest_path = os.path.abspath(dest_path)
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        
+        dest_path = os.path.abspath(dest_path)
+    except (ValueError, OSError):
+        return False
+    
+    # Normalize the tar_path
+    if not os.path.isabs(tar_path):
+        tar_path = os.path.abspath(tar_path)
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate each member before extraction
+            for member in tar.getmembers():
+                # Resolve the member's destination path
+                member_dest = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check if the member escapes the destination directory
+                # by ensuring it doesn't start with the dest_path prefix
+                # and isn't equal to dest_path itself
+                if not member_dest.startswith(dest_path + os.sep) and member_dest != dest_path:
+                    return False
+                
+                # Also check for .. traversal in the member name itself
+                # by resolving it relative to dest_path
+                resolved_member = os.path.normpath(os.path.join(dest_path, member.name))
+                if resolved_member.startswith(dest_path + os.sep) or resolved_member == dest_path:
+                    pass  # Safe
+                else:
+                    return False
+            
+            # Extract the archive
+            tar.extractall(path=dest_path)
+            return True
+            
+    except (tarfile.TarError, OSError, ValueError):
+        return False

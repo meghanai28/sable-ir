@@ -1,0 +1,54 @@
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolver.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http or https, or if no IP addresses are resolved.
+    """
+    # Parse the URL to get the scheme and hostname
+    from urllib.parse import urlparse
+    parsed_url = urlparse(url)
+    
+    scheme = parsed_url.scheme.lower()
+    
+    # GUARD: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: No hostname provided.")
+    
+    # GUARD: Resolve host
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP addresses resolved for the hostname.")
+    
+    # Determine the port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Construct the URL with default port if not specified
+    if parsed_url.port == -1:
+        url_with_port = f"{scheme}://{hostname}:{default_port}{parsed_url.path}{parsed_url.query}{parsed_url.fragment}"
+    else:
+        url_with_port = f"{scheme}://{hostname}:{parsed_url.port}{parsed_url.path}{parsed_url.query}{parsed_url.fragment}"
+    
+    # Create the URL string for transport
+    url_str = f"{scheme}://{hostname}{parsed_url.path}{parsed_url.query}{parsed_url.fragment}"
+    
+    # Call transport
+    status, headers, body = transport(url_str)
+    
+    # GUARD: Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

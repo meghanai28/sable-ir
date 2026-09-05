@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__structured__minimal__p02__r00",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__structured__minimal__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport stat\n\n\ndef _normalize_path(path: str) -> str:\n    \"\"\"Normalize a path to remove redundant separators and resolve . and .. components safely.\"\"\"\n    return os.path.normpath(path)\n\n\ndef _is_under_destination(target: str, dest_path: str) -> bool:\n    \"\"\"Check if target is under dest_path, handling both absolute and relative paths.\"\"\"\n    dest_normalized = _normalize_path(dest_path)\n    target_normalized = _normalize_path(target)\n    return target_normalized.startswith(dest_normalized + os.sep) or target_normalized == dest_path\n\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"Extract a tar archive to dest_path, validating all paths to prevent traversal.\"\"\"\n    dest_path = _normalize_path(dest_path)\n    \n    try:\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Validate and extract members\n            for member in tar.getmembers():\n                # Skip symbolic links and hard links as per ORDER\n                if member.issym() or member.islnk():\n                    continue\n                \n                # Resolve the target path\n                if member.isdir():\n                    target_path = member.name\n                else:\n                    target_path = os.path.join(dest_path, member.name)\n                \n                # Normalize the target path\n                target_normalized = _normalize_path(target_path)\n                \n                # Validate that the target does not escape the destination\n                if not _is_under_destination(target_normalized, dest_path):\n                    return False\n                \n                # Create parent directories if necessary\n                if not member.isdir():\n                    parent_dir = os.path.dirname(target_normalized)\n                    if parent_dir and not os.path.exists(parent_dir):\n                        os.makedirs(parent_dir)\n                \n                # Extract the member\n                tar.extract(member, dest_path)\n            \n            return True\n    \n    except Exception:\n        return False",
+    "prompt_tokens": 243,
+    "output_tokens": 403,
+    "finish_reason": "stop",
+    "latency_seconds": 17.037,
+    "seed": 39829404
+  },
+  "prompt_sha256": "c1c5898fdbc5cffa81ca27c2f2030b7ffb84d49fb8d8c1655ae36a0915705b91",
+  "candidate_path": "jobs/path_symlink_archive__A__structured__minimal__p02__r00/candidate.py",
+  "candidate_sha256": "3425dfca19c5b6b385bf307c29e48126784b21d45362397aaff87c862f9a8aa8",
+  "extraction": "raw_text",
+  "error": null
+}

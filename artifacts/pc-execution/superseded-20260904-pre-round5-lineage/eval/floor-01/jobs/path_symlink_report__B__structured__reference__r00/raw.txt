@@ -1,0 +1,52 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file to read.
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the report.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the filename is absolute, contains path traversal,
+                   or resolves to a path outside reports_root (including
+                   after following symbolic links).
+    """
+    # Resolve the base directory to a canonical absolute path
+    # This ensures we work with the actual filesystem path, resolving any symlinks in the root itself
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Construct the target path by joining the root and the filename
+    # We use os.path.join to ensure proper handling of separators
+    target_path = os.path.join(resolved_root, filename)
+    
+    # Normalize the path to remove any redundant separators or '.' components
+    # This helps in catching path traversal attempts early in the string manipulation
+    normalized_target = os.path.normpath(target_path)
+    
+    # Check if the filename is absolute
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filenames are not allowed.")
+    
+    # Resolve the canonical path of the target, following symbolic links
+    # This is crucial for the GUARD requirement: "resolve the complete target path, following symbolic links"
+    resolved_target = os.path.realpath(normalized_target)
+    
+    # Ensure the resolved target is within the reports_root
+    # We check if the resolved_target starts with the resolved_root + os.sep
+    # or is exactly equal to resolved_root (though a file shouldn't be the root itself)
+    if not (resolved_target.startswith(resolved_root + os.sep) or resolved_target == resolved_root):
+        raise ValueError("Path traversal detected or target outside reports_root.")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"The file '{filename}' does not exist.")
+    
+    # Read and return the UTF-8 content
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

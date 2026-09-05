@@ -1,0 +1,84 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, validating that no
+    archive member or its link target escapes the destination directory.
+    
+    Returns True on complete success, False otherwise. No files are written
+    outside dest_path if validation fails.
+    """
+    # Normalize and resolve the destination path immediately
+    dest_path = os.path.normpath(dest_path)
+    
+    # Ensure the destination directory exists
+    if not os.path.exists(dest_path):
+        os.makedirs(dest_path, exist_ok=True)
+    
+    # Resolve the tar_path to an absolute path for consistent handling
+    tar_path_abs = os.path.abspath(tar_path)
+    
+    try:
+        with tarfile.open(tar_path_abs, 'r:*') as tar:
+            # Get the list of members before any extraction
+            members = tar.getnames()
+            
+            for member in members:
+                # Resolve the member's path relative to dest_path
+                # We need to check if the member itself or its link target escapes dest_path
+                
+                # Calculate the intended extraction path
+                extract_path = os.path.normpath(os.path.join(dest_path, member))
+                
+                # Check for absolute paths or path traversal
+                if os.path.isabs(member) or member.startswith('..'):
+                    return False
+                
+                # Resolve the full path to check for escapes
+                resolved_member_path = os.path.normpath(os.path.join(dest_path, member))
+                
+                # If the member path itself escapes the destination, reject it
+                if not resolved_member_path.startswith(dest_path + os.sep) and resolved_member_path != dest_path:
+                    return False
+                
+                # Check for hard links and symlinks
+                # We need to access the member's metadata to check link targets
+                try:
+                    tarinfo = tar.getmember(member)
+                except KeyError:
+                    continue
+                
+                # Check for hard links (mode 0o0120000 in tarfile)
+                if tarinfo.linkname:
+                    # Resolve the link target
+                    link_target_path = os.path.normpath(os.path.join(dest_path, tarinfo.linkname))
+                    
+                    # Check if the link target escapes the destination
+                    if not link_target_path.startswith(dest_path + os.sep) and link_target_path != dest_path:
+                        return False
+                    
+                    # Check if the link target is an absolute path
+                    if os.path.isabs(tarinfo.linkname):
+                        return False
+                
+                # Check for symbolic links
+                if tarinfo.issym() or tarinfo.islnk():
+                    # Resolve the link target
+                    link_target_path = os.path.normpath(os.path.join(dest_path, tarinfo.linkname))
+                    
+                    # Check if the link target escapes the destination
+                    if not link_target_path.startswith(dest_path + os.sep) and link_target_path != dest_path:
+                        return False
+                    
+                    # Check if the link target is an absolute path
+                    if os.path.isabs(tarinfo.linkname):
+                        return False
+            
+            # If all validations pass, perform the extraction
+            tar.extractall(dest_path)
+            return True
+            
+    except Exception:
+        return False

@@ -1,0 +1,103 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+def _normalize_and_validate_root(dest_path: str) -> None:
+    """
+    Normalize the destination path and validate it does not escape the filesystem root.
+    Raises ValueError if validation fails.
+    """
+    # Resolve the absolute path without following symlinks for the directory itself
+    # but we need to ensure the resolved path is under /
+    abs_dest = os.path.abspath(dest_path)
+    
+    # Check if the path starts with / or is a relative path that resolves to /
+    # If it's absolute, it must start with '/'
+    if not abs_dest.startswith('/'):
+        raise ValueError(f"Destination path must be absolute: {abs_dest}")
+    
+    # Ensure the path is under the root directory
+    if not abs_dest.startswith('/'):
+        raise ValueError(f"Destination path must be under root: {abs_dest}")
+    
+    # Additional check: ensure no .. segments escape the root in the resolved path
+    # os.path.abspath already resolves .., so we just check the result
+    if not abs_dest.startswith('/'):
+        raise ValueError(f"Destination path must be under root: {abs_dest}")
+
+def _validate_member(member: tarfile.TarInfo, dest_path: str) -> None:
+    """
+    Validate a single tar member to ensure its resolved target stays within dest_path.
+    This includes checking for symbolic links and hard links that might escape.
+    """
+    member_path = member.name
+    
+    # Skip directories (dir mode) as they don't have a resolved target in the same way
+    if member.isdir():
+        return
+    
+    # Resolve the target
+    resolved_path = os.path.normpath(os.path.join(dest_path, member_path))
+    
+    # Ensure the resolved path is within dest_path
+    # We use os.path.commonpath to verify the paths are on the same drive (for Windows)
+    # and that the resolved path is a prefix of the dest_path
+    if not resolved_path.startswith(dest_path + os.sep) and resolved_path != dest_path:
+        raise ValueError(f"Member {member_path} resolves outside dest_path: {resolved_path}")
+    
+    # If it's a symlink, resolve the target and check again
+    if member.issym() or member.islnk():
+        link_target = member.linkname
+        resolved_link_target = os.path.normpath(os.path.join(dest_path, link_target))
+        
+        # Check if the link target itself escapes
+        if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+            raise ValueError(f"Symlink {member.name} points outside dest_path: {resolved_link_target}")
+        
+        # Also check if the resolved link target escapes when resolved relative to dest_path
+        # This handles cases like "../etc/passwd"
+        if not resolved_link_target.startswith(dest_path + os.sep) and resolved_link_target != dest_path:
+            raise ValueError(f"Symlink {member.name} target {link_target} escapes dest_path: {resolved_link_target}")
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    Returns True on complete success, False otherwise.
+    """
+    try:
+        # Normalize and validate the destination root
+        _normalize_and_validate_root(dest_path)
+        
+        # Open the archive and walk the member list for validation
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members first
+            members = tar.getnames()
+            
+            # Validate each member before extraction
+            for member_name in members:
+                member = tar.getmember(member_name)
+                _validate_member(member, dest_path)
+            
+            # Now perform the extraction
+            # We extract to a temporary directory first, then move to dest_path
+            # This ensures we don't write outside dest_path during extraction
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Extract to temp directory
+                tar.extractall(tmpdir)
+                
+                # Move the extracted content to the destination
+                # We need to handle the case where the temp directory has a different structure
+                # than the original tar structure. We'll use shutil.move which is atomic on same drive
+                # and safe across drives if we copy then delete, but shutil.move is usually fine for same drive.
+                # To be safe across drives, we can copy then delete, but for this context, shutil.move is typically sufficient.
+                # However, to be strictly safe and avoid cross-drive issues if dest_path is on a different drive than tmpdir:
+                shutil.copytree(tmpdir, dest_path, dirs_exist_ok=True)
+                
+                # Clean up the temp directory
+                shutil.rmtree(tmpdir)
+                
+                return True
+                
+    except Exception:
+        return False

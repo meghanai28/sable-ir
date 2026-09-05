@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__structured__concise__p00__r00",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__structured__concise__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\nimport stat\n\ndef _is_safe_path(base_path: str, member_name: str) -> bool:\n    \"\"\"Check if extracting a member would escape the base path.\"\"\"\n    # Normalize the base path to absolute and resolve any . or ..\n    base_path = os.path.abspath(base_path)\n    \n    # Construct the potential destination path for this member\n    # We use os.path.join to handle the name, then resolve it\n    dest_path = os.path.join(base_path, member_name)\n    dest_path = os.path.normpath(dest_path)\n    \n    # Ensure the resolved path starts with the base path\n    # This handles cases like \"../etc/passwd\" or \"foo/../bar\"\n    if not (dest_path.startswith(base_path + os.sep) or dest_path == base_path):\n        return False\n    \n    return True\n\ndef _validate_and_extract_member(tar: tarfile.TarFile, member: tarfile.TarInfo, dest_path: str) -> bool:\n    \"\"\"\n    Validate a single archive member for safety and then extract it.\n    Returns True if successful, False otherwise.\n    \"\"\"\n    # Check for symlinks and hardlinks\n    if member.issym() or member.islnk():\n        return False\n    \n    # Check if the member name itself escapes the destination\n    if not _is_safe_path(dest_path, member.name):\n        return False\n    \n    # Extract the member\n    try:\n        tar.extract(member, path=dest_path)\n        return True\n    except Exception:\n        return False\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive beneath dest_path.\n    Returns True on complete success, False on any validation or extraction failure.\n    \"\"\"\n    # Normalize dest_path to absolute\n    dest_path = os.path.abspath(dest_path)\n    \n    # Ensure dest_path exists (create if needed)\n    if not os.path.exists(dest_path):\n        try:\n            os.makedirs(dest_path)\n        except Exception:\n            return False\n    \n    # Open the archive\n    try:\n        tar = tarfile.open(tar_path)\n    except Exception:\n        return False\n    \n    try:\n        # Get all members first for validation\n        members = tar.getmembers()\n        \n        # Validate all members before extracting any\n        for member in members:\n            # Check for symlinks or hardlinks\n            if member.issym() or member.islnk():\n                return False\n            \n            # Check if the member name escapes the destination\n            if not _is_safe_path(dest_path, member.name):\n                return False\n        \n        # Extract all validated members\n        for member in members:\n            if not _validate_and_extract_member(tar, member, dest_path):\n                return False\n        \n        return True\n        \n    finally:\n        tar.close()",
+    "prompt_tokens": 257,
+    "output_tokens": 628,
+    "finish_reason": "stop",
+    "latency_seconds": 32.148,
+    "seed": 1406893097
+  },
+  "prompt_sha256": "b15923f585bfae92dc5d6d12c24cee0325d1361ddbb40584dc2c488e9c4b2e40",
+  "candidate_path": "jobs/path_symlink_archive__A__structured__concise__p00__r00/candidate.py",
+  "candidate_sha256": "6d89e7209d67ae9b822a16e106ed34c96610dd32cb46a91a54c8d5746afb85d9",
+  "extraction": "raw_text",
+  "error": null
+}

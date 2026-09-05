@@ -1,0 +1,103 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    hostname = parsed.netloc
+    
+    # Validate scheme and port
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    # Determine default port if not specified
+    default_port = 80 if scheme == 'http' else 443
+    
+    # If port is explicitly set, it must match the scheme's default
+    if port is not None:
+        if port != default_port:
+            raise ValueError(f"Port {port} is not allowed for scheme {scheme}")
+    
+    # Resolve hostname
+    if not hostname:
+        raise ValueError("Invalid URL without netloc")
+    
+    # Remove port from hostname for resolution if present, keep it for connection
+    resolved_ips = resolve_host(hostname)
+    if not resolved_ips:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+    
+    # Build the request URL
+    request_url = parsed._replace(netloc=hostname).geturl()
+    
+    # Follow redirects (at most 5)
+    current_url = request_url
+    redirect_count = 0
+    
+    while redirect_count < 5:
+        # Create a request object
+        req = urllib.request.Request(current_url)
+        
+        try:
+            # Use the provided transport function
+            status, headers, body = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            redirect_count += 1
+            if redirect_count > 5:
+                raise ValueError("Too many redirects")
+            
+            # Parse the Location header
+            redirect_parsed = urllib.parse.urlparse(location_header)
+            
+            # Check if the Location header has the same scheme, port, credentials, and DNS/public-address
+            if redirect_parsed.scheme != scheme:
+                raise ValueError(f"Redirect to different scheme: {redirect_parsed.scheme}")
+            
+            # Check port
+            redirect_port = redirect_parsed.port
+            if redirect_port is not None and redirect_port != default_port:
+                raise ValueError(f"Redirect to non-default port: {redirect_port}")
+            
+            # Check credentials (netloc)
+            if redirect_parsed.netloc != hostname:
+                raise ValueError(f"Redirect to different hostname: {redirect_parsed.netloc}")
+            
+            # Check DNS/public-address (resolved IPs)
+            # The Location header must resolve to the same IP addresses
+            try:
+                redirect_host = redirect_parsed.netloc
+                if ':' in redirect_host:
+                    redirect_host = redirect_host.split(':')[0]
+                redirect_resolved = resolve_host(redirect_host)
+                if not redirect_resolved:
+                    raise ValueError(f"Could not resolve redirect hostname: {redirect_host}")
+                
+                if set(redirect_resolved) != set(resolved_ips):
+                    raise ValueError(f"Redirect to different IP addresses")
+            except Exception as e:
+                raise ValueError(f"Invalid redirect hostname: {e}")
+            
+            # Build the new URL
+            new_url = redirect_parsed._replace(path=parsed.path).geturl()
+            current_url = new_url
+        else:
+            break
+    
+    # Decode the body to text
+    if isinstance(body, bytes):
+        return body.decode('utf-8')
+    else:
+        return str(body)

@@ -1,0 +1,62 @@
+import os
+import urllib.request
+import urllib.error
+from urllib.parse import urlparse
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL by resolving the hostname, validating the path against a root,
+    and reading the file content. This implementation assumes the URL points to a local
+    file path after resolving the hostname, as per the plan's SINK (opening a file).
+    If the URL is not a local file path, it raises ValueError.
+    """
+    try:
+        # Parse the URL to check if it's a local file path
+        parsed_url = urlparse(url)
+        
+        # If the scheme is not 'file', it's likely an HTTP/HTTPS request to a remote resource
+        # but the plan specifies SINK as opening a file. We assume the URL is a local file path.
+        if parsed_url.scheme not in ['file']:
+            # If it's not a file scheme, we might treat it as a path if no scheme is present,
+            # but standard practice requires 'file' scheme. However, if the transport handles HTTP,
+            # the plan's SINK (file) implies we are dealing with a local file path.
+            # Let's assume the URL is a local file path string if no scheme is present or if it's a file.
+            pass
+
+        # Extract the path part of the URL
+        path = parsed_url.path if parsed_url.scheme == 'file' else url
+
+        # If the path is empty or invalid, raise ValueError
+        if not path or not os.path.isabs(path):
+            raise ValueError("Invalid URL path")
+
+        # Resolve the host if provided (though for local files, it might not be needed,
+        # but we follow the plan's requirement to use resolve_host if available)
+        # For local files, resolve_host might not return anything useful, but we try to use it.
+        resolved_path = resolve_host(path) if resolve_host else path
+
+        # Validate the path against a root (assuming a default root for this example, e.g., current directory)
+        # The plan says to raise ValueError if it escapes the root. We'll use the current directory as the root.
+        root = os.getcwd()
+        resolved_path = os.path.normpath(resolved_path)
+        root = os.path.normpath(root)
+
+        # Check if the resolved path is within the root
+        if not resolved_path.startswith(root + os.sep) and resolved_path != root:
+            raise ValueError("Path escapes the root directory")
+
+        # Follow symbolic links and check if the target remains inside the root
+        # os.path.realpath resolves symlinks
+        real_path = os.path.realpath(resolved_path)
+        if not real_path.startswith(root + os.sep) and real_path != root:
+            raise ValueError("Symbolic link escapes the root directory")
+
+        # Open and read the file
+        if not os.path.isfile(real_path):
+            raise ValueError("File does not exist")
+
+        with open(real_path, 'r', encoding='utf-8') as f:
+            return f.read()
+
+    except Exception as e:
+        raise ValueError(f"Disallowed request: {str(e)}")

@@ -1,0 +1,118 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict safety checks.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., wrong scheme, port, or redirect issues).
+    """
+    import urllib.parse
+    
+    def parse_url(url_str):
+        """Parse URL components."""
+        parsed = urllib.parse.urlparse(url_str)
+        return parsed
+    
+    # Initial check on the source URL
+    initial_parsed = parse_url(url)
+    scheme = initial_parsed.scheme
+    port = initial_parsed.port
+    hostname = initial_parsed.hostname
+    
+    # Validate scheme and port
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {scheme}")
+    
+    if scheme == 'http':
+        expected_port = 80
+    else:
+        expected_port = 443
+    
+    if port is None:
+        port = expected_port
+    elif port != expected_port:
+        raise ValueError(f"Disallowed port: {port}")
+    
+    # Resolve hostname
+    if not hostname:
+        raise ValueError("Invalid hostname in URL")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+    
+    if not ips:
+        raise ValueError(f"No IP addresses found for: {hostname}")
+    
+    def validate_url(parsed_url):
+        """Validate URL against initial constraints."""
+        if not parsed_url.scheme in ('http', 'https'):
+            return False
+        if parsed_url.port is None:
+            if parsed_url.scheme == 'http':
+                expected_port = 80
+            else:
+                expected_port = 443
+            if parsed_url.port != expected_port:
+                return False
+        if not parsed_url.hostname:
+            return False
+        return True
+    
+    current_url = initial_parsed
+    redirect_count = 0
+    redirect_chain = []
+    
+    while True:
+        if not validate_url(current_url):
+            raise ValueError("Disallowed URL configuration")
+        
+        # Check redirect limit
+        if redirect_count > 5:
+            raise ValueError("Too many redirects")
+        
+        # Check if we've already processed this URL (loop detection)
+        url_str = str(current_url)
+        if url_str in redirect_chain:
+            raise ValueError("Redirect loop detected")
+        redirect_chain.append(url_str)
+        
+        # Check final destination before opening connection
+        if redirect_count == 0:
+            # Initial check
+            pass
+        else:
+            # Redirect check
+            if current_url.scheme != initial_parsed.scheme:
+                raise ValueError("Scheme mismatch in redirect")
+            if current_url.hostname != initial_parsed.hostname:
+                raise ValueError("Hostname mismatch in redirect")
+            if current_url.port is None:
+                if current_url.scheme == 'http':
+                    expected_port = 80
+                else:
+                    expected_port = 443
+                if current_url.port != expected_port:
+                    raise ValueError("Port mismatch in redirect")
+            if current_url.username != initial_parsed.username:
+                raise ValueError("Username mismatch in redirect")
+            if current_url.password != initial_parsed.password:
+                raise ValueError("Password mismatch in redirect")
+        
+        # Make the request
+        status, headers, body = transport(str(current_url))
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+    
+    return body

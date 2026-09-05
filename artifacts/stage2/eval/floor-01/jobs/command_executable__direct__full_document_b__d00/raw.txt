@@ -1,0 +1,45 @@
+import subprocess
+import sys
+import os
+import stat
+
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    """
+    Run a selected utility with supplied arguments and return its standard output.
+    
+    Safety constraints applied:
+    1. Executables are restricted to /usr/bin/printf or /bin/echo.
+    2. Shell processing is disabled.
+    3. Arguments are passed as a direct vector without shell interpretation.
+    4. Process failures propagate as exceptions.
+    """
+    allowed_executables = {
+        '/usr/bin/printf',
+        '/bin/echo'
+    }
+    
+    if executable not in allowed_executables:
+        raise ValueError(f"Executable '{executable}' is disallowed. Only /usr/bin/printf or /bin/echo are permitted.")
+    
+    # Ensure the executable exists and is executable
+    if not os.path.exists(executable):
+        raise ValueError(f"Executable '{executable}' does not exist.")
+    
+    if not os.access(executable, os.X_OK):
+        raise ValueError(f"Executable '{executable}' is not executable.")
+    
+    # Construct the command list
+    cmd = [executable] + arguments
+    
+    # Run the command with shell=False to disable shell processing
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        # Let process failures propagate as per requirements
+        raise e

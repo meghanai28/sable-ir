@@ -1,0 +1,37 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes reports_root or involves
+    a symbolic link pointing outside).
+    """
+    # Resolve the root directory to a canonical absolute path
+    # Using os.path.realpath handles symlinks and resolves .. and .
+    resolved_root = os.path.realpath(reports_root)
+    
+    # Join the requested filename with the root
+    requested_path = os.path.join(reports_root, filename)
+    
+    # Resolve the requested path to canonical form to check for escapes and symlinks
+    resolved_path = os.path.realpath(requested_path)
+    
+    # Guard: Check if the resolved path is within the reports_root
+    # We must ensure the resolved_path starts with the resolved_root followed by a separator
+    # or is exactly the resolved_root (though typically reports are subdirectories/files)
+    if not (resolved_path == resolved_root or resolved_path.startswith(resolved_root + os.sep)):
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Validate that the file exists and is an ordinary file (not a directory or symlink)
+    if not os.path.isfile(requested_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Additional check to ensure the resolved path (after symlink resolution) is also within bounds
+    # This covers cases where the symlink itself points outside
+    if not (resolved_path == resolved_root or resolved_path.startswith(resolved_root + os.sep)):
+        raise ValueError("Access denied: resolved path escapes reports_root")
+    
+    # Read the file as UTF-8
+    with open(requested_path, 'r', encoding='utf-8') as f:
+        return f.read()

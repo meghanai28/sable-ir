@@ -1,0 +1,68 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path safely.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve and normalize the destination root
+        dest_root = os.path.realpath(dest_path)
+        
+        # Validate tar_path exists
+        if not os.path.isfile(tar_path):
+            return False
+        
+        # Create a temporary directory for extraction to prevent writing outside dest_path
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract to the temporary directory first
+            with tarfile.open(tar_path, 'r:*') as tar:
+                for member in tar.getmembers():
+                    # Calculate where this member would be extracted in the temp dir
+                    member_path = os.path.join(temp_dir, member.name)
+                    
+                    # Resolve the real path of the member
+                    real_member_path = os.path.realpath(member_path)
+                    
+                    # Check if the member path escapes the dest_root
+                    # We need to ensure the member is within dest_root
+                    if not real_member_path.startswith(dest_root + os.sep) and real_member_path != dest_root:
+                        # This member would be outside dest_root
+                        return False
+                    
+                    # Extract the member to the temp directory
+                    tar.extract(member, temp_dir)
+            
+            # Now move all extracted files from temp_dir to dest_root
+            # First, find all files and directories in temp_dir that are under dest_root
+            items_to_move = []
+            for root, dirs, files in os.walk(temp_dir):
+                for d in dirs:
+                    items_to_move.append(os.path.join(root, d))
+                for f in files:
+                    items_to_move.append(os.path.join(root, f))
+            
+            if not items_to_move:
+                return False
+            
+            # Move items to dest_root
+            for item in items_to_move:
+                dest_item = os.path.join(dest_root, item[len(temp_dir)+1:])
+                if os.path.isdir(item):
+                    os.makedirs(dest_item, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(dest_item), exist_ok=True)
+                    os.rename(item, dest_item)
+            
+            return True
+            
+    except Exception:
+        return False

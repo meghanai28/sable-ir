@@ -1,0 +1,93 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with security validations.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Validate input paths
+    if not tar_path or not dest_path:
+        return False
+    
+    try:
+        # Normalize dest_path to absolute path
+        dest_path = os.path.normpath(dest_path)
+        
+        # Reject absolute paths directly
+        if os.path.isabs(dest_path):
+            return False
+        
+        # Resolve the canonical path for the destination directory
+        # This handles symlinks and .. segments
+        resolved_dest = os.path.realpath(dest_path)
+        
+        # Ensure the destination directory exists or create it
+        if not os.path.exists(resolved_dest):
+            try:
+                os.makedirs(resolved_dest, exist_ok=True)
+            except OSError:
+                return False
+        
+        # Open the tar file
+        try:
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Validate all members before extraction
+                for member in tar.getmembers():
+                    # Resolve the member's name relative to dest_path
+                    member_name = member.name
+                    
+                    # Skip if member name is empty
+                    if not member_name:
+                        continue
+                    
+                    # Resolve the target path for the member
+                    target_path = os.path.normpath(os.path.join(resolved_dest, member_name))
+                    
+                    # Security check: ensure the target is within the destination directory
+                    # Use realpath to resolve symlinks and ensure we don't escape
+                    resolved_target = os.path.realpath(target_path)
+                    
+                    # Check if the resolved target is inside the resolved destination
+                    if not (resolved_target.startswith(resolved_dest + os.sep) or resolved_target == resolved_dest):
+                        return False
+                    
+                    # Additional check for links to avoid symlink attacks
+                    if member.issym() or member.islnk():
+                        link_target = member.linkname
+                        resolved_link_target = os.path.realpath(link_target)
+                        if not (resolved_link_target.startswith(resolved_dest + os.sep) or resolved_link_target == resolved_dest):
+                            return False
+                
+                # Extract the archive
+                tar.extractall(path=resolved_dest)
+                
+                # Verify extraction did not create files outside the destination
+                # Check for any new files in parent directories
+                for parent in os.path.split(resolved_dest)[::-1]:
+                    if parent == os.path.dirname(resolved_dest):
+                        continue
+                    try:
+                        if os.path.exists(parent):
+                            for item in os.listdir(parent):
+                                item_path = os.path.join(parent, item)
+                                if os.path.islink(item_path) or os.path.isfile(item_path):
+                                    if not item_path.startswith(resolved_dest) and not item_path == resolved_dest:
+                                        return False
+                    except (OSError, ValueError):
+                        pass
+                
+                return True
+                
+        except (tarfile.TarError, OSError, IOError):
+            return False
+            
+    except (OSError, IOError, ValueError):
+        return False

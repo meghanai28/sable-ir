@@ -1,0 +1,59 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve and normalize the destination path
+        resolved_dest = os.path.realpath(dest_path)
+        
+        # Ensure the destination directory exists
+        if not os.path.exists(resolved_dest):
+            os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Skip directories to avoid issues with directory creation
+                if member.isdir():
+                    continue
+                
+                # Resolve the target path for this member
+                member_dir = os.path.dirname(member.name)
+                member_file = member.name
+                
+                # Handle symbolic links
+                if member.issym():
+                    # Resolve the target of the symbolic link
+                    target = os.path.realpath(member.linkname)
+                    # Check if the target escapes the destination
+                    if not target.startswith(resolved_dest) or target == resolved_dest:
+                        return False
+                elif member.isdir():
+                    # For directories, check if the name starts with the destination
+                    if not member.name.startswith(os.path.join(resolved_dest, '')):
+                        return False
+                else:
+                    # For regular files, check if the path escapes the destination
+                    if not member.name.startswith(os.path.join(resolved_dest, '')):
+                        return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+        
+        return True
+    
+    except Exception as e:
+        return False

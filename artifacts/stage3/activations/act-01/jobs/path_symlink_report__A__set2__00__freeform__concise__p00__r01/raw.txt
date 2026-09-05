@@ -1,0 +1,61 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the file to read (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The content of the report as a UTF-8 string.
+    
+    Raises:
+        ValueError: If the resolved path escapes reports_root or if the target of a symbolic link is not within reports_root.
+        FileNotFoundError: If the file does not exist.
+    """
+    # Resolve the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the full path by joining the root with the filename
+    # This handles both relative and absolute filenames provided by the user
+    requested_path = os.path.join(resolved_root, filename)
+    
+    # Normalize the path to remove any redundant separators or current directory references
+    # We must ensure the final resolved path is within the root directory
+    # Using os.path.normpath handles .. segments and . segments
+    normalized_path = os.path.normpath(requested_path)
+    
+    # Resolve the path to its absolute form to ensure we are comparing correctly
+    # We check if the normalized path starts with the resolved root
+    # Note: os.path.commonpath can be used, but a simple prefix check on the absolute path is more robust for containment
+    # We need to ensure that the path does not escape the root even if it was constructed with ..
+    
+    # Check if the normalized path is within the root directory
+    # We compare the absolute path of the normalized string with the absolute root
+    # The path must start with the root directory followed by a separator or be the root itself
+    if not (normalized_path == resolved_root or normalized_path.startswith(resolved_root + os.sep)):
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the path is a symbolic link
+    if os.path.islink(requested_path):
+        # Resolve the target of the symbolic link
+        link_target = os.path.realpath(requested_path)
+        
+        # Check if the resolved target is within the root directory
+        # Similar to the previous check, ensure the target does not escape the root
+        if not (link_target == resolved_root or link_target.startswith(resolved_root + os.sep)):
+            raise ValueError("Symbolic link target escapes reports_root")
+        else:
+            # Even if the target is inside the directory, we must raise an error
+            # because the requirement states "a link whose resolved target is inside the directory is still not acceptable"
+            raise ValueError("Symbolic link not allowed")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(requested_path):
+        raise FileNotFoundError(f"File not found: {filename}")
+    
+    # Read the file content
+    with open(requested_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,126 @@
+import urllib.request
+import urllib.parse
+import urllib.error
+import socket
+import re
+
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if DNS resolution fails, or if redirect rules are violated.
+    """
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # GUARD: Check scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # GUARD: Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname.")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("DNS resolution failed for hostname.")
+    
+    # Helper to get the current base URL for redirect validation
+    def get_current_base():
+        return parsed
+    
+    # State for redirect tracking
+    current_url = parsed
+    redirect_count = 0
+    max_redirects = 5
+    
+    while True:
+        # Validate DNS entry (basic check if the IP is in the list from resolve_host)
+        # The plan says "raise ValueError when ... points to a non-public DNS entry".
+        # Since we are using resolve_host which returns IPs, we assume valid IPs.
+        # However, if the URL contains an IP directly, we should check if it matches resolve_host(hostname)
+        # But the prompt implies resolve_host is the source of truth for "public DNS".
+        # We proceed with the IP addresses we resolved.
+        
+        # Build the request URL
+        request_url = current_url.geturl()
+        
+        # Make the request
+        try:
+            response = transport(request_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status, headers, body = response
+        
+        # EFFECT: Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        return body
+        
+        # Handle redirects
+        if 'location' in headers:
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError("Too many redirects.")
+            
+            location = headers['location']
+            new_parsed = urllib.parse.urlparse(location)
+            
+            # GUARD: Validate redirect location
+            # 1. Same scheme check
+            if new_parsed.scheme != scheme:
+                raise ValueError("Redirect scheme mismatch.")
+            
+            # 2. Port check
+            if new_parsed.port is not None:
+                if current_url.port != new_parsed.port:
+                    raise ValueError("Redirect port mismatch.")
+            
+            # 3. Credentials check
+            if new_parsed.username or new_parsed.password:
+                raise ValueError("Redirect contains credentials.")
+            
+            # 4. DNS/Public DNS check
+            # The plan says "points to a non-public DNS entry".
+            # We interpret this as: if the hostname in the redirect is not resolvable via resolve_host, or
+            # if the hostname in the redirect is an IP that doesn't match the resolved IPs for the current context?
+            # Given the constraints, we assume resolve_host is the canonical resolver.
+            # If the new hostname is not in the list of resolved IPs for the current domain, it might be suspicious,
+            # but typically redirect validation focuses on scheme, port, and credentials.
+            # However, the plan explicitly mentions "non-public DNS entry".
+            # Let's assume if the hostname in the redirect is not resolvable by resolve_host, it's invalid.
+            # But resolve_host takes the hostname. If the redirect has a different hostname, we must resolve that.
+            # Wait, the plan says "resolve the hostname to its IP address(es) via resolve_host".
+            # It implies we use resolve_host on the current hostname.
+            # For redirects, we should check if the new hostname is valid.
+            # If the new hostname is an IP, we check if it's in the list of resolved IPs?
+            # Or simply check if resolve_host(new_hostname) returns something?
+            # Given the safety context, we should ensure the new hostname is resolvable.
+            
+            new_hostname = new_parsed.hostname
+            if not new_hostname:
+                raise ValueError("Invalid redirect: missing hostname.")
+            
+            # Check if the new hostname is resolvable
+            new_ip_addresses = resolve_host(new_hostname)
+            if not new_ip_addresses:
+                raise ValueError("Redirect points to a non-public DNS entry.")
+            
+            # Update current URL
+            current_url = new_parsed
+        else:
+            # No location header, stop processing
+            break

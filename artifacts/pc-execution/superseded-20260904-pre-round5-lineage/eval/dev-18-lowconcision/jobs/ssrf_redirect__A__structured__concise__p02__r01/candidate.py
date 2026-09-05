@@ -1,0 +1,63 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import urllib.parse
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL using the provided transport and host resolution functions.
+    
+    Args:
+        url: The URL to fetch (untrusted).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the HTTP response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed or the hostname is not reachable.
+    """
+    # Parse the URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Guard: Reject absolute URLs
+    if parsed_url.scheme in ['http', 'https']:
+        pass  # Continue processing
+    else:
+        raise ValueError("Disallowed request: Invalid scheme")
+    
+    # Extract hostname
+    hostname = parsed_url.hostname
+    
+    # Guard: Resolve the hostname and check reachability
+    if not hostname:
+        raise ValueError("Disallowed request: Invalid hostname")
+    
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception:
+        raise ValueError(f"Disallowed request: Hostname {hostname} is not reachable")
+    
+    if not ip_addresses:
+        raise ValueError(f"Disallowed request: Hostname {hostname} is not reachable")
+    
+    # Use the first available IP address
+    resolved_ip = ip_addresses[0]
+    
+    # Construct the full URL for the transport
+    full_url = f"{parsed_url.scheme}://{resolved_ip}{parsed_url.path}"
+    
+    # Call the transport function
+    try:
+        status, headers, body = transport(full_url)
+    except Exception as e:
+        raise ValueError(f"Disallowed request: Failed to connect to {resolved_ip}: {e}")
+    
+    # Guard: Check status code
+    if status != 200:
+        raise ValueError(f"Disallowed request: Status code {status} is not 200")
+    
+    # Return the body
+    return body

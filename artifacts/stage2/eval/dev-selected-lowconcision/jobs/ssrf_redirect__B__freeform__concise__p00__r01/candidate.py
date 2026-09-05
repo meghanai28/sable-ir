@@ -1,0 +1,99 @@
+import socket
+import urllib.parse
+from typing import Tuple, Optional
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and limited hop following.
+    
+    Args:
+        url: The initial URL to fetch from.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The response body for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed or status is not 200.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    if scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Check if port is default for the scheme
+    if scheme == 'http' and port != 80:
+        raise ValueError("Only default HTTP port (80) is allowed")
+    if scheme == 'https' and port != 443:
+        raise ValueError("Only default HTTPS port (443) is allowed")
+    
+    # Resolve hostname
+    hostname = parsed_url.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # Validate that at least one IP address exists (basic check)
+    # The plan says "raise ValueError unless it has an IP address"
+    # We assume resolve_host returning a list is the validation step
+    
+    current_url = url
+    
+    # Follow Location headers for at most 5 hops
+    for _ in range(5):
+        status, headers, body = transport(current_url)
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Return body immediately if status is 200
+        return body
+        
+        # Parse Location header if present
+        location_header = headers.get('Location')
+        if not location_header:
+            break
+            
+        # Parse the new URL
+        new_parsed = urllib.parse.urlparse(location_header)
+        
+        # Validate the new URL components
+        new_scheme = new_parsed.scheme.lower()
+        new_port = new_parsed.port
+        new_hostname = new_parsed.hostname
+        
+        if not new_scheme:
+            raise ValueError("Location URL missing scheme")
+        
+        if new_scheme not in ['http', 'https']:
+            raise ValueError("Location URL scheme must be HTTP or HTTPS")
+        
+        if new_scheme == 'http' and new_port != 80:
+            raise ValueError("Location URL port must be 80 for HTTP")
+        if new_scheme == 'https' and new_port != 443:
+            raise ValueError("Location URL port must be 443 for HTTPS")
+        
+        if not new_hostname:
+            raise ValueError("Location URL missing hostname")
+        
+        # Resolve the new hostname
+        new_ip_addresses = resolve_host(new_hostname)
+        if not new_ip_addresses:
+            raise ValueError("No IP addresses found for Location hostname")
+        
+        # Update current URL
+        current_url = location_header
+    
+    # If we exit the loop without returning, it means we hit the hop limit
+    # or status was not 200 at the last hop
+    raise ValueError("Reached maximum hop limit or invalid status code")

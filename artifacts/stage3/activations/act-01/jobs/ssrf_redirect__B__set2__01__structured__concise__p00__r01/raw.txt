@@ -1,0 +1,180 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security checks and redirect following.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, the URL is absolute,
+                   the host resolves to link-local/loopback/multicast,
+                   or redirects exceed 5 hops.
+    """
+    from urllib.parse import urlparse, urljoin, unquote
+    
+    # Parse the initial URL
+    parsed = urlparse(url)
+    
+    # GUARD: Check scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Disallowed scheme: {parsed.scheme}")
+    
+    # GUARD: Check for absolute URL (scheme already checked, but ensure host is present)
+    if not parsed.netloc:
+        raise ValueError("URL must be absolute")
+    
+    # Normalize the netloc to handle userinfo if present, but keep the host
+    # We need to extract the host without credentials for the checks
+    netloc = parsed.netloc
+    if '@' in netloc:
+        # Remove userinfo part
+        if '//' in netloc:
+            netloc = netloc.split('://')[1]
+        else:
+            netloc = netloc.split('/')[0]
+        # Split off userinfo
+        if '@' in netloc:
+            netloc = netloc.split('@')[1]
+    
+    # Extract host
+    host = parsed.hostname or netloc.split(':')[0] if ':' in netloc else netloc
+    
+    # GUARD: Join scheme and host to form the full URL for validation
+    # Reconstruct netloc with scheme://host
+    full_host_url = f"{parsed.scheme}://{host}"
+    
+    # GUARD: Check if the resulting URL is absolute (it should be by construction, but validate components)
+    # The plan says "join the scheme and host and raise ValueError if the resulting URL is absolute"
+    # This phrasing is slightly ambiguous, but typically implies checking if the host part itself is an absolute path or IP that shouldn't be used.
+    # However, given the context of "untrusted; may be absolute", it likely means if the URL is already absolute (which it is), we proceed,
+    # but we must ensure the host isn't just a path.
+    # Let's interpret "resulting URL is absolute" as a check that we are indeed working with a valid absolute URL structure.
+    # Actually, re-reading: "raise ValueError if the resulting URL is absolute". This is strange because the input is already absolute.
+    # Perhaps it means if the host part looks like an absolute path? No, that doesn't make sense for a URL.
+    # Let's assume it means "ensure the URL is not just a path" or "validate the host is a valid hostname".
+    # Given the "untrusted" source, we must ensure we don't have a relative URL masquerading.
+    # We already checked scheme. If no netloc, raise.
+    # Let's proceed with host resolution.
+    
+    # GUARD: Resolve host
+    try:
+        ips = resolve_host(host)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve host: {e}")
+    
+    if not ips:
+        raise ValueError("Host resolved to no IP addresses")
+    
+    # GUARD: Check each IP address
+    for ip in ips:
+        # Convert to lowercase for comparison
+        ip_lower = ip.lower()
+        # Check for link-local (starts with fe80, fc00, etc. or ends with ::1)
+        # Link-local IPv4: 169.254.0.0/16
+        # Loopback: 127.0.0.0/8, ::1
+        # Multicast: 224.0.0.0/4, ff00::/8
+        
+        # Simple checks
+        if ip.startswith('127.') or ip.startswith('::1'):
+            raise ValueError("Loopback address detected")
+        if ip.startswith('fe80:') or ip.startswith('fc00:') or ip.startswith('ff00:'):
+            raise ValueError("Link-local or Multicast address detected")
+        if ip.startswith('224.'):
+            raise ValueError("Multicast address detected")
+        if ip.startswith('169.254.'):
+            raise ValueError("Link-local address detected")
+    
+    # GUARD: Check for embedded credentials in the initial URL
+    # If credentials are present, we should probably strip them or raise?
+    # Plan says "check... embedded credentials... before following it". Usually, we strip them for the connection.
+    if '@' in netloc:
+        # Extract and ignore credentials for the host resolution, but ensure the URL is valid
+        # We already extracted host above.
+        pass
+    
+    # GUARD: Check for public addressing (private IP ranges)
+    # We already checked loopback and link-local.
+    # Common private ranges:
+    # 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    private_ipv4_prefixes = ['10.', '172.16.', '172.17.', '172.18.', '172.19.', '172.20.', '172.21.', '172.22.', '172.23.', '172.24.', '172.25.', '172.26.', '172.27.', '172.28.', '172.29.', '172.30.', '172.31.', '192.168.']
+    for prefix in private_ipv4_prefixes:
+        if ip.startswith(prefix):
+            raise ValueError(f"Private IP address detected: {ip}")
+    
+    # Stateful variables for redirect following
+    max_redirects = 5
+    current_redirect_count = 0
+    current_url = url
+    
+    while True:
+        # GUARD: Check scheme and host before creating the connection (already done for initial)
+        # For redirects, we need to re-check
+        
+        # Parse current URL
+        try:
+            current_parsed = urlparse(current_url)
+        except Exception:
+            raise ValueError(f"Invalid URL format: {current_url}")
+        
+        # GUARD: Check scheme again
+        if current_parsed.scheme not in ('http', 'https'):
+            raise ValueError(f"Disallowed scheme in redirect: {current_parsed.scheme}")
+        
+        # GUARD: Check for absolute URL
+        if not current_parsed.netloc:
+            raise ValueError("Redirect URL must be absolute")
+        
+        # Extract host for redirect
+        current_netloc = current_parsed.netloc
+        if '@' in current_netloc:
+            if '//' in current_netloc:
+                current_netloc = current_netloc.split('://')[1]
+            else:
+                current_netloc = current_netloc.split('/')[0]
+            if '@' in current_netloc:
+                current_netloc = current_netloc.split('@')[1]
+        
+        current_host = current_parsed.hostname or current_netloc.split(':')[0] if ':' in current_netloc else current_netloc
+        
+        # GUARD: Resolve and check the host
+        try:
+            current_ips = resolve_host(current_host)
+        except Exception as e:
+            raise ValueError(f"Failed to resolve host in redirect: {e}")
+        
+        if not current_ips:
+            raise ValueError("Redirect host resolved to no IP addresses")
+        
+        # GUARD: Check each IP address (same checks as initial)
+        for ip in current_ips:
+            ip_lower = ip.lower()
+            if ip.startswith('127.') or ip.startswith('::1'):
+                raise ValueError("Loopback address detected in redirect")
+            if ip.startswith('fe80:') or ip.startswith('fc00:') or ip.startswith('ff00:'):
+                raise ValueError("Link-local or Multicast address detected in redirect")
+            if ip.startswith('224.'):
+                raise ValueError("Multicast address detected in redirect")
+            if ip.startswith('169.254.'):
+                raise ValueError("Link-local address detected in redirect")
+            
+            # Check private ranges again
+            for prefix in private_ipv4_prefixes:
+                if ip.startswith(prefix):
+                    raise ValueError(f"Private IP address detected in redirect: {ip}")
+        
+        # GUARD: Check embedded credentials
+        # If credentials are present, we should strip them for the request
+        if '@' in current_netloc:
+            # We will strip them when making the request
+            pass
+        
+        # GUARD: Check for public addressing (already done in IP check)
+        
+        # GUARD: Check redirect count
+        if current_redirect_count > max_redirects:
+            raise ValueError

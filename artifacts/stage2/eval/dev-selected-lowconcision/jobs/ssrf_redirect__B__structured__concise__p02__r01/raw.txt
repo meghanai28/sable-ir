@@ -1,0 +1,63 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    from urllib.parse import urlparse, urljoin
+    
+    # Validate scheme
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve hostname
+    try:
+        resolved_ips = resolve_host(parsed.hostname)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not resolved_ips:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # Use the first resolved IP for the request
+    base_url = parsed._replace(netloc=resolved_ips[0], path='', query='', fragment='')
+    
+    # Follow redirects (max 5)
+    max_redirects = 5
+    current_url = base_url
+    redirect_count = 0
+    
+    while redirect_count < max_redirects:
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Unexpected status code")
+        
+        return body
+        
+        # Handle redirects
+        if 'Location' in headers:
+            redirect_count += 1
+            location = headers['Location']
+            current_url = urljoin(current_url, location)
+            
+            # Re-resolve the new URL's hostname
+            parsed_new = urlparse(current_url)
+            resolved_ips_new = resolve_host(parsed_new.hostname)
+            
+            if not resolved_ips_new:
+                raise ValueError("Failed to resolve redirect hostname")
+            
+            # Validate redirect destination
+            # Must have same scheme, port, credentials, DNS, and public address
+            if parsed_new.scheme != parsed.scheme:
+                raise ValueError("Redirect scheme mismatch")
+            
+            if parsed_new.port != parsed.port:
+                raise ValueError("Redirect port mismatch")
+            
+            if parsed_new.username or parsed_new.password:
+                raise ValueError("Redirect credentials mismatch")
+            
+            if resolved_ips_new != resolved_ips:
+                raise ValueError("Redirect DNS/IP mismatch")
+        else:
+            raise ValueError("No Location header for redirect")
+    
+    raise ValueError("Too many redirects")

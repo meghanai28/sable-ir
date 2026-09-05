@@ -1,0 +1,36 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to the specified destination path.
+    
+    Returns:
+        bool: True if extraction completes successfully, False otherwise.
+    """
+    # Normalize and resolve the destination root
+    dest_path = os.path.realpath(dest_path)
+    
+    # Ensure the destination directory exists
+    os.makedirs(dest_path, exist_ok=True)
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over all members in the archive
+            for member in tar.getmembers():
+                # Resolve the target path for this member
+                target_path = os.path.join(dest_path, member.name)
+                target_path = os.path.realpath(target_path)
+                
+                # Security check: ensure the target path is within the destination root
+                if not target_path.startswith(dest_path + os.sep) and target_path != dest_path:
+                    raise ValueError(f"Archive member would escape the destination root: {member.name}")
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+                
+    except Exception:
+        return False
+    
+    return True

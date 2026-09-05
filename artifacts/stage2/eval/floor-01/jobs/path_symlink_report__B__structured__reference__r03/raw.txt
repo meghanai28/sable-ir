@@ -1,0 +1,28 @@
+def read_report(filename: str, reports_root: str) -> str:
+    import os
+    import os.path
+    
+    # Normalize the root to an absolute path if it isn't already
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Construct the target path by joining filename with reports_root
+    target_path = os.path.join(resports_root, filename)
+    
+    # Normalize the target path to resolve any .. or . segments
+    normalized_target = os.path.normpath(target_path)
+    
+    # Resolve the full path, following symbolic links
+    resolved_target = os.path.realpath(normalized_target)
+    
+    # Ensure the resolved target is within the reports_root directory
+    # We compare the resolved path with the root; it must be a child of root
+    if not resolved_target.startswith(resolved_root + os.sep) and resolved_target != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the target is a file
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"File not found: {resolved_target}")
+    
+    # Read and return the UTF-8 content
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()

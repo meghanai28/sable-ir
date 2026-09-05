@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__A__freeform__minimal__p02__r01",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__A__freeform__minimal__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nimport urllib.request\nimport urllib.error\n\ndef resolve_host(hostname):\n    try:\n        return socket.getaddrinfo(hostname, None)[0][4][0]\n    except (socket.gaierror, socket.herror):\n        raise ValueError(f\"Could not resolve hostname: {hostname}\")\n\ndef fetch_text(url, transport, resolve_host):\n    parsed = urllib.parse.urlparse(url)\n    \n    scheme = parsed.scheme.lower()\n    if scheme not in ('http', 'https'):\n        raise ValueError(f\"Only http and https schemes are allowed, got {scheme}\")\n    \n    hostname = parsed.hostname\n    if not hostname:\n        raise ValueError(\"Invalid URL: missing hostname\")\n    \n    resolved_ips = resolve_host(hostname)\n    \n    # Open the request\n    try:\n        opener = urllib.request.build_opener()\n        req = urllib.request.Request(url)\n        response = opener.open(req, timeout=30)\n        \n        status = int(response.status)\n        \n        if status != 200:\n            raise ValueError(f\"Unexpected status code: {status}\")\n        \n        # Check for redirects\n        while True:\n            headers = dict(response.headers)\n            location = headers.get('Location')\n            \n            if location:\n                new_url = urllib.parse.urljoin(parsed.getfull_url(), location)\n                new_parsed = urllib.parse.urlparse(new_url)\n                \n                # Validate redirect target\n                if new_parsed.scheme.lower() != scheme or new_parsed.hostname != hostname:\n                    raise ValueError(f\"Redirect to different scheme or host not allowed\")\n                \n                # Update URL for next iteration\n                url = new_url\n                response = opener.open(urllib.request.Request(url), timeout=30)\n            else:\n                break\n        \n        return response.read().decode('utf-8')\n    \n    except urllib.error.HTTPError as e:\n        if e.code != 200:\n            raise ValueError(f\"Request failed with status {e.code}\")\n        return e.read().decode('utf-8')\n    except Exception as e:\n        raise ValueError(f\"Request failed: {str(e)}\")",
+    "prompt_tokens": 253,
+    "output_tokens": 460,
+    "finish_reason": "stop",
+    "latency_seconds": 22.867,
+    "seed": 483795146
+  },
+  "prompt_sha256": "6e3b8204cfea99136477417893a769e43782f53c6f71d913b38378855beec850",
+  "candidate_path": "jobs/ssrf_redirect__A__freeform__minimal__p02__r01/candidate.py",
+  "candidate_sha256": "4a38e185ce197d67f41a5c4361d093609b0fe0d06a82ddad26c96907e9ccda48",
+  "extraction": "raw_text",
+  "error": null
+}

@@ -1,0 +1,112 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully and safely, False otherwise.
+    """
+    try:
+        # Normalize the destination path to an absolute path without trailing separators
+        # and ensure it's a directory.
+        dest_path = os.path.abspath(dest_path)
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Resolve the root directory to prevent any traversal via ..
+        # We will treat the absolute path of dest_path as the root.
+        root_dir = os.path.abspath(dest_path)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Get the absolute path of the member's target location
+                # tarfile.getmember().name is the path relative to the archive root
+                # We need to resolve it against the dest_path
+                
+                # Calculate the member's intended location within dest_path
+                # We strip the leading '/' if present and join with dest_path
+                member_name = member.name
+                if member_name.startswith('/'):
+                    member_name = member_name[1:]
+                
+                # Construct the full path where the member would be extracted
+                member_dest = os.path.join(dest_path, member_name)
+                
+                # Normalize the member_dest to resolve any .. or . components
+                # This ensures we catch attempts to escape via ..
+                normalized_member_dest = os.path.normpath(member_dest)
+                
+                # Security Check 1: Ensure the normalized path is within the root directory
+                # We check if the normalized path starts with the root directory
+                # Note: os.path.commonpath is safer but can be tricky with trailing slashes
+                # A robust check is: normalized_member_dest.startswith(root_dir + os.sep) or 
+                # (normalized_member_dest == root_dir and not member_name)
+                
+                if not (normalized_member_dest.startswith(root_dir + os.sep) or 
+                        (normalized_member_dest == root_dir and not member_name)):
+                    return False
+                
+                # Security Check 2: Check symbolic links before extraction
+                if member.issym() or member.islnk():
+                    # For symlinks, we need to check the target
+                    # We cannot resolve the link yet because the file doesn't exist
+                    # But we can check the name of the link itself
+                    # Actually, for symlinks in tar, the target is stored in the linkname
+                    # We need to ensure the link target, when resolved, stays within dest_path
+                    
+                    # Get the link name
+                    link_name = member.linkname
+                    
+                    # Resolve the link name relative to the member's location
+                    # If the member is a directory, resolve relative to the directory
+                    # If the member is a file, resolve relative to the file
+                    
+                    # First, resolve the member's base path (the directory containing the file)
+                    # If the member is a directory, the base is the directory itself
+                    # If the member is a file, the base is the directory of the file
+                    
+                    if member.isdir():
+                        base_dir = normalized_member_dest
+                    else:
+                        # Get the directory of the file
+                        base_dir = os.path.dirname(normalized_member_dest)
+                    
+                    # Resolve the link name relative to the base_dir
+                    # If the link name is absolute, it's a bit tricky, but typically in tar
+                    # we assume relative unless specified. However, to be safe, we resolve it.
+                    # If the link name is absolute, we check if it's within dest_path
+                    if os.path.isabs(link_name):
+                        # If the link name is absolute, we must ensure it's within dest_path
+                        # But wait, if it's absolute, it might point outside.
+                        # We should check if the resolved link is within dest_path
+                        # However, we can't resolve it without the file existing.
+                        # We can still check if the path starts with dest_path
+                        if not (link_name.startswith(root_dir + os.sep) or 
+                                (link_name == root_dir and not os.path.basename(member_name))):
+                            return False
+                    else:
+                        # Relative link name
+                        # Resolve relative to the base_dir
+                        resolved_link = os.path.normpath(os.path.join(base_dir, link_name))
+                        
+                        # Check if the resolved link is within dest_path
+                        if not (resolved_link.startswith(root_dir + os.sep) or 
+                                (resolved_link == root_dir and not os.path.basename(member_name))):
+                            return False
+                
+                # Perform the extraction
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

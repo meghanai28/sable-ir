@@ -1,0 +1,59 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    """
+    Fetch text from a URL, resolving the hostname and rejecting unsafe requests.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed.
+    """
+    # Reject absolute URLs
+    if url.startswith(('http://', 'https://')):
+        raise ValueError("Absolute URLs are disallowed.")
+    
+    # Parse the URL to extract the netloc (hostname)
+    parsed_url = urllib.parse.urlparse(url)
+    hostname = parsed_url.netloc
+    
+    # Resolve the hostname
+    if not hostname:
+        raise ValueError("No hostname found in URL.")
+    
+    try:
+        ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname not reachable.")
+    
+    if not ips:
+        raise ValueError("No IP addresses found for hostname.")
+    
+    # Determine the port based on the scheme
+    scheme = parsed_url.scheme.lower()
+    if scheme == 'http':
+        port = 80
+    elif scheme == 'https':
+        port = 443
+    else:
+        raise ValueError("Unsupported scheme.")
+    
+    # Construct the full URL with the resolved IP
+    full_url = f"{scheme}://{hostname}:{port}"
+    
+    # Call the transport function
+    status, headers, body = transport(full_url)
+    
+    # Check if the status is 200
+    if status != 200:
+        raise ValueError("Unexpected status code.")
+    
+    return body

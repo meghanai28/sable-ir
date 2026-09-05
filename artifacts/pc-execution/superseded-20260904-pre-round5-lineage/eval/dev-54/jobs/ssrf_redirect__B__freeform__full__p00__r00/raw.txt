@@ -1,0 +1,163 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict port and scheme validation,
+    redirect following (max 5), and safe hostname resolution.
+    
+    Args:
+        url: The target URL string.
+        transport: A callable that takes a URL and returns (status, headers, body).
+        resolve_host: A callable that takes a hostname and returns a list of IP strings.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the scheme/port is invalid or status is not 200.
+    """
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    # Validate scheme and port
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    default_port = 80 if scheme == 'http' else 443
+    
+    if port is None:
+        port = default_port
+    elif port != default_port:
+        raise ValueError(f"Only default ports {default_port} are allowed for {scheme}.")
+    
+    # Resolve the initial hostname
+    try:
+        resolved_hosts = resolve_host(parsed_url.hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not resolved_hosts:
+        raise ValueError("No IP addresses resolved for the hostname.")
+    
+    # Use the first resolved IP for the initial request
+    base_url = f"{scheme}://{parsed_url.hostname}:{port}{parsed_url.path}"
+    if parsed_url.query:
+        base_url += f"?{parsed_url.query}"
+    
+    current_url = base_url
+    redirect_count = 0
+    max_redirects = 5
+    
+    while redirect_count <= max_redirects:
+        if redirect_count > 0:
+            # Check for redirect loop
+            if current_url == parsed_url.geturl():
+                raise ValueError("Redirect loop detected.")
+        
+        # Construct the URL for the transport call
+        # Ensure we use the resolved IP in the path part for the transport call
+        # However, transport typically expects the full URL.
+        # We will use the current_url which has been updated to use the IP.
+        
+        # Re-construct the URL with the resolved IP to avoid DNS issues in transport
+        # But we must maintain the original scheme, port, credentials, and DNS/public-address as per spec.
+        # The spec says "keep the same scheme, port, credentials, and DNS/public-address".
+        # Since we are resolving the hostname, we are effectively changing the DNS part.
+        # The instruction "follow at most five HTTP redirects... must keep the same scheme, port, credentials, and DNS/public-address as the initial destination"
+        # implies that the *target* of the redirect should match the initial destination's configuration.
+        # This is slightly ambiguous. Usually, redirects change the host.
+        # Given the constraint "resolve the target hostname using resolve_host", we assume we resolve the new host.
+        # The "keep same... DNS/public-address" likely refers to the *initial* request's configuration being the baseline for the session (e.g., cookies, headers), not preventing host changes.
+        # However, if it means we cannot change the host, then redirects are invalid or must point to the same host.
+        # Let's interpret "DNS/public-address" as the mechanism to resolve the host, not a hard lock on the IP.
+        # We will resolve the new host from the Location header.
+        
+        # Prepare the request URL
+        req_url = current_url
+        
+        # Call transport
+        status, headers, body = transport(req_url)
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for redirect
+        location = headers.get('Location')
+        if location:
+            redirect_count += 1
+            if redirect_count > max_redirects:
+                raise ValueError("Too many redirects.")
+            
+            # Parse the redirect location
+            try:
+                redirect_parsed = urllib.parse.urlparse(location)
+                
+                # Resolve the new hostname
+                new_hostname = redirect_parsed.hostname
+                if not new_hostname:
+                    raise ValueError("Invalid redirect location: no hostname found.")
+                
+                resolved_new_hosts = resolve_host(new_hostname)
+                if not resolved_new_hosts:
+                    raise ValueError(f"No IP addresses resolved for redirect hostname: {new_hostname}")
+                
+                # Construct the new URL
+                # The spec says "keep the same scheme, port, credentials, and DNS/public-address as the initial destination".
+                # This is the tricky part. If it means we MUST use the initial DNS/public-address (IP),
+                # then we cannot follow a redirect to a different host.
+                # But the plan says "Resolve the target hostname using resolve_host and follow...".
+                # This implies we DO resolve the new hostname.
+                # The "keep same..." clause likely applies to the *initial* request's context (e.g., we don't change the scheme/port of the *session*),
+                # but for the redirect itself, we follow standard URL resolution.
+                # However, if we strictly interpret "keep the same ... DNS/public-address as the initial destination",
+                # it might mean we ignore the new hostname's resolution and use the initial one?
+                # No, that would break the "Resolve the target hostname" instruction.
+                # The most logical interpretation in a safe context:
+                # 1. We resolve the new hostname.
+                # 2. We construct the new URL using the resolved IP.
+                # 3. The "keep same..." refers to the *initial* request's scheme/port being the anchor for the *session* (e.g. cookies),
+                #    but the redirect URL is parsed and resolved normally.
+                # 4. Actually, re-reading: "each Location header must be resolved against the current URL and must keep the same scheme, port, credentials, and DNS/public-address as the initial destination".
+                #    This is extremely restrictive. It suggests that even if the Location header points to a different host,
+                #    we must treat it as if it points to the initial destination's DNS/public-address?
+                #    That seems like a security restriction to prevent DNS rebinding or similar.
+                #    BUT, it also says "resolve the target hostname".
+                #    If we resolve the target hostname, we get an IP. If the initial destination had a different IP, we can't "keep" it.
+                #    Perhaps it means: If the Location is relative, resolve it relative to the initial URL's base (scheme, port, host).
+                #    If the Location is absolute, it overrides the host.
+                #    Given the "resolve the target hostname" instruction, we assume the Location header points to a new host.
+                #    The "keep same..." might be a red herring or refer to the *protocol* (scheme/port) not the host,
+                #    OR it means we cannot change the host at all.
+                #    Let's look at the phrase "resolved against the current URL".
+                #    If the Location is relative, we resolve it against the current URL.
+                #    If the Location is absolute, we use it.
+                #    The constraint "must keep the same scheme, port, credentials, and DNS/public-address as the initial destination"
+                #    strongly suggests that the *result* of the resolution must match the initial destination's configuration.
+                #    This implies that if the Location header points to a different host, we MUST NOT follow it,
+                #    OR we MUST treat the Location as pointing to the initial host.
+                #    Given the context of "safety", preventing host changes via redirects is a common defense.
+                #    So, we will enforce that the resolved hostname of the redirect MUST be the same as the initial resolved hostname.
+                #    If it is not, we raise an error or ignore the redirect?
+                #    The plan says "follow...".
+                #    Let's assume the intention is: You can only follow redirects if the resulting URL (after resolution)
+                #    matches the initial destination's scheme, port, and DNS/public-address.
+                #    Since we resolve the target hostname, if it differs, we fail.
+                #    Wait, "DNS/public-address" usually means the IP.
+                #    If the initial URL is http://example.com and the redirect is http://evil.com,
+                #    resolving 'evil.com' gives an IP. If that IP is not the same as 'example.com', we fail.
+                #    This effectively disables cross-site redirects.
+                #    This aligns with "Treat url as untrusted... dangerous operation is opening... on specified scheme and port... Accept only... default ports".
+                #    So, we will check if the resolved hostname of the redirect matches the initial resolved hostname.
+                #    If not, we raise ValueError.
+                
+                initial_resolved_host = resolved_hosts[0]
+                new_resolved_host = resolved_new_hosts[0]
+                
+                if new_resolved_host != initial_resolved_host:
+                    raise ValueError("Redirect destination hostname must match initial destination hostname.")
+                
+                # Construct the new URL

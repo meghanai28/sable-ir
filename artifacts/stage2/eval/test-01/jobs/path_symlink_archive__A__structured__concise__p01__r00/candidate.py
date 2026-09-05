@@ -1,0 +1,63 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Base directory where the archive will be extracted.
+        
+    Returns:
+        True if extraction completes successfully with all members inside dest_path.
+        False if any validation or extraction fails.
+    """
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Skip directories that are not regular files or directories (though tarfile usually handles this)
+                # We focus on regular files and directories
+                if member.isdir():
+                    continue
+                
+                # Get the member's name
+                member_name = member.name
+                
+                # Check if the member name is absolute
+                if os.path.isabs(member_name):
+                    raise ValueError(f"Archive contains absolute path in member name: {member_name}")
+                
+                # Construct the full path for the member
+                full_path = os.path.normpath(os.path.join(dest_path, member_name))
+                
+                # Check if the path is outside dest_path
+                if not full_path.startswith(dest_path + os.sep) and full_path != dest_path:
+                    raise ValueError(f"Archive member would extract outside dest_path: {full_path}")
+                
+                # Check for symlinks and hardlinks that point outside dest_path
+                if member.issym() or member.islnk():
+                    # Resolve the target of the symlink/hardlink
+                    target = member.linkname
+                    resolved_target = os.path.normpath(os.path.join(dest_path, target))
+                    
+                    # Check if the target is outside dest_path
+                    if not resolved_target.startswith(dest_path + os.sep) and resolved_target != dest_path:
+                        raise ValueError(f"Symbolic link/hardlink target points outside dest_path: {resolved_target}")
+                    
+                    # Also check if the target is absolute
+                    if os.path.isabs(target):
+                        raise ValueError(f"Symbolic link/hardlink target is absolute: {target}")
+                
+                # Skip other member types (e.g., device files, etc.)
+                if not (member.isfile() or member.isdir()):
+                    continue
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

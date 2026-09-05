@@ -1,0 +1,67 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    import urllib.parse
+    import socket
+    import http.client
+    
+    # Parse the URL
+    parsed = urllib.parse.urlparse(url)
+    
+    # GUARD: Check scheme is exactly http or https
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Disallowed scheme")
+    
+    # GUARD: Check host does not contain :// (prevents protocol-relative attacks)
+    if parsed.netloc and '://' in parsed.netloc:
+        raise ValueError("Invalid host format")
+    
+    # GUARD: Resolve host
+    try:
+        ip_addresses = resolve_host(parsed.netloc)
+    except Exception:
+        raise ValueError("Host resolution failed")
+    
+    if not ip_addresses or len(ip_addresses) > 1:
+        raise ValueError("Invalid host resolution")
+    
+    host = ip_addresses[0]
+    port = parsed.port
+    path = parsed.path
+    
+    # GUARD: Check path is not absolute (already handled by urlparse but explicit check)
+    if path.startswith('/'):
+        pass  # Valid relative path
+    else:
+        raise ValueError("Invalid path format")
+    
+    # GUARD: Check path does not contain .. segments
+    if '..' in path:
+        raise ValueError("Path contains .. segments")
+    
+    # Determine default port
+    if port is None:
+        if parsed.scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Connect and read response
+    conn = None
+    try:
+        if parsed.scheme == 'http':
+            conn = http.client.HTTPConnection(host, port)
+        else:
+            conn = http.client.HTTPSConnection(host, port)
+        
+        conn.request('GET', path)
+        response = conn.getresponse()
+        
+        # GUARD: Only accept status 200, never follow redirects
+        if response.status != 200:
+            raise ValueError(f"Redirect or non-200 response: {response.status}")
+        
+        body = response.read().decode('utf-8')
+        return body
+        
+    finally:
+        if conn:
+            conn.close()

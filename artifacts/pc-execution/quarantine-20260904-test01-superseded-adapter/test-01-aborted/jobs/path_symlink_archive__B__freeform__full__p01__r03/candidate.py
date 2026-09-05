@@ -1,0 +1,156 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving . and .. but not resolving symlinks yet."""
+    return os.path.normpath(path)
+
+def _is_absolute(path: str) -> bool:
+    """Check if a path is absolute."""
+    return os.path.isabs(path)
+
+def _check_path_safety(dest_path: str, member_path: str) -> bool:
+    """
+    Check if a member path, when resolved relative to dest_path, stays within dest_path.
+    This function handles both regular files and links.
+    """
+    # Resolve the destination
+    resolved_dest = os.path.abspath(dest_path)
+    
+    # Determine the prefix we are allowed to write to
+    allowed_prefix = os.path.abspath(dest_path)
+    
+    # Construct the target path
+    target_path = os.path.normpath(os.path.join(dest_path, member_path))
+    
+    # If the member path is absolute, it's a security risk
+    if os.path.isabs(member_path):
+        return False
+    
+    # Resolve the target path to check for escape
+    # We need to be careful here. We resolve the path as if it were a file path.
+    # However, for symlinks, we need to check the link target, not just the link itself.
+    # For now, we check the resolved path of the member.
+    resolved_member = os.path.abspath(target_path)
+    
+    # Check if the resolved member is outside the allowed prefix
+    if not (resolved_member.startswith(allowed_prefix) or resolved_member == allowed_prefix):
+        return False
+    
+    return True
+
+def _validate_and_extract_member(tar, member: tarfile.TarInfo, dest_path: str) -> bool:
+    """
+    Validate a tar member and extract it if valid.
+    Returns True if valid, False otherwise.
+    """
+    member_path = member.name
+    
+    # Skip if it's a directory (we only extract files, but we must handle dirs in the tree)
+    # Actually, we should extract everything but ensure safety.
+    
+    # Check for absolute paths
+    if os.path.isabs(member_path):
+        return False
+    
+    # Normalize the path
+    normalized_member_path = os.path.normpath(member_path)
+    
+    # Construct the full path
+    full_path = os.path.normpath(os.path.join(dest_path, normalized_member_path))
+    
+    # Safety check: ensure the path doesn't escape dest_path
+    # We use abspath to resolve .. and .
+    resolved_full_path = os.path.abspath(full_path)
+    
+    dest_abspath = os.path.abspath(dest_path)
+    
+    if not (resolved_full_path.startswith(dest_abspath) or resolved_full_path == dest_abspath):
+        return False
+    
+    # Handle links
+    if member.type == tarfile.SYMTYPE:
+        linkname = member.linkname
+        # Check if linkname is absolute
+        if os.path.isabs(linkname):
+            return False
+        # Resolve the link target
+        resolved_link_target = os.path.abspath(os.path.join(dest_path, linkname))
+        # Ensure the link target is within dest_path
+        if not (resolved_link_target.startswith(dest_abspath) or resolved_link_target == dest_abspath):
+            return False
+        # Extract the link
+        tar.extractfile(member) # This is not needed for links, we use extract()
+        # Actually, we need to extract the link.
+        # We cannot use extract() directly on a link if we want to validate first.
+        # We'll create the directory structure first if needed, then the link.
+        # But simpler: just use extract() and rely on our pre-checks?
+        # No, we must validate before writing.
+        # So we create the parent dirs, then the link.
+        parent_dir = os.path.dirname(full_path)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+        os.symlink(linkname, full_path)
+        
+    elif member.type == tarfile.LINKTYPE:
+        linkname = member.linkname
+        if os.path.isabs(linkname):
+            return False
+        resolved_link_target = os.path.abspath(os.path.join(dest_path, linkname))
+        if not (resolved_link_target.startswith(dest_abspath) or resolved_link_target == dest_abspath):
+            return False
+        parent_dir = os.path.dirname(full_path)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+        os.link(linkname, full_path)
+        
+    else:
+        # Regular file
+        # Ensure parent directories exist
+        parent_dir = os.path.dirname(full_path)
+        if parent_dir and not os.path.exists(parent_dir):
+            os.makedirs(parent_dir, exist_ok=True)
+        
+        # Extract the file
+        tar.extract(member, path=dest_path)
+        
+    return True
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path.
+    Validates all members to ensure no escape is possible.
+    Returns True on complete success, False on any failure.
+    """
+    # Validate dest_path is not absolute
+    if _is_absolute(dest_path):
+        return False
+    
+    # Normalize dest_path
+    dest_path = _normalize_path(dest_path)
+    
+    # Check if dest_path escapes itself (trivial, but good practice)
+    # Since we normalized, .. shouldn't escape unless it was absolute, which we checked.
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate all members first
+            for member in members:
+                if not _check_path_safety(dest_path, member.name):
+                    return False
+            
+            # Now extract
+            for member in members:
+                if not _validate_and_extract_member(tar, member, dest_path):
+                    return False
+            
+            return True
+            
+    except Exception:
+        return False

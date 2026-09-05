@@ -1,0 +1,61 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Returns True only if the entire archive is extracted successfully without
+    writing any member outside dest_path. Returns False if validation fails
+    or extraction is interrupted.
+    """
+    # Normalize the destination path to an absolute path
+    # Use os.path.abspath which resolves .. and . but doesn't follow symlinks
+    abs_dest = os.path.abspath(dest_path)
+    
+    # Validate that dest_path is within the root directory
+    if not abs_dest.startswith(os.path.sep):
+        # This shouldn't happen on valid paths, but be defensive
+        return False
+    
+    # If dest_path is not absolute, make it absolute
+    if not os.path.isabs(dest_path):
+        abs_dest = os.path.abspath(dest_path)
+    
+    # Ensure dest_path exists and is a directory
+    if not os.path.isdir(abs_dest):
+        return False
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members from the archive
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Calculate the destination path for this member
+                # Use member.name which is the raw name from the archive
+                # We need to resolve it relative to dest_path
+                dest_member = os.path.join(abs_dest, member.name)
+                
+                # Normalize the destination to resolve .. and .
+                # This is crucial for detecting escape attempts
+                normalized_dest = os.path.normpath(dest_member)
+                
+                # Check if the normalized destination escapes the base directory
+                # It should be a prefix of abs_dest (or equal to it)
+                if not (normalized_dest == abs_dest or normalized_dest.startswith(abs_dest + os.sep)):
+                    return False
+            
+            # If validation passes, extract the archive
+            # Use extractall to extract all members at once
+            # We must ensure we don't overwrite existing files outside dest_path
+            # Since we validated all members, this should be safe
+            tar.extractall(path=abs_dest)
+            
+            return True
+            
+    except Exception:
+        # Catch any extraction errors and return False
+        return False

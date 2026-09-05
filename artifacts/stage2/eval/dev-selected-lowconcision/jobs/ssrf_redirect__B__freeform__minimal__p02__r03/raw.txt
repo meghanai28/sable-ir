@@ -1,0 +1,187 @@
+import socket
+import urllib.parse
+from typing import Tuple, List, Optional
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict redirect and DNS resolution safety checks.
+    
+    Args:
+        url: The initial URL to fetch.
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> List[str] of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: For disallowed requests, failed resolution, or non-200 status.
+    """
+    # Parse the initial URL
+    parsed_url = urllib.parse.urlparse(url)
+    initial_scheme = parsed_url.scheme
+    initial_port = parsed_url.port
+    initial_netloc = parsed_url.netloc
+    initial_host = parsed_url.hostname
+    initial_user = parsed_url.username
+    initial_password = parsed_url.password
+    
+    # Helper to check if a netloc matches the initial scheme, port, credentials, DNS, and public address
+    def is_safe_netloc(netloc: str, scheme: str, port: int, user: str, password: str, dns_lookup: bool = True) -> bool:
+        """
+        Check if the given netloc is safe based on the initial URL's constraints.
+        """
+        if not dns_lookup:
+            # If we are just checking the string representation without DNS, we check strict equality
+            # However, the plan implies we resolve DNS. Let's assume dns_lookup=True for the main check.
+            pass
+        
+        # Extract components from the netloc
+        try:
+            # Handle credentials
+            if '@' in netloc:
+                auth, host_port = netloc.rsplit('@', 1)
+                if user:
+                    if auth != f"{user}:{password}":
+                        return False
+                else:
+                    return False
+                host_port_str = host_port
+            else:
+                host_port_str = netloc
+            
+            # Handle port
+            if ':' in host_port_str:
+                host, port_str = host_port_str.rsplit(':', 1)
+                try:
+                    resolved_port = int(port_str)
+                except ValueError:
+                    return False
+            else:
+                host = host_port_str
+                resolved_port = port
+            
+            # Check scheme
+            if scheme.lower() != host_port_str.split('://')[0].lower() if '://' in host_port_str else True:
+                # Re-evaluate scheme check properly
+                pass
+            
+            # Re-implementation for clarity
+            scheme_check = True
+            if scheme:
+                # Extract scheme from netloc if present (e.g., http://example.com)
+                # But typically netloc doesn't contain scheme, it's parsed separately.
+                # The plan says "Location whose scheme... do not match".
+                # So we compare the scheme of the Location header against the initial URL's scheme.
+                pass
+            
+            # Check DNS (hostname)
+            if dns_lookup and initial_host:
+                if host != initial_host:
+                    return False
+            
+            # Check public address (IP) - This is tricky because we resolve the IP.
+            # The plan says: "check the resolved IP against the current URL's scheme, port, credentials, DNS, and public address"
+            # This implies if the initial URL has an IP, the target must match that IP.
+            # If the initial URL has a hostname, the target must match that hostname (after resolution).
+            
+            # Let's refine the logic based on the plan's specific constraints:
+            # "a Location whose scheme, port, credentials, DNS, or public address do not match the current URL's values"
+            
+            # 1. Scheme
+            if scheme:
+                # If initial URL has a scheme, the new URL must have the same scheme.
+                # If initial URL is http://, new must be http://.
+                pass
+            
+            # 2. Port
+            if initial_port is not None:
+                if resolved_port != initial_port:
+                    return False
+            elif port_str:
+                # If initial port is default, we might allow any, but strict mode might require match?
+                # "Accept HTTP or HTTPS on its default port"
+                # Usually default means we don't care about the explicit port number if it's default,
+                # but if specified, it must match.
+                # Let's assume if initial_port is None (default), we accept any port?
+                # But the plan says "do not match". So if initial_port is None, we check if resolved_port matches None?
+                # That doesn't make sense. Let's assume if initial_port is None, we don't enforce port match,
+                # BUT if the netloc has an explicit port, it might be unsafe if the initial was default?
+                # Actually, the safest interpretation: The scheme, port, credentials, DNS, and public address must match.
+                # If initial_port is None (default), we check if the netloc's port matches the default?
+                # Or we just check if the netloc's port is the same as initial_port (which is None).
+                # Let's stick to: if initial_port is set, it must match. If not, we don't check port?
+                # But the plan says "do not match".
+                # Let's assume strict equality if initial_port is not None.
+                pass
+            
+            # 3. Credentials
+            if initial_user or initial_password:
+                if not (user and password) or (user != initial_user or password != initial_password):
+                    return False
+            
+            # 4. DNS (Hostname)
+            if dns_lookup and initial_host:
+                if host != initial_host:
+                    return False
+            
+            # 5. Public Address (IP)
+            # If the initial URL was an IP, the new URL must be the same IP.
+            # If the initial URL was a hostname, the new URL must resolve to the same hostname (which it does by definition of resolution)
+            # AND the resolved IP must match the initial IP if one was provided.
+            # If initial was a hostname, we don't have an initial IP to compare against, so we just check DNS.
+            # If initial was an IP, we check if the resolved IP matches the initial IP.
+            # But wait, the plan says "check the resolved IP against the current URL's ... public address".
+            # So if initial_url is "http://192.168.1.1", the resolved IP must be 192.168.1.1.
+            # If initial_url is "http://example.com", the resolved IP must be the one we get, but we don't have a constraint IP?
+            # The plan says "raise ValueError unless every resolved IP and each resolved Location remain within the same scheme, port, credentials, DNS, and public address as the initial destination."
+            # This implies if initial destination has an IP, the resolved IP must match.
+            # If initial destination has a hostname, the resolved hostname must match (which it does), and we don't check IP?
+            # But "public address" usually means the IP.
+            # Let's assume: If initial_url has an IP, check IP match. If initial_url has hostname, check hostname match (DNS).
+            
+            # Re-reading: "check the resolved IP against the current URL's scheme, port, credentials, DNS, and public address"
+            # This suggests we compare the resolved IP against the initial URL's properties.
+            # If initial URL is "http://example.com", its "public address" is unknown until resolved.
+            # So we can't check IP against "example.com" unless we resolve it first.
+            # But we are resolving the target now.
+            # So the check is:
+            # 1. If initial_url has an IP, resolved_ip must equal initial_ip.
+            # 2. If initial_url has a hostname, resolved_hostname must equal initial_hostname.
+            # 3. If initial_url has no hostname (IP), resolved_ip must equal initial_ip.
+            
+            # Let's implement this logic.
+            pass
+            
+        except Exception:
+            return False
+    
+    # Helper to check if a location header is safe
+    def is_safe_location(location: str, scheme: str, port: int, user: str, password: str, dns_lookup: bool = True) -> bool:
+        # Parse the location
+        loc_parsed = urllib.parse.urlparse(location)
+        loc_scheme = loc_parsed.scheme
+        loc_port = loc_parsed.port
+        loc_netloc = loc_parsed.netloc
+        loc_user = loc_parsed.username
+        loc_password = loc_parsed.password
+        
+        # Check scheme
+        if scheme and loc_scheme and scheme.lower() != loc_scheme.lower():
+            return False
+        
+        # Check port
+        if port is not None and loc_port is not None and port != loc_port:
+            return False
+        
+        # Check credentials
+        if (user or password) and (not (loc_user and loc_password) or (user != loc_user or password != loc_password)):
+            return False
+        
+        # Check DNS
+        if dns_lookup and initial_host:
+            # Resolve the location's hostname
+            try:
+                resolved_loc = resolve_host(loc_netloc)
+                if resolved_loc and initial_host:
+                    # Check if the resolved hostname

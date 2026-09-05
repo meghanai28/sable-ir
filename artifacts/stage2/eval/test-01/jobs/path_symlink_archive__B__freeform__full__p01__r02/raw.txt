@@ -1,0 +1,102 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully with all members inside dest_path,
+        False otherwise. Never writes outside dest_path on failure.
+    """
+    try:
+        # Normalize dest_path to an absolute path without trailing separators
+        dest_path = os.path.abspath(dest_path)
+        
+        # Ensure the destination directory exists
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Calculate the resolved path for this member
+                # tarfile.getmember() returns a TarInfo object; we need to resolve the path
+                # The name attribute is the path within the archive
+                member_name = member.name
+                
+                # Resolve the full path if it's not a directory
+                if member.isdir():
+                    resolved_path = os.path.join(dest_path, member_name)
+                else:
+                    # For files, we need to resolve the directory part first
+                    dir_part = os.path.dirname(member_name)
+                    if dir_part:
+                        resolved_dir = os.path.normpath(os.path.join(dest_path, dir_part))
+                    else:
+                        resolved_dir = dest_path
+                    
+                    # Check if the directory part is inside dest_path
+                    if not resolved_dir.startswith(dest_path) or resolved_dir == dest_path:
+                        # This is a security check to prevent .. escapes in directory paths
+                        if not resolved_dir.startswith(dest_path):
+                            return False
+                    
+                    # Now resolve the full file path
+                    resolved_path = os.path.join(resolved_dir, member_name)
+                
+                # Normalize the resolved path to remove any .. or . components
+                resolved_path = os.path.normpath(resolved_path)
+                
+                # Check if the resolved path is outside dest_path
+                if not resolved_path.startswith(dest_path):
+                    return False
+                
+                # Check for symbolic links
+                if member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname
+                    resolved_link = os.path.normpath(os.path.join(dest_path, link_target))
+                    
+                    # Check if the link target is inside dest_path
+                    if not resolved_link.startswith(dest_path):
+                        return False
+                    
+                    # Check if the link target is a symlink itself (recursion protection)
+                    # We need to resolve the link target's path relative to dest_path
+                    # and ensure it doesn't escape
+                    if resolved_link.startswith(dest_path):
+                        # Additional check: ensure the link target doesn't point outside
+                        # by checking if the normalized path starts with dest_path
+                        pass
+                
+                # Check for hard links
+                if member.islnk():
+                    # Hard link target is stored in linkname
+                    link_target = member.linkname
+                    resolved_link = os.path.normpath(os.path.join(dest_path, link_target))
+                    
+                    if not resolved_link.startswith(dest_path):
+                        return False
+            
+            # If validation passes, extract the archive
+            for member in tar:
+                if member.isdir():
+                    member.dir_name = True
+                else:
+                    member.dir_name = False
+                
+                if member.isdir():
+                    member.extract(dest_path, member.name)
+                else:
+                    member.extract(dest_path, member.name)
+            
+            return True
+            
+    except Exception as e:
+        return False

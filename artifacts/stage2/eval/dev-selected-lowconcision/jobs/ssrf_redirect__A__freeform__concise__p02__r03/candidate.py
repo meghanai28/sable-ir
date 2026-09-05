@@ -1,0 +1,77 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import urllib.parse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security constraints.
+    
+    Args:
+        url: The URL to fetch (untrusted input).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The body of the HTTP response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (wrong port, untrusted host, etc.).
+    """
+    # Parse the URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Extract hostname and port
+    hostname = parsed_url.hostname
+    port = parsed_url.port
+    
+    # Validate hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Resolve hostname to IP
+    try:
+        ip_addresses = resolve_host(hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # Determine default ports
+    default_port = None
+    scheme = parsed_url.scheme.lower()
+    
+    if scheme == 'http':
+        default_port = 80
+    elif scheme == 'https':
+        default_port = 443
+    else:
+        raise ValueError(f"Unsupported scheme: {scheme}")
+    
+    # Check if port is the default port
+    if port is None:
+        port = default_port
+    
+    if port != default_port:
+        raise ValueError(f"Port {port} is not allowed. Only default ports for {scheme} are allowed.")
+    
+    # Build the request URL
+    request_url = f"{scheme}://{hostname}:{port}"
+    if parsed_url.query:
+        request_url += f"?{parsed_url.query}"
+    
+    # Make the request using the transport
+    try:
+        response = transport(request_url)
+    except Exception as e:
+        raise ValueError(f"Request failed: {e}")
+    
+    # Check status code
+    status_code = response[0]
+    if status_code != 200:
+        raise ValueError(f"Status code is not 200: {status_code}")
+    
+    # Return the body
+    return response[2]

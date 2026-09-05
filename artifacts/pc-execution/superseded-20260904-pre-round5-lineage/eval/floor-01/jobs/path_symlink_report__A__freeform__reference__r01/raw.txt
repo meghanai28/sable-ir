@@ -1,0 +1,90 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Security measures:
+    - Rejects absolute paths.
+    - Normalizes paths to prevent traversal via '..'.
+    - Ensures the resolved path stays within reports_root.
+    - Validates that no user-selected path component is a symbolic link.
+    - Raises FileNotFoundError if the file does not exist.
+    - Raises ValueError if validation fails.
+    """
+    # Reject absolute paths
+    if os.path.isabs(filename):
+        raise ValueError("Absolute paths are not allowed.")
+    
+    # Resolve the root directory
+    root_dir = os.path.abspath(reports_root)
+    
+    # Construct the target path without resolving symlinks yet
+    target_path = os.path.normpath(os.path.join(root_dir, filename))
+    
+    # Ensure the target path is within the root directory
+    # We use os.path.commonpath to check containment, but we must be careful with trailing slashes
+    # A safer approach: resolve the root and ensure the target starts with the root + separator
+    resolved_root = os.path.abspath(root_dir)
+    
+    # Normalize the target path to remove redundant separators and resolve . but not symlinks
+    # However, we need to check if it escapes before any symlink resolution
+    # We can use os.path.realpath on the target to see if it escapes, but the spec says "normalize... and raise if escapes"
+    # Let's do a strict containment check on the normalized path string relative to the root
+    
+    # Check if the target starts with the root (handling potential trailing slash in root_dir)
+    # We strip the trailing slash from root_dir for comparison to be safe
+    root_dir_stripped = resolved_root.rstrip(os.sep)
+    target_stripped = target_path.rstrip(os.sep)
+    
+    if not (target_stripped.startswith(root_dir_stripped + os.sep) or target_stripped == root_dir_stripped):
+        raise ValueError("Path escapes the reports_root directory.")
+    
+    # Now, walk the user-selected path components and check for symlinks
+    # We need to resolve the path step-by-step to check each component
+    # Actually, the spec says "walk each user-selected path component beneath the resolved reports_root"
+    # This implies we should check every part of the path from root to the target.
+    
+    # Split the filename into components if it has separators, or just treat the whole thing if it's a single file
+    # The input filename might contain path separators if the user tries to traverse
+    parts = [p for p in filename.split(os.sep) if p]
+    
+    current_path = root_dir
+    
+    for part in parts:
+        # Check if the current path (including the part) is a symlink
+        next_path = os.path.join(current_path, part)
+        if os.path.islink(next_path):
+            raise ValueError("Symbolic link detected in path.")
+        
+        # Also check if the directory exists and is a symlink (though islink covers the file/directory itself)
+        # We need to ensure we don't follow symlinks in the directory traversal
+        # The spec says "raise ValueError if any component is a symbolic link"
+        # This usually implies checking the directory entry itself
+        
+        # Resolve the next step to check for symlinks in the chain
+        # We must not resolve the final target yet, just the components
+        # But to check if a component is a symlink, we check the path after joining
+        
+        # Re-check: "walk each user-selected path component beneath the resolved reports_root"
+        # This suggests we iterate through the parts.
+        
+        # Check if the directory exists and is a symlink
+        if os.path.isdir(next_path):
+            if os.path.islink(next_path):
+                raise ValueError("Symbolic link detected in path.")
+        elif os.path.isfile(next_path):
+            # If it's a file, we can stop here if we are at the end, but we are iterating parts
+            # If the filename has no separators, we check the final file
+            pass
+        
+        current_path = next_path
+    
+    # Final check on the target file itself before opening
+    if not os.path.isfile(target_path):
+        raise FileNotFoundError(f"The file {filename} does not exist.")
+    
+    # Read the file
+    with open(target_path, 'r', encoding='utf-8') as f:
+        return f.read()

@@ -1,0 +1,59 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text content from a URL.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function(url) -> (status, headers, body) tuple.
+        resolve_host: Function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        str: Body content for a 200 status code.
+    
+    Raises:
+        ValueError: If the scheme is not HTTP or HTTPS.
+    """
+    import socket
+    import urllib.parse
+    
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    hostname = parsed.hostname
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError(f"Only HTTP and HTTPS schemes are allowed, got {scheme}")
+    
+    # Resolve host
+    if not hostname:
+        raise ValueError("URL must have a hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Could not resolve host: {hostname}")
+    
+    # Determine port
+    port = parsed.port
+    if port is None:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+    else:
+        # Ensure we're using the default port for HTTP/HTTPS
+        if scheme == 'http' and port != 80:
+            raise ValueError(f"HTTP requests must use port 80, got {port}")
+        if scheme == 'https' and port != 443:
+            raise ValueError(f"HTTPS requests must use port 443, got {port}")
+    
+    # Build the request URL with explicit port if needed
+    request_url = parsed._replace(port=port).geturl()
+    
+    # Call transport
+    status, headers, body = transport(request_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    return body

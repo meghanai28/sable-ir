@@ -1,0 +1,98 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The requested filename (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the validated report.
+    
+    Raises:
+        ValueError: If the requested path escapes reports_root or if it's a symbolic link pointing outside.
+        FileNotFoundError: If the file does not exist or is not an ordinary file.
+    """
+    # Construct the absolute path for the root directory
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename to an absolute path, handling .. and symlinks
+    requested_path = os.path.abspath(filename)
+    
+    # Check if the resolved path starts with the root directory (prevents .. escape)
+    # We use os.path.commonpath or check prefix to ensure containment
+    # A safe check is to ensure the resolved path is within the root
+    if not resolved_path_within_root(resolved_root, requested_path):
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Check if the path is a symbolic link and resolve its target
+    # If it's a symlink, we must ensure its resolved target is also within reports_root
+    if os.path.islink(requested_path):
+        resolved_target = os.path.realpath(requested_path)
+        if not resolved_target_within_root(resolved_root, resolved_target):
+            raise ValueError("Access denied: symbolic link escapes reports_root")
+    else:
+        resolved_target = requested_path
+    
+    # Final check: ensure the target is within the root (covers both regular files and resolved symlinks)
+    if not resolved_target_within_root(resolved_root, resolved_target):
+        raise ValueError("Access denied: path escapes reports_root")
+    
+    # Check if the file exists and is an ordinary file (not a directory)
+    if not os.path.isfile(resolved_target):
+        raise FileNotFoundError(f"File not found: {resolved_target}")
+    
+    # Read and return the UTF-8 content
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()
+
+def resolved_path_within_root(root: str, path: str) -> bool:
+    """Check if the resolved path is within the root directory."""
+    # Normalize both paths to handle any trailing slashes or other quirks
+    # We compare the common path. If the common path is the root or a parent of root, it's safe.
+    # Actually, a simpler and robust way is to check if the path starts with the root + separator.
+    # However, to be absolutely safe against edge cases like root="/." or similar, we normalize.
+    normalized_root = os.path.normpath(root)
+    normalized_path = os.path.normpath(path)
+    
+    # Ensure the path is within the root
+    # If normalized_path starts with normalized_root + os.sep, it's inside.
+    # If normalized_path == normalized_root, it's inside (the root itself).
+    # But typically filenames are relative or child paths.
+    # We also need to handle cases where root might be a prefix but not a directory separator (e.g. root="/home", path="/home/user")
+    # The safest check is: os.path.commonpath([normalized_root, normalized_path]) == normalized_root
+    # However, if root is a directory, commonpath should be root.
+    
+    # A more robust check:
+    # 1. Normalize both.
+    # 2. Check if the path is exactly the root or starts with root + separator.
+    # 3. Handle cases where root is not a directory (though the problem implies it is).
+    
+    # Let's use the prefix check carefully.
+    # If normalized_path == normalized_root, it's valid (though unlikely for a filename).
+    # If normalized_path starts with normalized_root + os.sep, it's valid.
+    
+    if normalized_path == normalized_root:
+        return True
+    
+    # Check if normalized_path starts with normalized_root followed by a separator
+    # This handles both relative and absolute paths correctly when normalized
+    if normalized_path.startswith(normalized_root + os.sep):
+        return True
+    
+    return False
+
+def resolved_target_within_root(root: str, target: str) -> bool:
+    """Check if the resolved target (for symlinks or direct files) is within the root."""
+    normalized_root = os.path.normpath(root)
+    normalized_target = os.path.normpath(target)
+    
+    if normalized_target == normalized_root:
+        return True
+    
+    if normalized_target.startswith(normalized_root + os.sep):
+        return True
+    
+    return False

@@ -1,0 +1,70 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        No archive members are written outside dest_path on failure.
+    """
+    # Ensure dest_path exists and is a directory
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Open the tar archive
+    try:
+        tar = tarfile.open(tar_path, 'r:*')
+    except (tarfile.TarError, OSError, ValueError):
+        return False
+    
+    # Validate all members before extracting
+    try:
+        for member in tar.getmembers():
+            # Get the full path of the member relative to dest_path
+            member_path = os.path.join(dest_path, member.name)
+            
+            # Resolve the actual path if it's a symlink or hardlink target later
+            # But first check if the name itself escapes dest_path
+            # We need to normalize paths to handle .. and absolute paths
+            real_member_path = os.path.normpath(member_path)
+            
+            # Check for absolute paths or path traversal
+            if real_member_path.startswith(os.path.abspath(dest_path)) or real_member_path == dest_path:
+                # This is safe relative to dest_path, but we must ensure it doesn't go outside
+                # Actually, we need to check if the resolved path is within dest_path
+                if not real_member_path.startswith(os.path.abspath(dest_path)):
+                    raise ValueError(f"Path traversal detected: {member.name}")
+            else:
+                raise ValueError(f"Path traversal detected: {member.name}")
+            
+            # Reject symbolic links and hard links
+            if member.issym() or member.islnk():
+                raise ValueError(f"Symbolic link or hard link detected: {member.name}")
+            
+            # Additional check: ensure the member doesn't try to escape via ..
+            # Normalize the path and check it's within dest_path
+            normalized = os.path.normpath(os.path.join(dest_path, member.name))
+            dest_abspath = os.path.abspath(dest_path)
+            if not normalized.startswith(dest_abspath) or normalized == dest_path:
+                raise ValueError(f"Path escapes destination: {member.name}")
+                
+    except (ValueError, OSError):
+        # Clean up if anything was created (though we shouldn't have created anything yet)
+        return False
+    
+    # Extract the archive
+    try:
+        tar.extractall(path=dest_path)
+    except (tarfile.TarError, OSError):
+        return False
+    
+    return True

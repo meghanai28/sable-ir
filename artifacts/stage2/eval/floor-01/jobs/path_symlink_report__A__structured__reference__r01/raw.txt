@@ -1,0 +1,52 @@
+import os
+import stat
+import sys
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed.
+    """
+    # Normalize the root to an absolute path to prevent directory traversal
+    root_dir = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename to a canonical path to detect symlinks and traversal
+    target_path = os.path.abspath(filename)
+    
+    # Ensure the target is within the root directory
+    if not target_path.startswith(os.path.normcase(root_dir) + os.sep) and target_path != root_dir:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check for symbolic links at any level of the path components
+    # We need to walk the path components to ensure no symlink exists that points outside or is malicious
+    parts = os.path.normpath(target_path).split(os.sep)
+    current_path = root_dir
+    
+    for part in parts:
+        if part == '' or part == '.':
+            continue
+        current_path = os.path.join(current_path, part)
+        
+        # Check if the current path is a symlink
+        if os.path.islink(current_path):
+            raise ValueError("Symbolic link detected in path")
+        
+        # Check if the parent directory exists and is a symlink
+        parent = os.path.dirname(current_path)
+        if parent != root_dir and parent != os.path.join(root_dir, *parts[:parts.index(part)]):
+            # This check is redundant with the above loop but ensures safety if root_dir itself is a symlink
+            pass
+            
+    # Final check to ensure the resolved path is within root
+    resolved_path = os.path.abspath(filename)
+    if not resolved_path.startswith(os.path.normcase(root_dir) + os.sep) and resolved_path != root_dir:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is a regular file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"File not found: {resolved_path}")
+    
+    # Read the file content
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

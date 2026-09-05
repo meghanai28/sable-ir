@@ -1,0 +1,80 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+from typing import Tuple, Any
+
+def _validate_ip(ip: str) -> None:
+    """Validate that the resolved IP address is a valid IPv4 or IPv6 string."""
+    try:
+        socket.inet_aton(ip)  # IPv4
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)  # IPv6
+        except socket.error:
+            raise ValueError(f"Invalid IP address: {ip}")
+
+def fetch_text(url: str, transport: Any, resolve_host: Any) -> str:
+    """
+    Fetch text from a URL using the provided transport.
+    
+    Args:
+        url: The URL to fetch from.
+        transport: A callable that accepts a URL and returns (status, headers, body).
+        resolve_host: A callable that accepts a hostname and returns textual IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, status is not 200, or IP is invalid.
+    """
+    # Parse the URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    if scheme not in ['http', 'https']:
+        raise ValueError(f"Unsupported scheme: {scheme}")
+    
+    # Determine the default port
+    default_port = 80 if scheme == 'http' else 443
+    
+    # If no port specified, use default; if specified, ensure it matches default
+    if port is None:
+        port = default_port
+    elif port != default_port:
+        raise ValueError(f"Non-default port {port} not allowed; expected {default_port}")
+    
+    # Resolve hostname
+    hostname = parsed_url.hostname
+    if hostname is None:
+        raise ValueError("No hostname in URL")
+    
+    resolved_ips = resolve_host(hostname)
+    if not resolved_ips:
+        raise ValueError(f"No IP addresses resolved for {hostname}")
+    
+    # Validate IP addresses
+    for ip in resolved_ips:
+        _validate_ip(ip)
+    
+    # Prepare the request URL (reconstruct with scheme and port)
+    request_url = f"{scheme}://{hostname}:{port}{parsed_url.path}"
+    if parsed_url.query:
+        request_url += f"?{parsed_url.query}"
+    
+    # Make the request using the transport
+    status, headers, body = transport(request_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Decode body to string if possible (assuming bytes)
+    if isinstance(body, bytes):
+        body = body.decode('utf-8')
+    
+    return body

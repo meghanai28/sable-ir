@@ -1,0 +1,57 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport: callable, resolve_host: callable) -> str:
+    # Parse the URL to extract scheme, host, port, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    port = parsed.port
+    host = parsed.hostname
+    path = parsed.path
+    query = parsed.query
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Validate port
+    if port is not None:
+        if scheme == 'http' and port != 80:
+            raise ValueError("HTTP must use port 80.")
+        if scheme == 'https' and port != 443:
+            raise ValueError("HTTPS must use port 443.")
+    else:
+        if scheme == 'http':
+            port = 80
+        elif scheme == 'https':
+            port = 443
+    
+    # Resolve the host to get IP addresses
+    ip_addresses = resolve_host(host)
+    if not ip_addresses:
+        raise ValueError("Could not resolve host.")
+    
+    # Use the first valid IP address for connection
+    resolved_host = ip_addresses[0]
+    
+    # Construct the full URL with the resolved host and port
+    full_url = f"{scheme}://{resolved_host}:{port}{path}"
+    if query:
+        full_url += f"?{query}"
+    
+    # Make the request using the supplied transport
+    try:
+        response = transport(full_url)
+    except Exception as e:
+        raise ValueError(f"Request failed: {e}")
+    
+    status, headers, body = response
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Status code {status} is not 200.")
+    
+    # Return the body
+    return body

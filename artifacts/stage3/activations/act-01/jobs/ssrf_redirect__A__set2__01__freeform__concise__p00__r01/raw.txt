@@ -1,0 +1,48 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    path = parsed.path
+    
+    # Validate scheme (HTTP or HTTPS on default port)
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Determine the default port
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Resolve the hostname to IP address
+    resolved_ips = resolve_host(netloc)
+    if not resolved_ips:
+        raise ValueError("resolve_host returned no IP address")
+    
+    # Take the first resolved IP
+    resolved_ip = resolved_ips[0]
+    
+    # Check if the resolved hostname starts with the same host component of url
+    # We need to ensure that the netloc matches the resolved IP's hostname prefix
+    # This prevents DNS rebinding or host confusion
+    if not resolved_ip.startswith(netloc.split(':')[0]):
+        raise ValueError("Resolved hostname does not start with the same host component of url")
+    
+    # Construct the full URL with the resolved IP
+    full_url = f"{scheme}://{resolved_ip}{path}"
+    
+    # Make the HTTP request
+    try:
+        with urllib.request.urlopen(full_url) as response:
+            status = int(response.status)
+            body = response.read().decode('utf-8')
+            
+            # Check status code
+            if status != 200:
+                raise ValueError(f"HTTP status {status} is not 200")
+            
+            return body
+    except Exception as e:
+        raise ValueError(f"Request failed: {str(e)}")

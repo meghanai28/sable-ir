@@ -1,0 +1,95 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate scheme
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+
+    # Resolve hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("No IP address found for hostname")
+
+    # Determine the target port based on scheme
+    target_port = 80 if scheme == 'http' else 443
+
+    # Parse the initial URL to check for credentials and host info
+    initial_host = parsed.hostname
+    initial_port = parsed.port
+    initial_credentials = parsed.username is not None or parsed.password is not None
+
+    # Build the base request URL for the first fetch
+    # We need to handle the path, query, and fragment
+    base_url = f"{parsed.scheme}://{parsed.hostname}"
+    if initial_port:
+        base_url += f":{initial_port}"
+    if parsed.path:
+        base_url += parsed.path
+    if parsed.query:
+        base_url += f"?{parsed.query}"
+    if parsed.fragment:
+        base_url += f"#{parsed.fragment}"
+
+    current_url = base_url
+    redirect_count = 0
+
+    while redirect_count <= 5:
+        # Create the request
+        req = urllib.request.Request(current_url)
+        
+        try:
+            response = urllib.request.urlopen(req, timeout=10)
+        except urllib.error.HTTPError as e:
+            if e.code == 301 or e.code == 302:
+                # Handle redirect
+                redirect_location = e.headers.get('Location')
+                if not redirect_location:
+                    raise ValueError("Redirect without Location header")
+                
+                # Resolve the new URL
+                new_parsed = urllib.parse.urlparse(redirect_location)
+                
+                # Check if redirect is absolute
+                if new_parsed.scheme:
+                    raise ValueError("Redirect to absolute URL is disallowed")
+                
+                # Check if scheme, port, or credentials changed
+                if new_parsed.scheme != parsed.scheme:
+                    raise ValueError("Redirect to different scheme is disallowed")
+                
+                if initial_port and new_parsed.port != initial_port:
+                    raise ValueError("Redirect to different port is disallowed")
+                
+                # Check for different host (public address check)
+                if new_parsed.hostname != initial_host:
+                    raise ValueError("Redirect to different host is disallowed")
+                
+                # Update current URL
+                current_url = redirect_location
+                redirect_count += 1
+                continue
+            else:
+                raise ValueError(f"Unexpected HTTP error: {e.code}")
+        
+        except urllib.error.URLError as e:
+            raise ValueError(f"Connection error: {e.reason}")
+
+        status = response.status
+        headers = response.headers
+        body = response.read().decode('utf-8')
+
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+
+        return body
+
+    raise ValueError("Too many redirects")

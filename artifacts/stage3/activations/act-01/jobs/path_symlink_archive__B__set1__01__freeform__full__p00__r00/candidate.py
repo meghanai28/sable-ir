@@ -1,0 +1,122 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def _is_within_root(path: str) -> bool:
+    """Check if a path is within the root filesystem."""
+    try:
+        real_root = os.path.realpath('.')
+        real_path = os.path.realpath(path)
+        return real_path.startswith(real_root) or real_path == real_root
+    except (ValueError, OSError):
+        return False
+
+def _get_safe_base(dest_path: str) -> str:
+    """Normalize dest_path to an absolute path within the root, removing .. components."""
+    # Convert to absolute if relative
+    if not os.path.isabs(dest_path):
+        dest_path = os.path.abspath(dest_path)
+    
+    # Resolve to real path to handle symlinks and ..
+    real_dest = os.path.realpath(dest_path)
+    
+    # Ensure it's within root
+    if not _is_within_root(real_dest):
+        raise ValueError(f"Destination path escapes root: {dest_path}")
+    
+    return real_dest
+
+def _is_member_safe(member: tarfile.TarInfo, dest_path: str) -> bool:
+    """
+    Check if extracting a tar member to dest_path is safe.
+    Validates name, type, and link targets.
+    """
+    name = member.name
+    
+    # Skip directories (they are created automatically during extraction)
+    if member.isdir():
+        return True
+    
+    # Skip device files, FIFOs, etc.
+    if member.type not in ('reg', 'file'):
+        # For symlinks, we need to check the link target
+        if member.type == 'lnk':
+            # Link type (GNU tar)
+            linkname = member.linkname
+            # Resolve the link target relative to the member's directory
+            if os.path.isabs(linkname):
+                target = linkname
+            else:
+                # Resolve relative to the directory containing the member
+                dir_path = os.path.dirname(os.path.join(dest_path, name))
+                target = os.path.normpath(os.path.join(dir_path, linkname))
+            
+            # Check if target is within dest_path
+            if not _is_within_root(target):
+                return False
+            if not target.startswith(os.path.realpath(dest_path)):
+                return False
+            return True
+        elif member.type == 'chr' or member.type == 'blk' or member.type == 'dir':
+            # Skip or handle based on policy, but generally we don't extract these as files
+            return True
+        else:
+            return False
+    
+    # Regular file
+    if os.path.isabs(name):
+        target = name
+    else:
+        # Resolve relative to dest_path
+        target = os.path.normpath(os.path.join(dest_path, name))
+    
+    # Check if target is within dest_path
+    if not _is_within_root(target):
+        return False
+    if not target.startswith(os.path.realpath(dest_path)):
+        return False
+    
+    return True
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    Returns True on complete success, False on any failure or escape attempt.
+    """
+    try:
+        # Validate and normalize destination
+        safe_dest = _get_safe_base(dest_path)
+        
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of all members
+            members = tar.getnames()
+            
+            # First pass: validate all members and links
+            for member in members:
+                if not _is_member_safe(tar.getmember(member), safe_dest):
+                    return False
+            
+            # Second pass: extract members
+            # We need to be careful about directory creation. 
+            # We will extract files first, then directories, or handle dirs carefully.
+            # Standard approach: extract everything but validate during extraction.
+            # However, to be safe, we extract in a way that doesn't create outside dirs.
+            
+            # Sort members to ensure directories are created before files if needed,
+            # but tarfile handles this naturally if we extract in order.
+            # Actually, we should extract files first, then directories to avoid issues,
+            # but tarfile's default behavior creates dirs as needed.
+            # Let's iterate and extract, relying on the fact that we validated paths.
+            
+            for member in members:
+                try:
+                    tar.extract(member, safe_dest)
+                except Exception:
+                    return False
+            
+            return True
+            
+    except Exception:
+        return False

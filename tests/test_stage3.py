@@ -107,6 +107,29 @@ def _complete_paraphrase_audit(root: Path, config_path: Path) -> None:
         }
     )
     path.write_text(filled.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    # Append-only human sign-off binding the exact audited bytes; the audit's own reviewer field
+    # is untouched, so preliminary provenance survives.
+    attestation = path.with_name(path.name.replace(".json", ".human-attestation.json"))
+    paraphrases = root / load_stage3_config(config_path).policy_paraphrases_path
+    attestation.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "reviewer": "test-human",
+                "reviewed_at_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "source_audit_path": load_stage3_config(config_path).paraphrase_audit_path,
+                "source_audit_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "bound_artifact_path": load_stage3_config(config_path).policy_paraphrases_path,
+                "bound_artifact_sha256": hashlib.sha256(paraphrases.read_bytes()).hexdigest(),
+                "decision": "approved_without_changes",
+                "statement": "test attestation",
+                "preliminary_reviewer": "test-reviewer",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     assert validate_stage3_paraphrase_audit(config_path, root).ready_for_activations
 
 
@@ -196,8 +219,11 @@ def _write_stage2_handoff(
         planner_latency_seconds=0.1,
         renderer_latency_seconds=0.1,
     )
-    floor_path = root / "artifacts" / "stage2" / "eval" / "floor-01" / "report.json"
-    floor_path.parent.mkdir(parents=True)
+    # Derive the path from the Stage 3 config so a rebind (e.g. to a corrected report) cannot
+    # silently leave this fixture pointing at a stale file.
+    stage3_config = load_stage3_config(root / "config/stage3.toml")
+    floor_path = root / stage3_config.stage2_model_floor_report_path
+    floor_path.parent.mkdir(parents=True, exist_ok=True)
     floor_path.write_text(floor.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
 
@@ -330,7 +356,7 @@ def _write_fake_evaluations(root: Path, manifest_path: Path) -> None:
         path.write_text(artifact.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
 
-def _complete_plan_audit(path: Path) -> None:
+def _complete_plan_audit(path: Path, reviewer: str = "test-reviewer") -> None:
     audit = Stage3PlanAudit.model_validate_json(path.read_text(encoding="utf-8"))
     rows = []
     for row in audit.rows:
@@ -351,13 +377,16 @@ def _complete_plan_audit(path: Path) -> None:
                 }
             )
         )
-    filled = audit.model_copy(
-        update={
-            "rows": tuple(rows),
-            "reviewer": "test-reviewer",
-            "completed_at": datetime.now(UTC).isoformat(),
-        }
-    )
+    update: dict[str, object] = {
+        "rows": tuple(rows),
+        "reviewer": reviewer,
+        "completed_at": datetime.now(UTC).isoformat(),
+    }
+    if audit.kind == "double":
+        # A double audit must declare independent provenance or assembly refuses to compute kappa.
+        update["reviewer_type"] = "human"
+        update["reviewer_model"] = None
+    filled = audit.model_copy(update=update)
     path.write_text(filled.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
 
@@ -476,13 +505,36 @@ class TestActivationTrack:
         prepare_stage3_plan_audit(run_dir / "manifest.json", root, primary_path, kind="primary")
         prepare_stage3_plan_audit(run_dir / "manifest.json", root, double_path, kind="double")
         _complete_plan_audit(primary_path)
-        _complete_plan_audit(double_path)
+        _complete_plan_audit(double_path, reviewer="second-independent-reviewer")
         dataset_path = run_dir / "dataset.json"
         dataset = assemble_stage3_dataset(
             run_dir / "manifest.json", root, primary_path, double_path, dataset_path
         )
         assert dataset.complete
         assert dataset.agreement.reliable
+
+        # Independence is enforced on the real assemble path: a double packet naming the primary
+        # reviewer is a re-read, and one with no declared reviewer_type cannot support a kappa.
+        double_model = Stage3PlanAudit.model_validate_json(
+            double_path.read_text(encoding="utf-8")
+        )
+        for update, expected in (
+            ({"reviewer": "test-reviewer"}, "same reviewer"),
+            ({"reviewer_type": None}, "reviewer_type"),
+        ):
+            bad_path = run_dir / f"plan-audit.double.bad-{expected.split()[0]}.json"
+            bad_path.write_text(
+                double_model.model_copy(update=update).model_dump_json(indent=2) + "\n",
+                encoding="utf-8",
+            )
+            with pytest.raises(Stage3Error, match=expected):
+                assemble_stage3_dataset(
+                    run_dir / "manifest.json",
+                    root,
+                    primary_path,
+                    bad_path,
+                    run_dir / f"dataset-{expected.split()[0]}.json",
+                )
         assert dataset.quadrant_counts.get("faithful_success", 0) > 0
         assert dataset.quadrant_counts.get("hidden_use", 0) > 0
         # Double audit covers every held-out plan.

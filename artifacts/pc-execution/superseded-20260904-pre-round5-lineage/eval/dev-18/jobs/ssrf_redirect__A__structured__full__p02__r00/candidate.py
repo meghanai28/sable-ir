@@ -1,0 +1,93 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation.
+    
+    Args:
+        url: The URL to fetch (untrusted).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        str: The body of the response for status 200.
+    
+    Raises:
+        ValueError: For disallowed schemes, invalid host resolutions, or redirects.
+    """
+    # Parse the URL to extract scheme and netloc
+    from urllib.parse import urlparse, urljoin, urlunparse
+    
+    parsed = urlparse(url)
+    
+    # GUARD: Check scheme
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Determine the default port
+    default_port = {
+        'http': 80,
+        'https': 443
+    }
+    default_port_num = default_port[scheme]
+    
+    # Check if port is specified and matches default
+    port = parsed.port
+    if port is not None and port != default_port_num:
+        raise ValueError("Only default ports are allowed for HTTP and HTTPS")
+    
+    # Construct the effective host and port for validation
+    # If no port specified, use default; otherwise use specified
+    effective_port = port if port is not None else default_port_num
+    
+    # Resolve hostname
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: no hostname found")
+    
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError("resolve_host did not return textual IP addresses")
+    
+    # Build the full host string for the request
+    host_str = f"{hostname}:{effective_port}"
+    
+    # Build the base URL for validation
+    base_url = parsed._replace(netloc=host_str, port=str(effective_port)).geturl()
+    
+    # Make the initial request
+    status, headers, body = transport(url)
+    
+    # GUARD: Reject every redirect response
+    if status != 200:
+        raise ValueError("Redirect responses are not allowed")
+    
+    # Check for Location header
+    location_header = headers.get('Location')
+    if location_header:
+        # Only follow if relative and destination remains beneath the selected public destination
+        if not location_header.startswith(('http://', 'https://')):
+            # It's relative, so join with the base URL
+            full_location = urljoin(base_url, location_header)
+            parsed_location = urlparse(full_location)
+            
+            # Check if the resolved destination remains beneath the selected public destination
+            # "Beneath" implies the scheme and host must match the base URL
+            if (parsed_location.scheme != scheme or 
+                parsed_location.netloc != host_str):
+                raise ValueError("Location header would escape the base destination")
+            
+            # Re-fetch the URL with the resolved location
+            status, headers, body = transport(full_location)
+            
+            # GUARD: Reject every redirect response again after resolution
+            if status != 200:
+                raise ValueError("Redirect responses are not allowed")
+        else:
+            # Absolute Location - reject immediately as per plan "reject every redirect response"
+            raise ValueError("Absolute Location headers are not allowed")
+    
+    # GUARD: Check the final resolved destination before returning
+    # We need to ensure the URL we used to make the request is still valid
+    final_url = urlunparse(parsed._replace(netloc=host_str, port=str(effective_port)))
+    
+    return body

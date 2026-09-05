@@ -1,0 +1,127 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation and no redirect following.
+    
+    Args:
+        url (str): The URL to fetch (absolute or relative).
+        transport (callable): A function taking a URL and returning (status, headers, body).
+        resolve_host (callable): A function taking a hostname and returning a list of IP addresses.
+    
+    Returns:
+        str: The body of the response if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., non-HTTP/HTTPS, no IPs, non-200 status).
+    """
+    # Determine the scheme and port from the URL
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError("Only HTTP and HTTPS are allowed.")
+    
+    scheme = url.split('://')[0]
+    
+    # Determine the default port
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Parse the URL to extract hostname, path, and query
+    from urllib.parse import urlparse, parse_qs
+    
+    # Handle both absolute and relative URLs
+    if url.startswith(('http://', 'https://')):
+        parsed = urlparse(url)
+    else:
+        # For relative URLs, we need to construct a full URL with the scheme and port
+        # We assume the base URL is http://example.com for relative resolution if not provided
+        # However, the plan says "treat it as untrusted input", so we must resolve the hostname
+        # If it's relative, we can't resolve it without a base. Let's assume the caller provides a full URL or we treat the input as the base.
+        # Re-reading the plan: "The caller-supplied url may be absolute or relative".
+        # If relative, we need a base. Since no base is provided, we must assume the input is meant to be used as-is or we raise an error.
+        # But the plan says "resolve the hostname to its IP address(es) before creating the connection".
+        # If the URL is relative, there is no hostname to resolve. This is a contradiction.
+        # Let's assume the URL is absolute for the purpose of this implementation, or we raise an error for relative.
+        # However, to be safe, let's try to parse it. If it's relative, we can't proceed without a base.
+        # Given the constraints, we will assume the URL is absolute or we raise an error.
+        # But the plan says "Accept HTTP or HTTPS on its default port".
+        # Let's assume the URL is absolute. If it's relative, we can't resolve the hostname.
+        # We will raise an error for relative URLs.
+        raise ValueError("URL must be absolute.")
+    
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("Invalid URL: No hostname found.")
+    
+    # Resolve the hostname
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError("resolve_host returned no IP addresses.")
+    
+    # Check if the hostname is public (not localhost, not private, not loopback, etc.)
+    # The plan says "raise ValueError if it is not public".
+    # We need to define what "public" means. Typically, it means not 127.0.0.1, ::1, etc.
+    # We will use a simple check: if the IP starts with '127', '::1', '10', '192.168', '172.16-31', etc., it's private.
+    # However, the plan says "check the initial public HTTP destination".
+    # We will check the resolved IP.
+    
+    # Check for private IPs
+    private_ips = [
+        '127.0.0.1', '127.0.0.0/8',
+        '::1', '::ffff:127.0.0.1',
+        '10.0.0.0/8',
+        '192.168.0.0/16',
+        '172.16.0.0/12',
+        '0.0.0.0/8',
+        '224.0.0.0/4',
+        '169.254.0.0/16',
+        'fc00::/7',
+        'fe80::/10'
+    ]
+    
+    # Normalize IPs to check against private ranges
+    def is_private_ip(ip):
+        if ip.startswith('::'):
+            # IPv6
+            if ip in ['::1', 'fc00::', 'fe80::']:
+                return True
+            # Check for IPv4-mapped IPv6
+            if '::ffff:' in ip:
+                ipv4_part = ip.split('::ffff:')[1]
+                if ipv4_part.startswith('127.'):
+                    return True
+        elif ip.startswith('0.'):
+            return True
+        elif ip.startswith('10.'):
+            return True
+        elif ip.startswith('192.168.'):
+            return True
+        elif ip.startswith('172.'):
+            # 172.16.0.0 to 172.31.255.255
+            try:
+                second_octet = int(ip.split('.')[1])
+                if 16 <= second_octet <= 31:
+                    return True
+            except ValueError:
+                pass
+        elif ip.startswith('224.'):
+            return True
+        elif ip.startswith('169.254.'):
+            return True
+        return False
+    
+    for ip in ips:
+        if is_private_ip(ip):
+            raise ValueError("Non-public IP address detected.")
+    
+    # Construct the full URL with the default port
+    if parsed.port:
+        full_url = f"{scheme}://{hostname}:{parsed.port}{parsed.path}?{parsed.query}"
+    else:
+        full_url = f"{scheme}://{hostname}{parsed.path}?{parsed.query}"
+    
+    # Make the request
+    status, headers, body = transport(full_url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError("Request status is not 200.")
+    
+    # Return the body
+    return body

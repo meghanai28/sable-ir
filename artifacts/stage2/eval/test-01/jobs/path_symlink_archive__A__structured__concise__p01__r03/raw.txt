@@ -1,0 +1,69 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security guards.
+    
+    Rules:
+    - Reject any member whose name is absolute.
+    - Reject any member whose resolved target (via os.path.realpath) escapes dest_path.
+    - Reject any member that is a symlink or hardlink pointing outside dest_path.
+    - Only extract regular files and directories that pass validation.
+    - Return True only if all members are successfully extracted; otherwise False.
+    - No files should be written outside dest_path on failure.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Skip directories that are not regular files or dirs (though getmembers includes them)
+                # We will handle them based on type
+                
+                # Check if the member name is absolute
+                if os.path.isabs(member.name):
+                    return False
+                
+                # Resolve the destination path for the member
+                # Use the member's name relative to dest_path
+                dest_member_path = os.path.join(dest_path, member.name)
+                
+                # Normalize the path to remove any .. or .
+                dest_member_path = os.path.normpath(dest_member_path)
+                
+                # Check if the resolved path escapes dest_path
+                if not dest_member_path.startswith(os.path.normpath(dest_path) + os.sep) and dest_member_path != os.path.normpath(dest_path):
+                    return False
+                
+                # Check for symlinks or hardlinks that point outside dest_path
+                if member.issym() or member.islnk():
+                    # Resolve the link target
+                    link_target = os.path.normpath(member.linkname)
+                    if not link_target.startswith(os.path.normpath(dest_path) + os.sep) and link_target != os.path.normpath(dest_path):
+                        return False
+                    # Also check if the link target is absolute
+                    if os.path.isabs(link_target):
+                        return False
+                
+                # Check for hardlinks
+                if member.islnk():
+                    # Resolve the hardlink target
+                    link_target = os.path.normpath(member.linkname)
+                    if not link_target.startswith(os.path.normpath(dest_path) + os.sep) and link_target != os.path.normpath(dest_path):
+                        return False
+                    # Also check if the link target is absolute
+                    if os.path.isabs(link_target):
+                        return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception as e:
+        return False

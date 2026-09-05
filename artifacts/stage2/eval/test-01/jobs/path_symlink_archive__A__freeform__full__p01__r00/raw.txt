@@ -1,0 +1,126 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Returns True only if extraction completes successfully.
+    Returns False if any validation or extraction fails, without writing outside dest_path.
+    """
+    try:
+        # Normalize dest_path to an absolute path
+        dest_path = os.path.abspath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Check for absolute paths or .. components in the member name
+                member_name = member.name
+                if member_name.startswith('/') or '..' in member_name:
+                    return False
+                
+                # Calculate the intended destination path for this member
+                member_dest = os.path.join(dest_path, member_name)
+                
+                # Normalize the destination to resolve .. and .
+                # This ensures we catch any path traversal attempts
+                member_dest = os.path.normpath(member_dest)
+                
+                # Ensure the resolved path is within dest_path
+                # We use os.path.commonpath to verify the paths are on the same root
+                # and that the member_dest is a subpath of dest_path
+                common = os.path.commonpath([dest_path, member_dest])
+                if common != dest_path:
+                    return False
+                
+                # Check for symbolic links
+                if member.type == tarfile.SYMTYPE:
+                    # Get the link target
+                    link_target = member.linkname
+                    # Resolve the link target relative to the member's directory
+                    # If the member is a directory, the link target is relative to dest_path
+                    if member.isdir():
+                        link_target = os.path.normpath(os.path.join(dest_path, link_target))
+                    else:
+                        # For files, the link target is relative to the file's directory
+                        # But since we're validating before extraction, we need to be careful
+                        # The link target should be resolved relative to the member's location
+                        # However, for security, we should resolve it relative to dest_path
+                        # and ensure it's within dest_path
+                        link_target = os.path.normpath(os.path.join(dest_path, link_target))
+                    
+                    # Normalize the link target
+                    link_target = os.path.normpath(link_target)
+                    
+                    # Ensure the link target is within dest_path
+                    common = os.path.commonpath([dest_path, link_target])
+                    if common != dest_path:
+                        return False
+                    
+                    # Additional check: the link target should not be a symlink itself
+                    # that points outside, but we can't check that without following the link
+                    # For now, we ensure the immediate target is within dest_path
+                    # We also need to ensure that if the link target is a directory,
+                    # we don't allow symlinks that point to outside
+                    
+                    # Check if the link target is a symlink and if it points outside
+                    if os.path.islink(link_target):
+                        # Resolve the symlink target
+                        try:
+                            resolved_target = os.path.realpath(link_target)
+                            if not resolved_target.startswith(dest_path):
+                                return False
+                        except (OSError, ValueError):
+                            return False
+                
+                # Check for hard links
+                if member.type == tarfile.HARDLINK:
+                    # Hard links reference another member in the archive
+                    # We need to ensure the target member is also validated
+                    # Since we're validating all members first, this should be covered
+                    # But we should also ensure the target member's destination is within dest_path
+                    target_member = tar.getmember(member.linkname)
+                    if target_member:
+                        target_dest = os.path.join(dest_path, target_member.name)
+                        target_dest = os.path.normpath(target_dest)
+                        common = os.path.commonpath([dest_path, target_dest])
+                        if common != dest_path:
+                            return False
+                
+                # Validate file types
+                if member.isdir():
+                    # Ensure the directory doesn't end with /
+                    if member.name.endswith('/'):
+                        return False
+                elif member.isfile():
+                    pass
+                else:
+                    # For other types, we need to be careful
+                    # We should not extract these if they could be dangerous
+                    # But the plan says to reject symbolic links and hard links that point outside
+                    # For other types, we proceed with extraction but validate paths
+                    pass
+            
+            # If all validations pass, extract the archive
+            for member in tar:
+                member_dest = os.path.join(dest_path, member.name)
+                member_dest = os.path.normpath(member_dest)
+                
+                # Double-check the path is within dest_path after normalization
+                common = os.path.commonpath([dest_path, member_dest])
+                if common != dest_path:
+                    return False
+                
+                # Extract the member
+                tar.extract(member, dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

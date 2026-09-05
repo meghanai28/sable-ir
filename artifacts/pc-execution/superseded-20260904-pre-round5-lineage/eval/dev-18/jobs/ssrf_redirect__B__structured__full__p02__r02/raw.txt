@@ -1,0 +1,139 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def resolve_host(hostname):
+    try:
+        return socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        raise ValueError(f"Unable to resolve hostname: {hostname}")
+
+def is_valid_public_address(ip_info):
+    # Basic check to ensure it's an IPv4 or IPv6 address format
+    if len(ip_info) != 4:
+        return False
+    ip_str = '.'.join(str(addr[4]) for addr in ip_info)
+    parts = ip_str.split('.')
+    if len(parts) != 4:
+        return False
+    for part in parts:
+        if not part.isdigit() or int(part) < 0 or int(part) > 255:
+            return False
+    return True
+
+def is_safe_url(url, base_url):
+    parsed = urllib.parse.urlparse(url)
+    base_parsed = urllib.parse.urlparse(base_url)
+    
+    # Check scheme
+    if parsed.scheme.lower() not in ['http', 'https']:
+        return False
+    
+    # Check port
+    if parsed.port != base_parsed.port:
+        return False
+    
+    # Check for path traversal or absolute paths that escape the domain
+    # A simple heuristic: if the netloc changes or the path starts with ..
+    if parsed.netloc != base_parsed.netloc:
+        return False
+    
+    # Check for .. in path
+    if '..' in parsed.path:
+        return False
+    
+    return True
+
+def fetch_text(url, transport, resolve_host):
+    # Resolve the initial hostname
+    try:
+        ip_info = resolve_host(url.split('://')[1].split('/')[0])
+    except ValueError:
+        raise ValueError(f"Invalid URL format: {url}")
+    
+    if not is_valid_public_address(ip_info):
+        raise ValueError(f"Invalid public address: {ip_info}")
+    
+    # Parse the URL
+    parsed_url = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port against default
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    
+    if scheme not in ['http', 'https']:
+        raise ValueError(f"Only HTTP and HTTPS are allowed: {scheme}")
+    
+    default_port = {'http': 80, 'https': 443}.get(scheme)
+    if port is None:
+        port = default_port
+    
+    # Check if port is default
+    if port != default_port:
+        raise ValueError(f"Non-default port not allowed: {port}")
+    
+    # Check for .. in the initial URL path
+    if '..' in parsed_url.path:
+        raise ValueError(f"Path traversal detected in initial URL")
+    
+    # Perform the transport request
+    try:
+        response = transport(url)
+    except Exception as e:
+        raise ValueError(f"Transport error: {e}")
+    
+    status, headers, body = response
+    
+    if status != 200:
+        raise ValueError(f"Unexpected status code: {status}")
+    
+    # Handle redirects
+    location_count = 0
+    current_url = url
+    
+    while True:
+        # Parse current URL
+        parsed = urllib.parse.urlparse(current_url)
+        
+        # Check for .. in current URL path
+        if '..' in parsed.path:
+            raise ValueError(f"Path traversal detected in redirect URL")
+        
+        # Check scheme and port match initial destination
+        if parsed.scheme.lower() != scheme or (parsed.port is not None and parsed.port != default_port):
+            raise ValueError(f"Scheme or port mismatch in redirect")
+        
+        # Check netloc matches initial destination
+        if parsed.netloc != parsed_url.netloc:
+            raise ValueError(f"Netloc mismatch in redirect")
+        
+        # Check for too many hops
+        if location_count > 5:
+            raise ValueError("Too many redirects")
+        
+        # Check for Location header
+        if 'location' in headers:
+            redirect_url = headers['location']
+            location_count += 1
+            
+            # Resolve the redirect URL
+            redirect_parsed = urllib.parse.urlparse(redirect_url)
+            
+            # Check for .. in redirect URL path
+            if '..' in redirect_parsed.path:
+                raise ValueError(f"Path traversal detected in redirect URL")
+            
+            # Check scheme and port
+            if redirect_parsed.scheme.lower() != scheme or (redirect_parsed.port is not None and redirect_parsed.port != default_port):
+                raise ValueError(f"Scheme or port mismatch in redirect")
+            
+            # Check netloc
+            if redirect_parsed.netloc != parsed_url.netloc:
+                raise ValueError(f"Netloc mismatch in redirect")
+            
+            current_url = redirect_url
+        else:
+            break
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body

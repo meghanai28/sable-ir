@@ -1,0 +1,80 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize the destination path to remove any trailing slashes
+        dest_path = os.path.normpath(dest_path)
+        
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Create the root directory for extraction
+        root_dir = os.path.abspath(dest_path)
+        
+        # Open the tar archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of all members
+            members = tar.getnames()
+            
+            for member in members:
+                # Skip directories that are not explicitly requested to be created
+                # However, tarfile.extractall usually creates directories automatically
+                # We need to validate the path before extraction
+                
+                # Calculate the member's path relative to root_dir
+                member_path = os.path.join(root_dir, member)
+                
+                # Normalize the member path to resolve .. and .
+                normalized_member_path = os.path.normpath(member_path)
+                
+                # Check if the normalized path escapes the root directory
+                # The root directory should be a prefix of the normalized member path
+                if not normalized_member_path.startswith(root_dir + os.sep) and normalized_member_path != root_dir:
+                    # If the path is exactly the root, that's okay (e.g., if dest_path is "." and member is empty)
+                    # But we want to prevent writing to root_dir itself if it's not a directory
+                    # Actually, if member is ".", it would be root_dir, which is fine
+                    # We need to check if it's outside
+                    if not normalized_member_path.startswith(root_dir):
+                        return False
+                
+                # Additional check: ensure the parent directory exists or can be created
+                parent_dir = os.path.dirname(normalized_member_path)
+                if parent_dir and not os.path.exists(parent_dir):
+                    # We should not create directories outside of dest_path
+                    # But tarfile.extractall will create directories as needed
+                    # We just need to ensure the final path is within dest_path
+                    pass
+            
+            # Extract the archive
+            # Use extractall to extract all members
+            tar.extractall(path=root_dir)
+            
+            # Final validation: ensure no files were extracted outside dest_path
+            # Walk the extracted directory and check all files
+            for root, dirs, files in os.walk(root_dir):
+                for d in dirs:
+                    full_path = os.path.join(root, d)
+                    if not full_path.startswith(root_dir):
+                        return False
+                for f in files:
+                    full_path = os.path.join(root, f)
+                    if not full_path.startswith(root_dir):
+                        return False
+            
+            return True
+            
+    except Exception:
+        return False

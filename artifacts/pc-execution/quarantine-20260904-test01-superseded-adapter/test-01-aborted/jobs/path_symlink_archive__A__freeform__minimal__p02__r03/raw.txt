@@ -1,0 +1,79 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict path validation.
+    
+    Returns True only if extraction completes successfully without any files
+    being written outside dest_path. Returns False if validation or extraction fails.
+    No files are written outside dest_path on failure.
+    """
+    try:
+        # Resolve the destination path to an absolute path
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Check for absolute paths with .. segments in the original input
+        # If dest_path is absolute, we've already resolved it.
+        # If it's relative, we need to ensure the final resolved path doesn't escape.
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Validate that the tar_path exists
+        if not os.path.exists(tar_path):
+            return False
+        
+        # Open the tar file and validate members before extraction
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members
+            members = tar.getmembers()
+            
+            # Validate each member's path
+            for member in members:
+                # Resolve the member's name relative to the destination
+                # We need to check if the member's name would escape dest_path
+                member_name = member.name
+                
+                # Construct the full path where this member would be extracted
+                # If it's a directory, we check the directory path
+                # If it's a file, we check the parent directory
+                if member.isdir():
+                    # For directories, we need to ensure the entire directory tree is within dest
+                    full_path = os.path.join(resolved_dest, member_name)
+                    # Normalize to handle .. and .
+                    normalized_path = os.path.normpath(full_path)
+                    
+                    # Check if the normalized path escapes the destination
+                    if not normalized_path.startswith(resolved_dest + os.sep) and normalized_path != resolved_dest:
+                        return False
+                else:
+                    # For files, check the parent directory
+                    parent_dir = os.path.dirname(os.path.join(resolved_dest, member_name))
+                    normalized_parent = os.path.normpath(parent_dir)
+                    
+                    if not normalized_parent.startswith(resolved_dest + os.sep) and normalized_parent != resolved_dest:
+                        return False
+            
+            # Now perform the extraction with strict path checking
+            for member in members:
+                member_path = os.path.join(resolved_dest, member.name)
+                
+                # Resolve the full path to check for ..
+                full_member_path = os.path.normpath(os.path.join(resolved_dest, member.name))
+                
+                # If the member name contains .., it might escape
+                if '..' in member.name.split(os.sep):
+                    return False
+                
+                if member.isdir():
+                    os.makedirs(full_member_path, exist_ok=True)
+                else:
+                    # Extract the file
+                    tar.extract(member, resolved_dest)
+        
+        return True
+    
+    except Exception:
+        return False

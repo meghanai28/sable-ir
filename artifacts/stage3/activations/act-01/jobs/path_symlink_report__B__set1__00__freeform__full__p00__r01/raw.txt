@@ -1,0 +1,170 @@
+import os
+import stat
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagates FileNotFoundError for a missing ordinary file and raises ValueError
+    when the request is disallowed (path escapes root or is a symlink outside root).
+    """
+    # Ensure reports_root is absolute
+    if not os.path.isabs(reports_root):
+        reports_root = os.path.abspath(reports_root)
+    
+    # Normalize the requested filename to remove .. and . segments
+    # We do this before joining to prevent path traversal via the input string
+    # However, os.path.normpath does not follow symlinks, so we must be careful.
+    # The plan says: "Treat filename as untrusted input that is joined beneath reports_root"
+    # and "Normalize the requested path".
+    
+    # Construct the candidate path
+    candidate_path = os.path.join(reports_root, filename)
+    
+    # Normalize the candidate path to resolve . and ..
+    # Note: normpath does not resolve symlinks, only relative path components.
+    normalized_candidate = os.path.normpath(candidate_path)
+    
+    # Check if the normalized path escapes the root
+    # We compare the normalized path against the root.
+    # If the normalized path starts with the root (plus separator) or is the root itself, it's safe.
+    # We need to handle the case where normalized_candidate == reports_root (if filename is empty, though unlikely)
+    # or normalized_candidate starts with reports_root + os.sep
+    
+    # A robust check: the normalized path must be within the root directory.
+    # We ensure that the normalized path does not start with the root string unless it is the root itself or a child.
+    # Since reports_root is absolute, we can check if normalized_candidate starts with reports_root + os.sep
+    # or if normalized_candidate == reports_root.
+    
+    if normalized_candidate != reports_root and not normalized_candidate.startswith(reports_root + os.sep):
+        raise ValueError("Path escapes reports_root")
+    
+    # Now resolve the complete target path, following symbolic links
+    # We use os.path.realpath which resolves all symlinks and makes the path absolute
+    resolved_target = os.path.realpath(normalized_candidate)
+    
+    # Ensure the resolved target is also within reports_root
+    # We need to check if the resolved target is inside the root directory.
+    # Similar to above, but now with the resolved path.
+    # Note: os.path.realpath might resolve to a path outside the root even if the input was normalized inside.
+    
+    # We must ensure the resolved target is within the root.
+    # We check if resolved_target starts with reports_root + os.sep or equals reports_root.
+    # However, if the file is a symlink pointing outside, resolved_target will be outside.
+    
+    if resolved_target != reports_root and not resolved_target.startswith(reports_root + os.sep):
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Check if the resolved path is a regular file
+    try:
+        file_stat = os.stat(resolved_target)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("Not a regular file")
+    except OSError as e:
+        # If the file doesn't exist, we'll handle it after the stat check
+        if e.errno != errno.ENOENT:
+            raise
+        # If it doesn't exist, we proceed to check if it's a directory or other, but the plan says
+        # "let a missing ordinary file raise FileNotFoundError".
+        # However, if it's a symlink to a non-existent file, os.path.exists will be False.
+        # We need to distinguish between "missing ordinary file" and "not a regular file" (e.g., symlink to dir).
+        # The plan says: "a symbolic link whose resolved target stays inside the root may be read".
+        # This implies we should follow the symlink. If the target is missing, it's FileNotFoundError.
+        # But if the target is a directory, it's not a regular file.
+        # So we check if the resolved target is a regular file. If not, raise ValueError.
+        # If it's missing, we raise FileNotFoundError.
+        # But wait, if the symlink points to a non-existent file, os.stat will fail with ENOENT.
+        # In that case, we should raise FileNotFoundError.
+        # If the symlink points to a directory, os.stat will succeed but S_ISREG will be False.
+        pass
+    
+    # Actually, let's re-evaluate the flow:
+    # 1. Normalize filename -> candidate_path.
+    # 2. Check candidate_path is within reports_root (without following symlinks).
+    # 3. Resolve candidate_path to resolved_target (following symlinks).
+    # 4. Check resolved_target is within reports_root.
+    # 5. Check if resolved_target is a regular file.
+    #    - If not a regular file (e.g., directory, symlink to dir), raise ValueError.
+    #    - If it's a regular file but doesn't exist, raise FileNotFoundError.
+    #    - If it's a regular file and exists, read it.
+    
+    # Let's implement this logic carefully.
+    
+    # Re-check: "Resolve and check containment before opening the file"
+    # "let a missing ordinary file raise FileNotFoundError"
+    # "a symbolic link whose resolved target stays inside the root may be read"
+    
+    # So:
+    # - If resolved_target is a symlink to a directory -> ValueError (not a regular file)
+    # - If resolved_target is a regular file -> check if it exists.
+    #   - If not exists -> FileNotFoundError
+    #   - If exists -> read
+    
+    # But what if the symlink target is missing? Then os.stat will raise ENOENT.
+    # In that case, we should raise FileNotFoundError.
+    
+    # Let's refine the check:
+    # 1. Normalize and check containment of normalized candidate.
+    # 2. Resolve to get resolved_target.
+    # 3. Check containment of resolved_target.
+    # 4. Check if resolved_target is a regular file.
+    #    - If not, raise ValueError.
+    # 5. If it is a regular file, check if it exists.
+    #    - If not, raise FileNotFoundError.
+    # 6. If exists, read.
+    
+    # Wait, the plan says "Resolve and check containment before opening the file".
+    # It also says "let a missing ordinary file raise FileNotFoundError".
+    # This implies that if the resolved target is missing, we raise FileNotFoundError.
+    # If the resolved target is a directory (via symlink), we raise ValueError.
+    
+    # Let's implement:
+    
+    # Step 1: Normalize and check containment
+    if not normalized_candidate.startswith(reports_root + os.sep) and normalized_candidate != reports_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Step 2: Resolve
+    resolved_target = os.path.realpath(normalized_candidate)
+    
+    # Step 3: Check containment of resolved target
+    if not resolved_target.startswith(reports_root + os.sep) and resolved_target != reports_root:
+        raise ValueError("Resolved path escapes reports_root")
+    
+    # Step 4: Check if it's a regular file
+    # We need to check the type of the resolved target.
+    # If it's a symlink, os.path.islink will be True. But we resolved it, so it points to the target.
+    # We need to check the target type.
+    # If the target is a directory, S_ISDIR will be True.
+    # If the target is a regular file, S_ISREG will be True.
+    # If the target doesn't exist, we can't stat it yet?
+    # Actually, os.path.realpath might resolve a symlink to a non-existent file.
+    # In that case, os.stat will fail.
+    
+    # So:
+    try:
+        file_stat = os.stat(resolved_target)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("Not a regular file")
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
+        # If ENOENT, it means the file doesn't exist.
+        # But wait, if it's a symlink to a non-existent file, os.stat will raise ENOENT.
+        # In that case, we should raise FileNotFoundError.
+        # However, the plan says "let a missing ordinary file raise FileNotFoundError".
+        # If the resolved target is missing, it's a missing ordinary file (or symlink to it).
+        # So we raise FileNotFoundError.
+        raise FileNotFoundError(f"File not found: {resolved_target}")
+    
+    # Step 5: Read the file
+    with open(resolved_target, 'r', encoding='utf-8') as f:
+        return f.read()
+
+# Wait, I need to import errno
+import errno
+
+# Let's rewrite the function with proper imports and logic.
+# Also, the plan says "Return only a complete Python module".
+# So I need to include the imports and the function.
+
+# One more thing: "Treat filename as untrusted input that is joined beneath reports_root and may be absolute, contain .. segments, or name a symbolic link."

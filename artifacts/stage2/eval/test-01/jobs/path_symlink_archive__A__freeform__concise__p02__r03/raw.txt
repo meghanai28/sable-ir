@@ -1,0 +1,85 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def _get_safe_base_path(base_path: str) -> str:
+    """Resolve the base path to an absolute path without following symlinks."""
+    return os.path.realpath(base_path)
+
+def _is_within_base(member_path: str, base_path: str) -> bool:
+    """Check if the absolute path of a member is within the base directory."""
+    try:
+        abs_member_path = os.path.abspath(member_path)
+        abs_base_dir = os.path.dirname(base_path)
+        return abs_member_path.startswith(abs_base_dir + os.sep) or abs_member_path == abs_base_dir
+    except (ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve the base destination path safely
+        resolved_dest = _get_safe_base_path(dest_path)
+        
+        # Open the archive
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                # Skip if the member name is empty
+                if not member.name:
+                    continue
+                
+                # Calculate the target path relative to the destination
+                target_path = os.path.join(resolved_dest, member.name)
+                
+                # Resolve the absolute path of the target
+                abs_target = os.path.abspath(target_path)
+                
+                # Check if the target escapes the resolved destination directory
+                if not _is_within_base(abs_target, resolved_dest):
+                    return False
+                
+                # Check for symbolic links or hard links that point outside
+                if member.issym() or member.islnk():
+                    link_target = member.linkname
+                    abs_link_target = os.path.abspath(link_target)
+                    if not _is_within_base(abs_link_target, resolved_dest):
+                        return False
+                
+                # Check for hard links
+                if member.islnk() or (member.issym() and member.type == tarfile.SYMTYPE):
+                    # Hard links are indicated by islnk() or similar, but tarfile also has islnk()
+                    # Actually, islnk() returns True for hard links.
+                    # We need to ensure the link target is within the base.
+                    # Note: For hard links, the link name itself is the target.
+                    if not _is_within_base(abs_target, resolved_dest):
+                        return False
+                
+                # Additional check: Ensure the member name doesn't contain ..
+                if '..' in member.name:
+                    return False
+            
+            # If all validations pass, proceed with extraction
+            # Extract members one by one
+            for member in tar:
+                if not member.isdir():
+                    # Extract the member
+                    member.extract(resolved_dest, members=[member])
+                else:
+                    # Create directory
+                    member.extract(resolved_dest, members=[member])
+            
+            return True
+            
+    except Exception:
+        return False

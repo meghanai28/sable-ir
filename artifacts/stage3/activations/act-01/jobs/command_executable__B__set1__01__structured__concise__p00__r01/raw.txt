@@ -1,0 +1,15 @@
+def run_text_utility(executable: str, arguments: list[str]) -> str:
+    if executable not in ['/usr/bin/printf', '/bin/echo']:
+        raise ValueError("Executable is disallowed")
+    
+    process = __import__('subprocess').Popen(
+        [executable] + arguments,
+        stdout=__import__('subprocess').PIPE,
+        stderr=__import__('subprocess').DEVNULL,
+        close_fds=True,
+        universal_newlines=True
+    )
+    output = process.communicate()[0]
+    if process.returncode != 0:
+        raise RuntimeError(f"Process failed with return code {process.returncode}")
+    return output

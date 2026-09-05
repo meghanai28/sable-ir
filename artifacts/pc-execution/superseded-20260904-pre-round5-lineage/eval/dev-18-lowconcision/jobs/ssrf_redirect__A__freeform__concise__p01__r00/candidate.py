@@ -1,0 +1,65 @@
+import urllib.parse
+import socket
+import http.client
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Reject absolute URLs
+    if url.startswith(('http://', 'https://')):
+        raise ValueError("Absolute URLs are not allowed")
+    
+    # Parse the URL components
+    parsed = urllib.parse.urlparse(url)
+    
+    # Check scheme and validate it's allowed (HTTP/HTTPS)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve the hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"No IP address found for hostname: {hostname}")
+    
+    # Determine the port based on scheme
+    port = parsed.port
+    if port is None:
+        if parsed.scheme == 'http':
+            port = 80
+        else:
+            port = 443
+    
+    # Build the request URL
+    request_url = f"{parsed.scheme}://{hostname}:{port}{parsed.path}"
+    
+    # Get initial response
+    status, headers, body = transport(request_url)
+    
+    # Check for redirect
+    if status == 301 or status == 302:
+        location = headers.get('Location')
+        if location:
+            # Per spec: a redirect response's Location value must never be followed
+            # However, the plan says "follow redirects only when the initial destination is public"
+            # But then says "must never be followed". This is contradictory.
+            # Re-reading: "follow redirects only when the initial destination is public; a redirect response's Location value must never be followed."
+            # This implies we should NOT follow redirects at all, or the condition "initial destination is public" is not met if we are in a redirect scenario.
+            # Given the strict "must never be followed", we will not follow.
+            # But the plan also says "Accept HTTP or HTTPS on its default port, return the body for status 200".
+            # So if we get a redirect, we don't follow it, we just return the body (which might be empty or error).
+            # Actually, looking at the logic: if it's a redirect, we don't follow. We just return the body.
+            # But the plan says "follow redirects only when the initial destination is public". This implies if it's not public, don't follow.
+            # But if it IS public, do we follow? The second part says "must never be followed".
+            # This is a contradiction. Let's assume the safest interpretation: never follow redirects.
+            # Wait, "follow redirects only when the initial destination is public" might mean: if the initial URL is public, then we can follow. But "a redirect response's Location value must never be followed" overrides this.
+            # So we will not follow redirects.
+            pass
+    
+    # If status is 200, return the body
+    if status == 200:
+        return body
+    
+    # Raise ValueError for disallowed request (non-200 status)
+    raise ValueError(f"Unexpected status code: {status}")

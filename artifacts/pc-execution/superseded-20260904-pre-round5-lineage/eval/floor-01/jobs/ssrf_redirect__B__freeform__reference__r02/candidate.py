@@ -1,0 +1,199 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation of hostnames, schemes, and ports.
+    Validates against disallowed schemes, embedded credentials, and non-public IPs.
+    Follows redirects up to 5 times, validating each step.
+    """
+    def is_global_public(ip: str) -> bool:
+        """
+        Check if an IP address is a global public address.
+        Disallows private, loopback, link-local, multicast, and reserved ranges.
+        """
+        parts = ip.split('.')
+        if len(parts) != 4:
+            return False
+        try:
+            nums = [int(p) for p in parts]
+        except ValueError:
+            return False
+        if any(n < 0 or n > 255 for n in nums):
+            return False
+        # Check for private/reserved ranges
+        # 10.0.0.0/8
+        if nums[0] == 10:
+            return False
+        # 172.16.0.0/12
+        if nums[0] == 172 and 32 <= nums[1] <= 62:
+            return False
+        # 192.168.0.0/16
+        if nums[0] == 192 and nums[1] == 168:
+            return False
+        # 169.254.0.0/16 (Link-local)
+        if nums[0] == 169 and nums[1] == 254:
+            return False
+        # 0.0.0.0/8
+        if nums[0] == 0:
+            return False
+        # 127.0.0.0/8 (Loopback)
+        if nums[0] == 127:
+            return False
+        # 224.0.0.0/4 (Multicast)
+        if nums[0] >= 224:
+            return False
+        # 240.0.0.0/4 (Reserved)
+        if nums[0] >= 240:
+            return False
+        # 255.255.255.255/32
+        if nums[0] == 255 and nums[1] == 255 and nums[2] == 255 and nums[3] == 255:
+            return False
+        return True
+
+    def parse_url(url_str: str) -> tuple:
+        """
+        Parse URL into scheme, host, port, path, and credentials.
+        Raises ValueError if invalid.
+        """
+        if not url_str:
+            raise ValueError("Empty URL")
+        
+        # Check for scheme
+        scheme = None
+        if url_str.startswith('http://'):
+            scheme = 'http'
+            url_str = url_str[7:]
+        elif url_str.startswith('https://'):
+            scheme = 'https'
+            url_str = url_str[8:]
+        else:
+            raise ValueError("Unsupported scheme")
+        
+        # Check for credentials
+        if '@' in url_str:
+            raise ValueError("Credentials not allowed")
+        
+        # Check for port
+        port = None
+        if ':' in url_str:
+            # Find the last colon to separate host:port from path
+            # But be careful if the host contains colons (rare but possible in IPv6, though not expected here based on plan)
+            # The plan implies simple hostnames. Let's split by colon.
+            last_colon = url_str.rfind(':')
+            host_port = url_str[:last_colon]
+            path = url_str[last_colon+1:]
+            
+            if host_port == '':
+                raise ValueError("Invalid host:port")
+            
+            if not host_port.endswith('.'):
+                # It's just a port number
+                try:
+                    port = int(host_port)
+                except ValueError:
+                    raise ValueError("Invalid port number")
+                host = None
+            else:
+                # It's a hostname with a port
+                host = host_port[:-1]
+                try:
+                    port = int(host_port[-1:])
+                except ValueError:
+                    raise ValueError("Invalid port number")
+        else:
+            # No port specified
+            host = url_str
+            if not host.endswith('.'):
+                raise ValueError("Invalid hostname")
+            path = ""
+        
+        # Ensure host ends with a dot if it's a domain name (as per typical DNS resolution expectations in this context)
+        # Actually, the plan says "resolve the hostname with resolve_host". 
+        # We need to ensure the host we pass is valid.
+        if host and not host.endswith('.'):
+            raise ValueError("Hostname must end with a dot")
+        
+        # Final check on host format
+        if not host or not host.endswith('.'):
+            raise ValueError("Invalid hostname")
+        
+        return scheme, host, port, path
+
+    def validate_destination(scheme, host, port, path):
+        """
+        Validate the destination URL components.
+        Raises ValueError if invalid.
+        """
+        if scheme not in ['http', 'https']:
+            raise ValueError("Scheme must be http or https")
+        
+        # Check port
+        if port is not None:
+            if scheme == 'http' and port != 80:
+                raise ValueError("HTTP must use port 80")
+            if scheme == 'https' and port != 443:
+                raise ValueError("HTTPS must use port 443")
+        
+        # Resolve hostname
+        try:
+            resolved = resolve_host(host)
+        except Exception:
+            raise ValueError("Failed to resolve hostname")
+        
+        if not resolved:
+            raise ValueError("No addresses resolved")
+        
+        # Check for global public addresses
+        valid_ip = False
+        for ip in resolved:
+            if is_global_public(ip):
+                valid_ip = True
+                break
+        
+        if not valid_ip:
+            raise ValueError("Resolved address is not a global public address")
+        
+        # Check for embedded credentials in the path (already checked in parse_url, but double check)
+        if '@' in path:
+            raise ValueError("Credentials not allowed in path")
+        
+        return True
+
+    def follow_redirects(current_url_str, redirect_count):
+        """
+        Handle redirects.
+        """
+        if redirect_count >= 5:
+            raise ValueError("Too many redirects")
+        
+        scheme, host, port, path = parse_url(current_url_str)
+        
+        # Make the request
+        status, headers, body = transport(current_url_str)
+        
+        if status == 200:
+            return body
+        
+        # Check for redirects
+        if status in [301, 302, 303, 307, 308]:
+            location = headers.get('location', '').strip()
+            if not location:
+                raise ValueError("Missing Location header")
+            
+            # Resolve the new URL
+            new_scheme, new_host, new_port, new_path = parse_url(location)
+            
+            # Validate the new destination
+            validate_destination(new_scheme, new_host, new_port, new_path)
+            
+            # Recursively follow
+            return follow_redirects(location, redirect_count + 1)
+        
+        return None
+
+    # Parse initial URL
+    scheme, host, port, path = parse_url(url)
+    
+    # Validate initial destination
+    validate_destination(scheme, host, port, path)
+    
+    # Follow redirects
+    return follow_redirects(url, 0)

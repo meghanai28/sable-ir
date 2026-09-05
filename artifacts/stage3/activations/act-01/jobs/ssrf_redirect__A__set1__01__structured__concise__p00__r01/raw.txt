@@ -1,0 +1,121 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text content from a URL with path traversal and symlink protection.
+    
+    Args:
+        url: The URL to fetch.
+        transport: A function taking a URL and returning (status, headers, body).
+        resolve_host: A function taking a hostname and returning textual IP addresses.
+    
+    Returns:
+        The body text if status is 200.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., path escapes extraction dir,
+                   symlink escapes, or status is not 200).
+    """
+    # Determine protocol and port
+    if url.startswith("http://"):
+        scheme = "http"
+        port = 80
+    elif url.startswith("https://"):
+        scheme = "https"
+        port = 443
+    else:
+        raise ValueError("Only HTTP and HTTPS protocols are allowed.")
+    
+    # Extract host and path
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        path = parsed.path
+        if path is None:
+            path = "/"
+    except Exception:
+        raise ValueError("Invalid URL format.")
+    
+    # Resolve host to IP (if needed for the transport or security checks)
+    if hostname:
+        ip_addresses = resolve_host(hostname)
+    else:
+        ip_addresses = []
+    
+    # Call transport
+    status, headers, body = transport(url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Disallowed request: HTTP status {status} is not 200.")
+    
+    # Decode body to text
+    text_body = body.decode("utf-8") if isinstance(body, bytes) else body
+    
+    # Security check: Normalize path and ensure it's within extraction directory
+    # Note: The plan implies a filesystem sink, but the input is a URL.
+    # This implementation assumes the 'extraction directory' is the root of the
+    # filesystem being accessed or a specific mount point. Since the exact
+    # extraction directory isn't passed, we assume the path must be absolute
+    # and start with the extraction directory if it's provided, or we treat
+    # the current working directory as the base if no explicit base is given.
+    # However, to strictly follow "normalize beneath the selected extraction directory",
+    # we need a base. If not provided, we assume the path must be absolute.
+    # Given the constraints, we will assume the extraction directory is the
+    # current working directory or a specific base if passed.
+    # Re-reading the plan: "normalize the requested path beneath the selected extraction directory".
+    # Since no extraction directory is passed in the function signature, we assume
+    # the path must be absolute and start with a safe prefix or we treat
+    # the request as if it were a file path.
+    # To be safe and compliant with typical secure file access patterns:
+    # 1. If the path is not absolute, raise ValueError.
+    # 2. Normalize the path.
+    # 3. Check if it starts with the extraction directory.
+    # Since the extraction directory is not an argument, we assume the path
+    # must be absolute and we check against the current working directory
+    # or a predefined safe base.
+    # Let's assume the extraction directory is the current working directory
+    # unless specified otherwise, but strictly speaking, the plan says
+    # "beneath the selected extraction directory". Without that argument,
+    # we cannot enforce a specific base. We will assume the path must be
+    # absolute and valid.
+    
+    # Actually, looking at the plan again, it seems to describe a generic
+    # secure file access function. The URL is the source, but the SINK is
+    # opening a file. This implies the URL maps to a file path.
+    # We will assume the extraction directory is the current working directory
+    # for this implementation context, or we require the path to be absolute.
+    
+    # Let's implement a check where the path must be absolute and start with
+    # the extraction directory. Since extraction_dir is not passed, we assume
+    # it's the current working directory.
+    
+    import os
+    
+    # Ensure path is absolute
+    if not os.path.isabs(path):
+        raise ValueError("Path must be absolute.")
+    
+    # Normalize the path
+    # We need to resolve symlinks and check if the target is within the extraction directory.
+    # Since we don't have the extraction directory, we assume the path must be
+    # absolute and we check against the current working directory.
+    # However, to be more robust, we might assume the extraction directory is
+    # a specific path if passed. Since it's not, we'll use the current working directory.
+    
+    extraction_dir = os.getcwd()
+    normalized_path = os.path.normpath(path)
+    
+    # Check if the path is within the extraction directory
+    if not (normalized_path.startswith(extraction_dir + os.sep) or normalized_path == extraction_dir):
+        raise ValueError("Path escapes the extraction directory.")
+    
+    # Resolve symlinks
+    try:
+        resolved_path = os.path.realpath(normalized_path)
+    except Exception:
+        raise ValueError("Unable to resolve path.")
+    
+    # Check if the resolved path is within the extraction directory
+    if not (resolved_path.startswith(extraction_dir + os.sep) or resolved_path == extraction_dir):
+        raise ValueError("Resolved symlink escapes the extraction directory.")
+    
+    return text_body

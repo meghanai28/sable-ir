@@ -1,0 +1,19 @@
+{
+  "job_id": "ssrf_redirect__A__freeform__full__p01__r01",
+  "role": "render",
+  "plan_job_id": "ssrf_redirect__A__freeform__full__p01",
+  "status": "generated",
+  "generation": {
+    "text": "import socket\nimport urllib.parse\nimport urllib.request\nimport urllib.error\n\ndef resolve_host(hostname: str) -> str:\n    \"\"\"Resolve hostname to IP address(es).\"\"\"\n    try:\n        ip_addresses = socket.getaddrinfo(hostname, None)\n        if not ip_addresses:\n            raise ValueError(f\"Could not resolve hostname: {hostname}\")\n        # Return the first IP address found (IPv4 preferred if available)\n        for family, _, _, _, ip in ip_addresses:\n            if family == socket.AF_INET:\n                return ip\n            elif family == socket.AF_INET6:\n                return ip\n        raise ValueError(f\"No IPv4 or IPv6 address found for: {hostname}\")\n    except socket.gaierror as e:\n        raise ValueError(f\"DNS resolution failed for {hostname}: {e}\") from e\n\ndef is_disallowed_ip(ip: str) -> bool:\n    \"\"\"Check if IP is loopback or link-local.\"\"\"\n    try:\n        ip_int = int(ip.replace(\".\", \"\"))\n    except ValueError:\n        return True\n    \n    # Loopback ranges: 127.0.0.0/8, ::1\n    # Link-local: 169.254.0.0/16, fe80::/10\n    if 127 <= ip_int < 192:\n        return True\n    if 1692540000 <= ip_int < 1692541434:\n        return True\n    if 3232295040 <= ip_int < 3232296064:\n        return True\n    return False\n\ndef fetch_text(url: str, transport, resolve_host) -> str:\n    \"\"\"Fetch text from URL.\n    \n    Args:\n        url: The URL to fetch (absolute or relative).\n        transport: A function(url) -> (status, headers, body) tuple.\n        resolve_host: A function(hostname) -> IP address(es).\n    \n    Returns:\n        The body string for status 200.\n    \n    Raises:\n        ValueError: For disallowed schemes or IPs.\n    \"\"\"\n    parsed = urllib.parse.urlparse(url)\n    \n    # Validate scheme\n    if parsed.scheme.lower() not in ('http', 'https'):\n        raise ValueError(f\"Disallowed scheme: {parsed.scheme}\")\n    \n    # Determine port\n    default_port = 80 if parsed.scheme == 'http' else 443\n    \n    # Resolve hostname\n    hostname = parsed.hostname\n    if not hostname:\n        raise ValueError(f\"Invalid URL: {url}\")\n    \n    ip_addresses = resolve_host(hostname)\n    \n    # Check for disallowed IPs\n    if is_disallowed_ip(ip_addresses):\n        raise ValueError(f\"Blocked IP address: {ip_addresses}\")\n    \n    # Construct full URL with default port if not specified\n    if parsed.port == -1:\n        full_url = f\"{parsed.scheme}://{hostname}:{default_port}{parsed.path}\"\n    else:\n        full_url = f\"{parsed.scheme}://{hostname}:{parsed.port}{parsed.path}\"\n    \n    # Call transport\n    status, headers, body = transport(full_url)\n    \n    # Return body only for status 200\n    if status != 200:\n        raise ValueError(f\"Unexpected status code: {status}\")\n    \n    if not body:\n        return \"\"\n    \n    return body if isinstance(body, str) else str(body)",
+    "prompt_tokens": 261,
+    "output_tokens": 766,
+    "finish_reason": "stop",
+    "latency_seconds": 33.459,
+    "seed": 1209370365
+  },
+  "prompt_sha256": "d340f7a79d7c00826c8072364958c45d864aab268fca92ca5c092caa43f2e1ae",
+  "candidate_path": "jobs/ssrf_redirect__A__freeform__full__p01__r01/candidate.py",
+  "candidate_sha256": "c9290d04d998952e18205f729b0610ca0def7673d9b02012ccb5b16b362ecb6f",
+  "extraction": "raw_text",
+  "error": null
+}

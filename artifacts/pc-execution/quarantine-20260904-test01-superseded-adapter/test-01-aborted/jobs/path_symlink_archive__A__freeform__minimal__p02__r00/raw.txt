@@ -1,0 +1,129 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict path validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Normalize the destination path immediately
+        dest_path = os.path.normpath(dest_path)
+        
+        # Reject absolute paths
+        if os.path.isabs(dest_path):
+            return False
+        
+        # Resolve the destination to an absolute path for validation
+        resolved_dest = os.path.abspath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members before any extraction
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Skip directories (they are handled by the extraction process, 
+                # but we need to ensure their targets don't escape)
+                if member.isdir():
+                    continue
+                
+                # For regular files and symlinks, check the target path
+                if member.isfile() or member.issym() or member.islnk():
+                    # Get the relative path of the member within the archive
+                    member_dir = os.path.dirname(member.name)
+                    member_name = os.path.basename(member.name)
+                    
+                    # Construct the full target path relative to dest_path
+                    # If it's a symlink or hardlink, we need to resolve the target
+                    if member.issym() or member.islnk():
+                        # Resolve the symlink target
+                        link_target = member.linkname
+                        # The link_target is relative to the member's location in the archive
+                        # unless it's absolute, in which case it's absolute
+                        if not os.path.isabs(link_target):
+                            link_target = os.path.join(member_dir, link_target)
+                        # Normalize and resolve to absolute
+                        link_target = os.path.normpath(link_target)
+                        if os.path.isabs(link_target):
+                            link_target = os.path.abspath(link_target)
+                    else:
+                        # For regular files, the target is the file itself
+                        link_target = os.path.join(member_dir, member_name)
+                        link_target = os.path.normpath(link_target)
+                    
+                    # Check if the target is inside dest_path
+                    # We need to ensure the resolved path starts with dest_path
+                    if not (link_target.startswith(resolved_dest + os.sep) or link_target == resolved_dest):
+                        return False
+            
+            # Now perform the extraction with safe options
+            # Use extractfile for regular files and symlinks to prevent directory traversal
+            # We must also handle hardlinks carefully
+            
+            for member in members:
+                # Skip directories
+                if member.isdir():
+                    continue
+                
+                # Extract regular files and symlinks
+                if member.isfile():
+                    # Use extractfile to prevent directory traversal
+                    # This ensures the file is extracted to the correct location
+                    member_dir = os.path.dirname(member.name)
+                    member_name = os.path.basename(member.name)
+                    full_target = os.path.join(resolved_dest, member_dir, member_name)
+                    
+                    # Ensure the directory exists
+                    os.makedirs(os.path.dirname(full_target), exist_ok=True)
+                    
+                    # Extract the file
+                    tar.extractfile(member).extract(full_target)
+                    
+                elif member.issym():
+                    # Extract symbolic link
+                    member_dir = os.path.dirname(member.name)
+                    member_name = os.path.basename(member.name)
+                    link_target = member.linkname
+                    
+                    # Resolve the link target relative to the member's location if not absolute
+                    if not os.path.isabs(link_target):
+                        link_target = os.path.join(member_dir, link_target)
+                    
+                    # Normalize and resolve to absolute
+                    link_target = os.path.normpath(link_target)
+                    if os.path.isabs(link_target):
+                        link_target = os.path.abspath(link_target)
+                    
+                    # Create the symlink
+                    full_target = os.path.join(resolved_dest, member_dir, member_name)
+                    os.symlink(link_target, full_target)
+                    
+                elif member.islnk():
+                    # Extract hard link
+                    member_dir = os.path.dirname(member.name)
+                    member_name = os.path.basename(member.name)
+                    
+                    # For hardlinks, the target is the file itself
+                    link_target = os.path.join(member_dir, member_name)
+                    link_target = os.path.normpath(link_target)
+                    
+                    # Create the hard link
+                    full_target = os.path.join(resolved_dest, member_dir, member_name)
+                    os.link(full_target, full_target)
+            
+            return True
+            
+    except Exception:
+        return False

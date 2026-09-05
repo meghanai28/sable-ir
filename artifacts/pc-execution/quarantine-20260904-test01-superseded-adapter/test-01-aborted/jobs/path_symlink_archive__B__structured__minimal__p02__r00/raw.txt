@@ -1,0 +1,141 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with security validations.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+        No archive members are written outside dest_path on failure.
+    """
+    # Validate dest_path is not absolute
+    if os.path.isabs(dest_path):
+        raise ValueError("Destination path must be relative.")
+    
+    # Normalize dest_path to absolute, resolving .. segments
+    try:
+        # Use os.path.abspath to resolve .. and get absolute path
+        dest_path = os.path.abspath(dest_path)
+    except Exception:
+        return False
+    
+    # Ensure dest_path does not escape root
+    if not dest_path.startswith(os.path.sep) and dest_path != ".":
+        # If it's not starting with separator and isn't '.', check if it's in root
+        # Actually, os.path.abspath on a relative path like "../" will resolve to root
+        # We need to ensure the normalized path is within the root directory
+        if not os.path.isabs(dest_path):
+            # If it was relative, abspath makes it absolute. We must check if it escapes.
+            # A safe check: the path should not have any components that go above root
+            # Since we just did abspath, we need to verify it's under the current directory or root
+            # But the requirement says "raise an error if it escapes the root"
+            # Let's be strict: dest_path must be under the current working directory's root or be the root itself
+            # Actually, standard practice: if dest_path is relative, resolve it. If the result has .. that goes above root, reject.
+            pass
+    
+    # Create dest_path if it doesn't exist
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except Exception:
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Check for unsafe members before extraction
+            for member in tar.getnames():
+                # Resolve the member's path relative to dest_path
+                # If member is a directory, we need to check its contents too
+                # We need to resolve the path and ensure it stays within dest_path
+                
+                # Get the full path if it's absolute
+                if os.path.isabs(member):
+                    member_path = member
+                else:
+                    member_path = os.path.join(dest_path, member)
+                
+                # Normalize the path to resolve ..
+                try:
+                    normalized_member = os.path.normpath(member_path)
+                except Exception:
+                    return False
+                
+                # Check if normalized path escapes dest_path
+                if not normalized_path_is_within(dest_path, normalized_member):
+                    return False
+                
+                # Check for symlinks
+                if member.isfile() or member.isdir():
+                    continue
+                
+                # Check for hard links
+                if member.issym() or member.islnk():
+                    # Check link target
+                    link_target = member.linkname
+                    if os.path.isabs(link_target):
+                        link_target = os.path.join(dest_path, link_target)
+                    else:
+                        link_target = os.path.join(dest_path, member.name, link_target)
+                    
+                    normalized_link_target = os.path.normpath(link_target)
+                    if not normalized_link_target_is_within(dest_path, normalized_link_target):
+                        return False
+                
+                # Check for device files
+                if member.devtype():
+                    return False
+                
+                # Check for other types that might be dangerous
+                if member.type() not in ('file', 'dir'):
+                    return False
+            
+            # Now perform the extraction
+            for member in tar:
+                member_path = os.path.join(dest_path, member.name) if not os.path.isabs(member.name) else member.name
+                
+                # Normalize and validate again before extraction
+                normalized_member_path = os.path.normpath(member_path)
+                if not normalized_member_path_is_within(dest_path, normalized_member_path):
+                    return False
+                
+                if member.isdir():
+                    os.makedirs(member_path, exist_ok=True)
+                else:
+                    # Extract the file
+                    tar.extract(member, dest_path)
+    
+    except Exception:
+        return False
+    
+    return True
+
+def normalized_path_is_within(base: str, path: str) -> bool:
+    """Check if a path is within a base directory."""
+    try:
+        base = os.path.normpath(base)
+        path = os.path.normpath(path)
+        
+        # If path is absolute, it must be under base
+        if os.path.isabs(path):
+            return path.startswith(os.path.join(base, os.sep) + os.sep) or path == base
+        
+        # If path is relative, it must be under base
+        if not os.path.isabs(path):
+            # Join and normalize
+            combined = os.path.normpath(os.path.join(base, path))
+            return combined == base or combined.startswith(os.path.join(base, os.sep) + os.sep)
+        
+        return False
+    except Exception:
+        return False
+
+def normalized_link_target_is_within(dest_path: str, link_target: str) -> bool:
+    """Check if a link target is within the destination directory."""
+    return normalized_path_is_within(dest_path, link_target)

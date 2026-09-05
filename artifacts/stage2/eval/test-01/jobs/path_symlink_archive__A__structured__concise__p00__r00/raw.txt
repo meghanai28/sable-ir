@@ -1,0 +1,86 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def _is_safe_path(base_path: str, member_name: str) -> bool:
+    """Check if extracting a member would escape the base path."""
+    # Normalize the base path to absolute and resolve any . or ..
+    base_path = os.path.abspath(base_path)
+    
+    # Construct the potential destination path for this member
+    # We use os.path.join to handle the name, then resolve it
+    dest_path = os.path.join(base_path, member_name)
+    dest_path = os.path.normpath(dest_path)
+    
+    # Ensure the resolved path starts with the base path
+    # This handles cases like "../etc/passwd" or "foo/../bar"
+    if not (dest_path.startswith(base_path + os.sep) or dest_path == base_path):
+        return False
+    
+    return True
+
+def _validate_and_extract_member(tar: tarfile.TarFile, member: tarfile.TarInfo, dest_path: str) -> bool:
+    """
+    Validate a single archive member for safety and then extract it.
+    Returns True if successful, False otherwise.
+    """
+    # Check for symlinks and hardlinks
+    if member.issym() or member.islnk():
+        return False
+    
+    # Check if the member name itself escapes the destination
+    if not _is_safe_path(dest_path, member.name):
+        return False
+    
+    # Extract the member
+    try:
+        tar.extract(member, path=dest_path)
+        return True
+    except Exception:
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive beneath dest_path.
+    Returns True on complete success, False on any validation or extraction failure.
+    """
+    # Normalize dest_path to absolute
+    dest_path = os.path.abspath(dest_path)
+    
+    # Ensure dest_path exists (create if needed)
+    if not os.path.exists(dest_path):
+        try:
+            os.makedirs(dest_path)
+        except Exception:
+            return False
+    
+    # Open the archive
+    try:
+        tar = tarfile.open(tar_path)
+    except Exception:
+        return False
+    
+    try:
+        # Get all members first for validation
+        members = tar.getmembers()
+        
+        # Validate all members before extracting any
+        for member in members:
+            # Check for symlinks or hardlinks
+            if member.issym() or member.islnk():
+                return False
+            
+            # Check if the member name escapes the destination
+            if not _is_safe_path(dest_path, member.name):
+                return False
+        
+        # Extract all validated members
+        for member in members:
+            if not _validate_and_extract_member(tar, member, dest_path):
+                return False
+        
+        return True
+        
+    finally:
+        tar.close()

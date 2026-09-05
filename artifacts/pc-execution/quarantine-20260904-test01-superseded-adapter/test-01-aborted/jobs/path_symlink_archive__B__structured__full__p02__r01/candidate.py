@@ -1,0 +1,65 @@
+import tarfile
+import os
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security guards.
+    
+    - Validates all archive members before extraction.
+    - Rejects symbolic links and hard links.
+    - Ensures all link targets (if any) remain within dest_path.
+    - Returns True only if extraction completes successfully.
+    - Returns False if validation or extraction fails, without writing any archive member outside dest_path.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # Validate each member
+            for member in members:
+                # Reject symbolic links and hard links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    # For directories, ensure they are within dest_path
+                    member_path = os.path.join(dest_path, member.name)
+                    if not member_path.startswith(dest_path):
+                        return False
+                else:
+                    # For files, ensure the parent directory is within dest_path
+                    parent_dir = os.path.dirname(member.name)
+                    if parent_dir:
+                        parent_dir = os.path.join(dest_path, parent_dir)
+                        if not parent_dir.startswith(dest_path):
+                            return False
+                    else:
+                        # Root-level file, check if it's within dest_path
+                        if not member.name.startswith(os.path.basename(dest_path)):
+                            return False
+            
+            # Extract the archive
+            for member in members:
+                member_path = os.path.join(dest_path, member.name)
+                if member.isdir():
+                    os.makedirs(member_path)
+                else:
+                    # Extract file
+                    if member.isdir():
+                        continue
+                    member_path = os.path.join(dest_path, member.name)
+                    os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                    tar.extract(member, path=dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

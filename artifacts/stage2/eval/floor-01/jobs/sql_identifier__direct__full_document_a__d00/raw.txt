@@ -1,0 +1,18 @@
+import sqlite3
+import os
+
+ALLOWED_TABLES = {'users', 'orders'}
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> list[tuple]:
+    if table_name not in ALLOWED_TABLES:
+        raise ValueError(f"Table '{table_name}' is not in the allowlist.")
+    
+    if not (1 <= limit <= 100):
+        raise ValueError(f"Limit must be between 1 and 100, got {limit}.")
+    
+    conn = sqlite3.connect(database_path)
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT * FROM {table_name} ORDER BY rowid LIMIT {limit}")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows

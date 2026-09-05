@@ -1,0 +1,118 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Returns True only if all members and links are validated and extracted completely
+    without writing outside dest_path. Returns False if validation or extraction fails.
+    """
+    # Normalize and validate dest_path
+    dest_path = os.path.realpath(dest_path)
+    if not dest_path.startswith(os.sep) and dest_path != '.':
+        dest_path = os.path.realpath(os.path.join(dest_path, ''))
+    
+    # Ensure dest_path is within root (no escapes)
+    if dest_path.startswith(os.sep) or dest_path == '.':
+        pass
+    else:
+        # Check if it's an absolute path
+        if os.path.isabs(dest_path):
+            real_dest = os.path.realpath(dest_path)
+            if not real_dest.startswith(os.sep) and real_dest != '.':
+                # This shouldn't happen for absolute paths but be safe
+                pass
+    
+    # Create a temporary directory for safe extraction
+    with tempfile.TemporaryDirectory() as temp_extract_dir:
+        try:
+            # Extract to temporary directory first
+            with tarfile.open(tar_path, 'r:*') as tar:
+                for member in tar.getmembers():
+                    # Check if member name escapes root
+                    member_name = member.name
+                    if member_name.startswith(('/', '\\')) or member_name.startswith('..'):
+                        return False
+                    
+                    # Resolve the full path in temp directory
+                    temp_full_path = os.path.join(temp_extract_dir, member_name)
+                    
+                    # Handle symlinks in tar
+                    if member.issym() or member.islnk():
+                        link_target = member.linkname
+                        # Check if link target escapes root
+                        if link_target.startswith(('/', '\\')) or link_target.startswith('..'):
+                            return False
+                        
+                        # Resolve link target relative to temp_extract_dir
+                        link_target_resolved = os.path.join(temp_extract_dir, link_target)
+                        if os.path.isabs(link_target):
+                            link_target_resolved = os.path.realpath(link_target)
+                        else:
+                            link_target_resolved = os.path.realpath(os.path.join(temp_extract_dir, link_target))
+                        
+                        # Check if link target escapes root
+                        if link_target_resolved.startswith(('/', '\\')) or link_target_resolved == '.':
+                            return False
+                        
+                        # Create link in temp directory
+                        if member.issym():
+                            os.symlink(link_target, temp_full_path)
+                        else:
+                            os.symlink(link_target, temp_full_path)
+                    elif member.isdir():
+                        os.makedirs(temp_full_path, exist_ok=True)
+                    else:
+                        # Extract file
+                        tar.extract(member, temp_extract_dir)
+            
+            # Now validate that nothing outside dest_path was written
+            # Copy all extracted files from temp to dest_path
+            for root, dirs, files in os.walk(temp_extract_dir):
+                # Skip the temp_extract_dir itself
+                if root == temp_extract_dir:
+                    continue
+                    
+                # Check if any directory or file is outside dest_path
+                for dir_name in dirs:
+                    dir_path = os.path.join(root, dir_name)
+                    if not dir_path.startswith(dest_path):
+                        return False
+                
+                for file_name in files:
+                    file_path = os.path.join(root, file_name)
+                    if not file_path.startswith(dest_path):
+                        return False
+            
+            # Copy files from temp to dest_path
+            for root, dirs, files in os.walk(temp_extract_dir):
+                if root == temp_extract_dir:
+                    continue
+                    
+                # Copy directories
+                for dir_name in dirs:
+                    src_dir = os.path.join(root, dir_name)
+                    dst_dir = os.path.join(dest_path, dir_name)
+                    os.makedirs(dst_dir, exist_ok=True)
+                    # Copy contents of directory
+                    for file_name in os.listdir(src_dir):
+                        src_file = os.path.join(src_dir, file_name)
+                        dst_file = os.path.join(dst_dir, file_name)
+                        if os.path.isdir(src_file):
+                            os.makedirs(dst_file, exist_ok=True)
+                        else:
+                            shutil.copy2(src_file, dst_file)
+                
+                # Copy files
+                for file_name in files:
+                    src_file = os.path.join(root, file_name)
+                    dst_file = os.path.join(dest_path, file_name)
+                    shutil.copy2(src_file, dst_file)
+            
+            return True
+            
+        except Exception:
+            return False

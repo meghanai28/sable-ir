@@ -1,0 +1,168 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract components
+    parsed = urllib.parse.urlparse(url)
+    
+    # Determine the scheme and default port
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Check if port is specified and validate it
+    if parsed.port is not None:
+        if parsed.port != default_port:
+            raise ValueError("Only default ports for HTTP and HTTPS are allowed")
+    
+    # Resolve the hostname to an IP address
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL must have a valid hostname")
+    
+    resolved_ips = resolve_host(hostname)
+    
+    # Check if any resolved IP belongs to the default port
+    # Note: The plan says "raise ValueError unless the resolved IP belongs to the default port"
+    # This implies we check if the resolved IP is valid for the scheme's default port.
+    # However, IP addresses don't "belong" to a port. The check likely means:
+    # 1. The resolved IP must be valid (not empty).
+    # 2. The port must be the default port (already checked above).
+    # Re-reading: "raise ValueError unless the resolved IP belongs to the default port for HTTP or HTTPS"
+    # This phrasing is slightly ambiguous. Given the context of "dangerous operation is opening... HTTP connection",
+    # it likely means we only allow requests on the default ports, which we already checked.
+    # The mention of resolving to an IP might be a red herring or a specific constraint on the resolve_host function.
+    # Let's assume the constraint is simply that we must use the default port (checked) and the resolve_host must return valid IPs.
+    
+    # Construct the request URL, ensuring we don't follow redirects
+    # We will use urllib.request which handles redirects by default, so we need to disable that.
+    # However, the plan says "Follow the initial destination only and never follow a redirect".
+    # We can achieve this by setting redirect handling to False.
+    
+    # Create a request object
+    # We need to pass the resolved host or use the URL directly.
+    # The plan says "Normalize the requested host by resolving it...".
+    # This suggests we might need to replace the hostname in the URL with the resolved IP?
+    # Or just validate that resolve_host works.
+    # "concatenated into an HTTP request" -> standard urllib behavior.
+    # "raise ValueError unless the resolved IP belongs to the default port" -> This is the tricky part.
+    # If the resolved IP is just a string of dots, it doesn't "belong" to a port.
+    # Perhaps the intent is: if the resolved IP is not valid, raise error.
+    # But more likely, given the "default port" mention, it's just reinforcing the port check.
+    # Let's proceed with standard urllib but disable redirects.
+    
+    # Disable redirects
+    opener = urllib.request.build_opener(urllib.request.HTTPRedirectProcessor())
+    # Actually, HTTPRedirectProcessor handles redirects. We want to disable it.
+    # urllib.request.Request has a method to handle redirects, but the default opener uses the processor.
+    # We can create a custom opener that doesn't use the redirect processor or sets it to None.
+    # Or simply pass the request with `redirect=False` if available, but standard urllib.request doesn't have a direct flag for the opener.
+    # We can set the opener's redirect handler to None.
+    redirect_handler = None
+    opener = urllib.request.build_opener(redirect_handler)
+    
+    # Create the request
+    req = urllib.request.Request(url)
+    
+    # Perform the request
+    # The transport function is provided by the caller, but standard urllib uses http.client.
+    # The plan says "transport(url) returns a (status, headers, body) tuple".
+    # This implies we should use the provided `transport` function instead of urllib's internal http.client.
+    # But how to use `transport` with `urllib`?
+    # We need to construct the request manually using the transport.
+    
+    # Since `transport` is external, we must use it directly.
+    # We need to build a socket connection or use a low-level interface.
+    # The plan says "opening and reading an HTTP connection" is the dangerous operation.
+    # We are implementing `fetch_text` using `transport`.
+    # `transport(url)` returns (status, headers, body).
+    # We need to parse the URL, resolve the host, check the port, then call `transport`.
+    
+    # Wait, `transport(url)` takes a URL string. Does it handle the resolution internally?
+    # The plan says "Normalize the requested host by resolving it... and raise ValueError unless...".
+    # This suggests we must perform the check before calling `transport`.
+    # But `transport` is the mechanism to open the connection.
+    # If `transport` is a custom function provided by the user, we just call it after our checks.
+    
+    # Steps:
+    # 1. Parse URL.
+    # 2. Check scheme (http/https).
+    # 3. Check port (must be default).
+    # 4. Resolve host.
+    # 5. Call transport.
+    # 6. Check status == 200.
+    # 7. Return body.
+    # 8. Never follow redirect (handled by not following redirects in the transport or by checking URL before calling).
+    #    Since we call `transport(url)` directly, we assume `transport` does not follow redirects or we must ensure the URL passed is the final one.
+    #    The plan says "Follow the initial destination only". This implies if the URL has a fragment or query, we use it as is, but if it's a redirect URL, we don't follow it.
+    #    But `transport` is a black box. We assume it handles the connection.
+    #    The key is we don't use urllib's redirect handling.
+    
+    # Wait, the plan says "Treat url as untrusted input that is concatenated into an HTTP request".
+    # This might imply we should use the URL directly.
+    # But we must resolve the host.
+    # If `transport` is a function that takes a URL and opens a connection, we call it.
+    # The resolution check is a precondition.
+    
+    # Let's implement the checks and then call transport.
+    
+    # Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Check port
+    if parsed.port is not None:
+        if parsed.port != default_port:
+            raise ValueError("Only default ports for HTTP and HTTPS are allowed")
+    
+    # Resolve host
+    resolved_ips = resolve_host(hostname)
+    if not resolved_ips:
+        raise ValueError("Failed to resolve hostname")
+    
+    # The plan says "raise ValueError unless the resolved IP belongs to the default port".
+    # This is logically impossible for an IP address.
+    # It likely means "raise ValueError unless the resolved IP is valid AND the port is the default".
+    # We already checked the port.
+    # So we proceed.
+    
+    # Call transport
+    status, headers, body = transport(url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    # Return body
+    return body
+
+# Wait, the plan says "Follow the initial destination only and never follow a redirect".
+# If the URL contains a redirect (e.g., http://example.com/redirect?to=http://evil.com), we should not follow it.
+# Since `transport` is provided by the user, we assume it respects the URL passed to it.
+# We are not using urllib's redirect handling, so we are safe.
+# But we must ensure we don't accidentally follow a redirect if `transport` does it internally.
+# The plan says "Follow the initial destination only". This implies we should not use any library that automatically follows redirects.
+# By using `transport` directly, we are following the instruction.
+
+# However, the plan says "Treat url as untrusted input that is concatenated into an HTTP request".
+# This might mean we should use the URL as the path or full URL.
+# `transport(url)` takes a URL.
+# We assume `transport` handles the connection.
+
+# One more thing: "raise ValueError for a disallowed request".
+# Disallowed requests include non-http/https, non-default ports, invalid host resolution.
+
+# Final check: "return the body for status 200".
+# We do that.
+
+# The plan says "Normalize the requested host by resolving it to an IP address through resolve_host(hostname)".
+# This implies we must call resolve_host.
+# We do that.
+
+# The plan says "raise ValueError unless the resolved IP belongs to the default port for HTTP or HTTPS".
+# This is the only confusing part.
+# Maybe it means "raise ValueError if

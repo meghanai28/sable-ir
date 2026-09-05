@@ -1,0 +1,98 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory, rejecting any members
+    that are symbolic links, hard links, or have paths that escape the
+    destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory where the archive should be extracted.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Ensure dest_path exists and is a directory
+    try:
+        if not os.path.isdir(dest_path):
+            return False
+    except (OSError, NotADirectoryError):
+        return False
+
+    # Resolve dest_path to an absolute path for validation
+    try:
+        resolved_dest = os.path.abspath(dest_path)
+    except (OSError, ValueError):
+        return False
+
+    # Validate tar_path exists and is a file
+    try:
+        if not os.path.isfile(tar_path):
+            return False
+    except (OSError, FileNotFoundError):
+        return False
+
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over all members
+            for member in tar.getmembers():
+                # Check for symbolic links or hard links
+                if member.issym() or member.islnk():
+                    return False
+                
+                # Construct the full destination path for this member
+                # Use the member's name directly to avoid path traversal issues
+                # We need to ensure the member's name doesn't start with .. or absolute path
+                member_name = member.name
+                
+                # Check for absolute paths or path traversal
+                if os.path.isabs(member_name):
+                    return False
+                
+                # Normalize the path to check for traversal
+                # Join with resolved_dest and normalize to catch ..
+                # However, the safest way is to check the member's name components
+                # Split by '/' and ensure no component is '..'
+                parts = member_name.split('/')
+                if '..' in parts:
+                    return False
+                
+                # Calculate the full destination path
+                dest_member_path = os.path.join(resolved_dest, member_name)
+                
+                # Normalize the path to resolve any remaining .. or .
+                # This ensures we are checking the actual resolved path
+                normalized_dest = os.path.normpath(dest_member_path)
+                
+                # Check if the normalized path is outside the resolved_dest
+                if not normalized_dest.startswith(resolved_dest + os.sep) and normalized_dest != resolved_dest:
+                    return False
+                
+                # Additional check: ensure the member name doesn't contain null bytes or other unsafe chars
+                if '\0' in member_name:
+                    return False
+
+            # If all members pass validation, proceed with extraction
+            # Use extractall with a flag to ensure no side effects, but we've already validated
+            # We need to extract carefully. Since we validated all members, we can extract.
+            # However, to be absolutely safe against any race conditions or unexpected behavior,
+            # we will extract one by one and verify the result.
+            
+            # Actually, the plan says "Do all validation before creating any file or directory".
+            # We have done that. Now we can extract.
+            # But we must ensure we don't write outside dest_path.
+            # Since we normalized paths and checked containment, we are safe.
+            
+            # Extract the archive
+            tar.extractall(path=resolved_dest)
+            
+            return True
+            
+    except (tarfile.TarError, tarfile.ReadError):
+        return False
+    except Exception:
+        return False

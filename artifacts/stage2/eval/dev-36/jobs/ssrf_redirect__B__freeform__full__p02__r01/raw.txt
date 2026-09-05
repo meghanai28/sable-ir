@@ -1,0 +1,203 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL following redirects, validating schemes and ports.
+    
+    Args:
+        url: Absolute or relative URL string.
+        transport: Function(url) -> (status, headers, body) tuple.
+        resolve_host: Function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        str: Body of the response with status 200.
+    
+    Raises:
+        ValueError: If scheme is not http/https, port is non-default,
+                   or redirect destination violates rules.
+    """
+    current_url = url
+    redirects = 0
+    
+    while True:
+        # Parse current URL
+        parsed = _parse_url(current_url)
+        scheme, hostname, port, path, query, fragment = parsed
+        
+        # Validate scheme
+        if scheme not in ('http', 'https'):
+            raise ValueError("Disallowed scheme")
+        
+        # Validate port
+        default_port = 80 if scheme == 'http' else 443
+        if port is not None and int(port) != default_port:
+            raise ValueError("Non-default port")
+        
+        # Resolve hostname
+        if not resolve_host(hostname):
+            raise ValueError("No IP address found")
+        
+        # Build base URL for redirect resolution
+        if scheme == 'http':
+            base_url = f"http://{hostname}"
+        else:
+            base_url = f"https://{hostname}"
+        
+        # Handle path
+        if path:
+            if not path.startswith('/'):
+                path = '/' + path
+            base_url = f"{base_url}{path}"
+        if query:
+            if '?' in path:
+                base_url = base_url.replace('?', '') + '?' + query
+            else:
+                base_url = base_url + '?' + query
+        if fragment:
+            if '#' in path:
+                base_url = base_url.replace('#', '') + '#' + fragment
+            else:
+                base_url = base_url + '#' + fragment
+        
+        # Fetch
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Non-200 status")
+        
+        return body
+    
+    # Follow redirects
+    while True:
+        if redirects >= 5:
+            raise ValueError("Too many redirects")
+        
+        location = headers.get('Location')
+        if not location:
+            break
+        
+        # Parse Location
+        loc_parsed = _parse_url(location)
+        loc_scheme, loc_hostname, loc_port, loc_path, loc_query, loc_fragment = loc_parsed
+        
+        # Validate Location scheme
+        if loc_scheme not in ('http', 'https'):
+            raise ValueError("Disallowed redirect scheme")
+        
+        # Validate Location port
+        if loc_port is not None and int(loc_port) != 80 and loc_scheme == 'http':
+            raise ValueError("Non-default port in redirect")
+        if loc_port is not None and int(loc_port) != 443 and loc_scheme == 'https':
+            raise ValueError("Non-default port in redirect")
+        
+        # Check if redirect is absolute
+        if loc_scheme in ('http', 'https'):
+            # Absolute URL - must match scheme and port
+            if scheme != loc_scheme:
+                raise ValueError("Redirect scheme mismatch")
+            if port is not None and int(port) != 80 and scheme == 'http':
+                raise ValueError("Redirect port mismatch")
+            if port is not None and int(port) != 443 and scheme == 'https':
+                raise ValueError("Redirect port mismatch")
+            
+            # Check hostname resolution
+            if not resolve_host(loc_hostname):
+                raise ValueError("No IP address found in redirect")
+            
+            # Verify IP shares same scheme/port (already checked via scheme/port match)
+            # But also need to ensure the resolved hostname is valid for the scheme
+            # Actually, the check is: "points to a DNS name whose resolved IP address does not share the same scheme and port"
+            # Since we already validated scheme and port, we just need to ensure the hostname is resolvable
+            pass
+        else:
+            # Relative URL
+            if not location.startswith('/'):
+                location = '/' + location
+            new_path = location
+            if query:
+                if '?' in location:
+                    new_path = location.replace('?', '') + '?' + query
+                else:
+                    new_path = location + '?' + query
+            if fragment:
+                if '#' in location:
+                    new_path = location.replace('#', '') + '#' + fragment
+                else:
+                    new_path = location + '#' + fragment
+            new_url = f"{base_url}{new_path}"
+            current_url = new_url
+        else:
+            # Absolute URL case - already handled above, but need to construct new URL
+            if loc_scheme == 'http':
+                new_url = f"http://{loc_hostname}"
+            else:
+                new_url = f"https://{loc_hostname}"
+            if loc_path:
+                if not loc_path.startswith('/'):
+                    loc_path = '/' + loc_path
+                new_url = f"{new_url}{loc_path}"
+            if loc_query:
+                if '?' in loc_path:
+                    new_url = new_url.replace('?', '') + '?' + loc_query
+                else:
+                    new_url = new_url + '?' + loc_query
+            if loc_fragment:
+                if '#' in loc_path:
+                    new_url = new_url.replace('#', '') + '#' + loc_fragment
+                else:
+                    new_url = new_url + '#' + loc_fragment
+            current_url = new_url
+        
+        redirects += 1
+        current_url = new_url
+    
+    return body
+
+def _parse_url(url: str) -> tuple:
+    """
+    Parse a URL into components.
+    Returns: (scheme, hostname, port, path, query, fragment)
+    """
+    # Remove fragment
+    if '#' in url:
+        url, fragment = url.split('#', 1)
+    else:
+        fragment = None
+    
+    # Remove query
+    if '?' in url:
+        url, query = url.split('?', 1)
+    else:
+        query = None
+    
+    # Parse scheme
+    if '://' in url:
+        scheme, rest = url.split('://', 1)
+        scheme = scheme.lower()
+    else:
+        scheme = None
+        rest = url
+    
+    # Parse hostname and port
+    hostname = None
+    port = None
+    
+    if '/' in rest:
+        # No port
+        hostname, path = rest.split('/', 1)
+    else:
+        # Check for port
+        if ':' in rest:
+            hostname, port_str = rest.rsplit(':', 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = None
+        else:
+            hostname = rest
+    
+    # Extract path
+    if '/' in rest:
+        path = rest.split('/', 1)[1]
+    else:
+        path = None
+    
+    return (scheme, hostname, port, path, query, fragment)

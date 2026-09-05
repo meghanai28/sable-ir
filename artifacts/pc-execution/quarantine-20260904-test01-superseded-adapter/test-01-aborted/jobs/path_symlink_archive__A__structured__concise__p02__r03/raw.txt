@@ -1,0 +1,88 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path, rejecting any symbolic or hard links.
+    
+    Returns True only if extraction succeeds completely; otherwise False.
+    No archive members are written outside dest_path on failure.
+    """
+    # Create a temporary directory outside the user's home or in a safe temp location
+    # to safely read the tar file and validate members without side effects.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            # Open the tar file in read-only mode
+            with tarfile.open(tar_path, 'r:*') as tar:
+                # Validate all members before extracting
+                for member in tar.getmembers():
+                    # Get the full destination path for this member
+                    dest_member = os.path.join(dest_path, member.name)
+                    
+                    # Resolve the directory part of the destination to check for .. traversal
+                    # We need to ensure that the directory structure does not escape dest_path
+                    # by resolving the relative path components.
+                    
+                    # Check for hard links
+                    if member.issym() or member.ishardlink():
+                        # Reject symbolic and hard links as per plan
+                        return False
+                    
+                    # Check for directory traversal in the member's name or path
+                    # Normalize the member name to ensure no .. escapes
+                    normalized_name = os.path.normpath(member.name)
+                    
+                    # Construct the full path and check if it escapes dest_path
+                    # We do this by resolving the path relative to dest_path and checking for ..
+                    full_path = os.path.join(dest_path, normalized_name)
+                    
+                    # Get the absolute path of dest_path
+                    abs_dest = os.path.abspath(dest_path)
+                    
+                    # Resolve the full path to check for .. traversal
+                    abs_full = os.path.abspath(full_path)
+                    
+                    # Ensure the resolved path is within dest_path
+                    if not abs_full.startswith(abs_dest + os.sep) and abs_full != abs_dest:
+                        # This could be a case where dest_path is a directory and the member is inside it,
+                        # but the check above handles the case where it escapes.
+                        # However, we need to be careful with trailing slashes.
+                        if abs_dest.endswith(os.sep):
+                            if not abs_full.startswith(abs_dest):
+                                return False
+                        else:
+                            if not abs_full.startswith(abs_dest + os.sep):
+                                return False
+                    
+                    # Additional check: ensure no .. in the normalized name that could escape
+                    # by checking the parent directories
+                    parts = normalized_name.split(os.sep)
+                    current = dest_path
+                    for part in parts:
+                        if part == '..':
+                            return False
+                        current = os.path.join(current, part)
+                    
+                    # Final check: ensure the final path is within dest_path
+                    final_abs = os.path.abspath(current)
+                    if not (final_abs == abs_dest or final_abs.startswith(abs_dest + os.sep)):
+                        return False
+                
+                # If all members are valid, proceed with extraction
+                # Use the same tar object to extract, but ensure we don't write outside dest_path
+                # We extract to the dest_path directly, but since we validated, it should be safe
+                # However, to be extra safe, we can extract to a temp dir and move, but the plan says
+                # "extract the validated archive members beneath dest_path"
+                # So we extract directly to dest_path
+                
+                # Extract the archive
+                tar.extractall(dest_path)
+                
+                return True
+                
+        except Exception:
+            # If any error occurs during validation or extraction, return False
+            # No files should be written outside dest_path
+            return False

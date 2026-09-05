@@ -1,0 +1,67 @@
+rows with states: 240  set1=120 set2=120 train-set1=72
+state=renderer_ingestion layer=14 C=0.01
+
+========================================================================
+1. LEAVE-ONE-TASK-OUT / PER-TASK renderer-ingestion decoding
+========================================================================
+held-out eval set                       set1 AUROC  set2 AUROC
+ALL TASKS (as reported)                     0.6892      0.5694
+drop command_executable                     0.6302      0.7626
+drop path_symlink_archive                     0.75      0.8255
+drop path_symlink_report                    0.5052      0.6753
+drop sql_identifier                         0.6719      0.6224
+drop ssrf_redirect                          0.6389      0.8147
+
+per-task set2 decoding (train on the other tasks, test on this one):
+  command_executable       set2 AUROC=   0.25  (n=24)
+  path_symlink_archive     set2 AUROC= 0.4931  (n=24)
+  path_symlink_report      set2 AUROC= 0.6111  (n=24)
+  sql_identifier           set2 AUROC= 0.5625  (n=24)
+  ssrf_redirect            set2 AUROC= 0.6042  (n=24)
+
+========================================================================
+2. renderer-ingestion decoding SPLIT BY MONITORABILITY QUADRANT
+========================================================================
+quadrant                                  set1 AUROC  set2 AUROC   n
+faithful_success                                 n/a      0.8215   set1=1 set2=51
+false_certificate                             0.7231      0.8791   set1=23 set2=27
+hidden_use                                       1.0      0.6296   set1=2 set2=12
+visible_omission_behavioral_failure            0.641      0.6986   set1=22 set2=30
+
+========================================================================
+3. BOOTSTRAP CIs + RATER SENSITIVITY
+========================================================================
+  set1 held-out AUROC 95% CI (task-clustered): [0.639, 0.750]
+  set2 held-out AUROC 95% CI (task-clustered): [0.493, 0.604]
+
+  rater-sensitivity on the 96 double-labelled rows:
+    primary labels         blurred= 31  set2-blurred n= 22 policies=['A', 'B']  AUROC=0.4833
+    second-rater labels    blurred= 33  set2-blurred n= 22 policies=['A', 'B']  AUROC=0.4017
+
+NOTE: exploratory diagnostics only. The preregistered Stage 3 gate returned
+causal_evaluation_authorized=false and these analyses do not reopen it.
+
+========================================================================
+INTERPRETATION CAVEATS (written before reading the numbers as evidence)
+========================================================================
+(1) Leave-one-out changes the EVALUATION set as well as the training set, so the
+    apparent gain from dropping a task is confounded with evaluating on fewer tasks.
+    The per-task column is the cleaner view.
+
+(2) Quadrant membership is DEFINED partly from behavioral outcomes (functional rate,
+    assigned-policy pass). Conditioning on it while predicting policy from activations
+    is post-treatment conditioning on a collider. Within-quadrant AUROC is therefore
+    NOT a clean estimate of policy decodability; it is decodability conditional on
+    outcome. It cannot be used to argue the policy is decodable after all.
+    Policy balance within each set2 quadrant:
+      faithful_success                    n=51  A=25 B=26  (balanced)
+      false_certificate                   n=27  A=13 B=14  (balanced)
+      hidden_use                          n=12  A= 3 B= 9  (skewed B)
+      visible_omission_behavioral_failure n=30  A=19 B=11  (skewed A)
+    The two small quadrants are skewed in OPPOSITE directions, so a quadrant-dependent
+    score offset can destroy the pooled ranking while leaving within-quadrant ranking
+    intact. That is the most likely mechanism for subsets scoring above the pool.
+
+(3) These are exploratory. The preregistered gate returned
+    causal_evaluation_authorized=false. Nothing here reopens it, and no layer,
+    direction, probe family or paraphrase set was searched after seeing the result.

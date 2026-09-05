@@ -1,0 +1,142 @@
+import urllib.parse
+import socket
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL, handling redirects and validating schemes/ports.
+    
+    Args:
+        url: The initial URL (absolute or relative).
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body of the HTTP response for status 200.
+    
+    Raises:
+        ValueError: If scheme/port is invalid, no IP found, or redirect is unsafe.
+    """
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError(f"Unsupported scheme: {parsed.scheme}")
+    
+    # Validate port
+    default_port = {'http': 80, 'https': 443}[parsed.scheme]
+    if parsed.port is not None and parsed.port != default_port:
+        raise ValueError(f"Port {parsed.port} is not the default for scheme {parsed.scheme}")
+    
+    # Resolve initial hostname
+    initial_host = parsed.hostname
+    if initial_host is None:
+        raise ValueError("Invalid URL")
+    
+    try:
+        ips = resolve_host(initial_host)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not ips:
+        raise ValueError(f"No IP address found for {initial_host}")
+    
+    # Build initial URL object for comparison
+    initial_scheme = parsed.scheme
+    initial_port = parsed.port or default_port
+    initial_netloc = parsed.netloc
+    
+    # Current URL state
+    current_scheme = initial_scheme
+    current_port = initial_port
+    current_netloc = initial_netloc
+    current_host = initial_host
+    
+    # Follow redirects
+    for _ in range(5):
+        try:
+            req = urllib.request.Request(url, method='GET')
+            response = transport(url)
+        except Exception:
+            raise ValueError("Failed to fetch URL")
+        
+        status, headers, body = response
+        
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # Check for Location header
+        location = headers.get('Location')
+        if location:
+            # Parse Location header
+            loc_parsed = urllib.parse.urlparse(location)
+            
+            # Validate Location scheme
+            if loc_parsed.scheme not in ('http', 'https'):
+                raise ValueError(f"Location has unsupported scheme: {loc_parsed.scheme}")
+            
+            # Validate Location port
+            loc_port = loc_parsed.port
+            if loc_port is not None:
+                loc_default_port = {'http': 80, 'https': 443}[loc_parsed.scheme]
+                if loc_port != loc_default_port:
+                    raise ValueError(f"Location port {loc_port} is not default for scheme {loc_parsed.scheme}")
+            
+            # Resolve Location hostname
+            loc_host = loc_parsed.hostname
+            if loc_host is None:
+                raise ValueError("Invalid Location URL")
+            
+            try:
+                loc_ips = resolve_host(loc_host)
+            except Exception as e:
+                raise ValueError(f"Failed to resolve Location hostname: {e}")
+            
+            if not loc_ips:
+                raise ValueError(f"No IP address found for {loc_host}")
+            
+            # Check if Location shares same scheme and port
+            if (loc_parsed.scheme != current_scheme or 
+                (loc_parsed.port is not None and loc_parsed.port != current_port)):
+                raise ValueError("Location does not share scheme and port with initial destination")
+            
+            # Update current URL state
+            current_scheme = loc_parsed.scheme
+            current_port = loc_parsed.port or default_port
+            current_netloc = f"{loc_parsed.hostname}"
+            current_host = loc_host
+            
+            # Reconstruct URL for next iteration
+            # Handle path and query
+            new_path = loc_parsed.path
+            if new_path == '':
+                new_path = '/'
+            new_query = loc_parsed.query
+            new_fragment = loc_parsed.fragment
+            
+            # If no path, use base path of original if not empty, else /
+            if not new_path:
+                if not parsed.path:
+                    new_path = '/'
+            
+            new_url = f"{current_scheme}://{current_netloc}{new_path}"
+            if new_query:
+                new_url += f"?{new_query}"
+            if new_fragment:
+                new_url += f"#{new_fragment}"
+            
+            url = new_url
+        else:
+            break
+    
+    # Final resolution of hostname
+    final_host = current_host
+    try:
+        final_ips = resolve_host(final_host)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve final hostname: {e}")
+    
+    if not final_ips:
+        raise ValueError(f"No IP address found for {final_host}")
+    
+    return body

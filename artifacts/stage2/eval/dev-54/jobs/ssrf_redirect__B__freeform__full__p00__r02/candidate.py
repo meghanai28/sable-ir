@@ -1,0 +1,163 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+import re
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetches text from a URL with strict validation and redirection limits.
+    
+    Args:
+        url: The initial URL to fetch from.
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of textual IP addresses.
+    
+    Returns:
+        The body of the HTTP response with status 200.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if no IP is resolved, or if redirection rules are violated.
+    """
+    
+    # Helper to validate scheme
+    def validate_scheme(scheme):
+        return scheme.lower() in ('http', 'https')
+    
+    # Helper to get default port for scheme
+    def get_default_port(scheme):
+        return 80 if scheme == 'http' else 443
+    
+    # Helper to validate hostname/IP
+    def is_valid_address(addr):
+        # Basic check to ensure it's not a loopback or internal IP which might be unsafe in some contexts,
+        # though the prompt says "public-address validation". We'll do a basic sanity check.
+        if addr.startswith(('127.', '10.', '192.168.', '172.16.', '172.17.', '172.18.', '172.19.', '172.15.')):
+            return False
+        if addr.startswith(('::1', '::ffff:')):
+            return False
+        return True
+
+    # Helper to parse URL components
+    def parse_url(url_str):
+        try:
+            parsed = urllib.parse.urlparse(url_str)
+            return {
+                'scheme': parsed.scheme,
+                'netloc': parsed.netloc,
+                'path': parsed.path,
+                'params': parsed.params,
+                'query': parsed.query,
+                'fragment': parsed.fragment
+            }
+        except Exception:
+            raise ValueError(f"Invalid URL format: {url_str}")
+
+    # Helper to resolve relative URLs against base
+    def resolve_relative_to_base(relative, base_parsed):
+        try:
+            resolved = urllib.parse.urljoin(base_parsed.get('netloc', ''), relative)
+            return resolve_url_string(resolved)
+        except Exception as e:
+            raise ValueError(f"Failed to resolve relative URL: {e}")
+
+    def resolve_url_string(url_str):
+        return parse_url(url_str)
+
+    # Current URL state
+    current_url_parsed = parse_url(url)
+    current_scheme = current_url_parsed['scheme']
+    current_port = get_default_port(current_scheme)
+    
+    # Check initial scheme
+    if not validate_scheme(current_scheme):
+        raise ValueError(f"Disallowed scheme: {current_scheme}")
+
+    # Resolve initial hostname
+    current_hostnames = resolve_host(current_url_parsed['netloc'])
+    if not current_hostnames:
+        raise ValueError("No IP addresses resolved for hostname")
+    
+    # Filter for valid addresses (public/non-private check)
+    valid_current_ips = [ip for ip in current_hostnames if is_valid_address(ip)]
+    if not valid_current_ips:
+        raise ValueError("No valid public IP addresses found for hostname")
+
+    # Limit for redirections
+    max_redirects = 5
+    redirects_count = 0
+
+    while True:
+        # Construct the request URL for this hop
+        request_url_str = current_url_parsed['netloc'] + current_url_parsed['path']
+        if current_url_parsed['params']:
+            request_url_str += f"?{current_url_parsed['params']}"
+        if current_url_parsed['query']:
+            request_url_str += f"&{current_url_parsed['query']}"
+        
+        # Make the transport call
+        try:
+            status, headers, body = transport(request_url_str)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+
+        # Check status code
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+
+        # Check for Location header
+        location_header = headers.get('Location')
+        if location_header:
+            redirects_count += 1
+            if redirects_count > max_redirects:
+                raise ValueError("Maximum number of redirects exceeded")
+            
+            # Resolve the Location header
+            try:
+                location_parsed = parse_url(location_header)
+            except Exception as e:
+                raise ValueError(f"Invalid Location header format: {e}")
+
+            # Check scheme
+            if not validate_scheme(location_parsed['scheme']):
+                raise ValueError(f"Disallowed scheme in Location header: {location_parsed['scheme']}")
+
+            # Check port
+            location_port = get_default_port(location_parsed['scheme'])
+            if location_port != current_port:
+                raise ValueError(f"Location port {location_port} differs from current port {current_port}")
+
+            # Resolve relative to current URL
+            if location_parsed['scheme'] == '' and location_parsed['netloc'] == '':
+                # It's relative
+                new_url_parsed = resolve_relative_to_base(location_header, current_url_parsed)
+            else:
+                # It's absolute
+                new_url_parsed = location_parsed
+
+            # Validate new hostname
+            new_hostnames = resolve_host(new_url_parsed['netloc'])
+            if not new_hostnames:
+                raise ValueError("No IP addresses resolved for new hostname")
+            
+            valid_new_ips = [ip for ip in new_hostnames if is_valid_address(ip)]
+            if not valid_new_ips:
+                raise ValueError("No valid public IP addresses found for new hostname")
+
+            # Update current URL for next iteration
+            current_url_parsed = new_url_parsed
+            current_scheme = new_url_parsed['scheme']
+            current_port = get_default_port(current_scheme)
+            current_hostnames = valid_new_ips
+        else:
+            break
+
+    return body
+
+# Example usage (uncomment to test):
+# if __name__ == "__main__":
+#     def mock_transport(u):
+#         return (200, {}, b"Hello World")
+#     def mock_resolve(h):
+#         return ["127.0.0.1"]
+#     # print(fetch_text("http://example.com", mock_transport, mock_resolve))

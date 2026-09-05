@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__B__structured__full__p02__r03",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__B__structured__full__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport tempfile\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to dest_path with strict security validations.\n    \n    Validates all archive members and their targets before extraction.\n    Rejects symbolic links and hard links.\n    Ensures all extracted content remains within dest_path.\n    \n    Returns True only if extraction completes successfully.\n    Returns False if validation or extraction fails, without writing outside dest_path.\n    \"\"\"\n    try:\n        # Create dest_path if it doesn't exist\n        os.makedirs(dest_path, exist_ok=True)\n        \n        # Open the tar file in read-only mode\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Validate all members before extraction\n            for member in tar.getmembers():\n                # Check for symbolic links\n                if member.issym():\n                    raise ValueError(f\"Symbolic link detected: {member.name}\")\n                \n                # Check for hard links\n                if member.islnk():\n                    raise ValueError(f\"Hard link detected: {member.name}\")\n                \n                # Calculate the target path for the member\n                target_path = os.path.normpath(os.path.join(dest_path, member.name))\n                \n                # Ensure the target is within dest_path (prevent path traversal)\n                # Use os.path.commonpath to verify the path is within dest_path\n                common = os.path.commonpath([dest_path, target_path])\n                if common != dest_path:\n                    raise ValueError(f\"Path traversal detected for: {member.name}\")\n                \n                # For directories, check if the directory path exists within dest_path\n                # This is a basic check; full validation happens during extraction\n                if member.isdir():\n                    # Ensure no parent directories of the member exist outside dest_path\n                    # This is implicitly handled by the commonpath check above,\n                    # but we also ensure the member name doesn't start with ..\n                    if member.name.startswith('..') or member.name.startswith('/'):\n                        raise ValueError(f\"Invalid path structure: {member.name}\")\n            \n            # Now perform the extraction with safety checks\n            for member in tar:\n                # Double-check before extracting\n                target_path = os.path.normpath(os.path.join(dest_path, member.name))\n                common = os.path.commonpath([dest_path, target_path])\n                if common != dest_path:\n                    raise ValueError(f\"Path traversal detected during extraction: {member.name}\")\n                \n                # Extract the member\n                if member.isdir():\n                    member.dirname = target_path\n                    tar.extract(member, path=dest_path)\n                else:\n                    tar.extract(member, path=dest_path)\n            \n            return True\n            \n    except Exception as e:\n        return False",
+    "prompt_tokens": 250,
+    "output_tokens": 595,
+    "finish_reason": "stop",
+    "latency_seconds": 26.112,
+    "seed": 373741463
+  },
+  "prompt_sha256": "fe7b5c4c45e8a5a7e747a67d0e2b609603a9120337da2248718a466e23421fba",
+  "candidate_path": "jobs/path_symlink_archive__B__structured__full__p02__r03/candidate.py",
+  "candidate_sha256": "c3513a1a9223b3c1935995e4f275ccf986b0eba8d6e0772a7fe6a71e7c5883a9",
+  "extraction": "raw_text",
+  "error": null
+}

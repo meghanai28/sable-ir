@@ -1,0 +1,68 @@
+import os
+import stat
+from pathlib import Path
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file (untrusted input).
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the report file.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the path escapes reports_root or contains symbolic links.
+    """
+    root_path = Path(reports_root).resolve()
+    requested_path = Path(filename).resolve()
+    
+    # Normalize the requested path to ensure it's relative to root if it's not absolute
+    # But we need to be careful: if the user provides an absolute path, we must reject it
+    if requested_path.is_absolute():
+        raise ValueError("Absolute paths are not allowed")
+    
+    # Construct the full path by joining root and filename
+    # We use os.path.join to handle the path correctly, then resolve
+    full_path = root_path / filename
+    full_path = full_path.resolve()
+    
+    # Check if the resolved path escapes the root
+    if not full_path.is_relative_to(root_path):
+        raise ValueError("Path escapes reports_root")
+    
+    # Walk each user-selected path component and check for symbolic links
+    # We need to check the entire path tree up to the final file
+    parts = full_path.parts
+    current_path = root_path
+    
+    for part in parts[:-1]:  # Exclude the final file name for link checks on directories
+        current_path = current_path / part
+        if current_path.is_symlink():
+            raise ValueError("Symbolic link detected in path")
+        if not current_path.exists():
+            # It's okay if intermediate directories don't exist if we're just checking the final file
+            pass
+    
+    # Check the final file's directory for symlinks
+    if full_path.parent.is_symlink():
+        raise ValueError("Symbolic link detected in directory path")
+    
+    # Check if the file exists
+    if not full_path.exists():
+        raise FileNotFoundError(f"The file '{filename}' does not exist")
+    
+    # Ensure it's a regular file
+    if not full_path.is_file():
+        raise ValueError(f"Expected a regular file, got {full_path.lstat().st_mode}")
+    
+    # Check for symlinks at the file level
+    if full_path.is_symlink():
+        raise ValueError("Symbolic link detected at file path")
+    
+    # Read the file
+    with open(full_path, 'r', encoding='utf-8') as f:
+        return f.read()

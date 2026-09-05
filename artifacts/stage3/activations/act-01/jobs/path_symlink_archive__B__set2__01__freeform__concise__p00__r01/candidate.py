@@ -1,0 +1,109 @@
+import os
+import tarfile
+import tempfile
+import shutil
+
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to its absolute form without resolving symlinks or following .."""
+    return os.path.abspath(path)
+
+
+def _resolve_component(path: str, base: str) -> str:
+    """Resolve a path component relative to base, handling .. safely."""
+    # Split into parts to handle .. manually without using os.path.normpath which might resolve ..
+    parts = path.split(os.sep)
+    resolved_parts = []
+    for part in parts:
+        if part == '..':
+            if resolved_parts:
+                resolved_parts.pop()
+        elif part:
+            resolved_parts.append(part)
+    return os.path.join(base, *resolved_parts)
+
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive beneath dest_path.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction succeeds completely, False otherwise.
+        No files are written outside dest_path on failure.
+    """
+    # Normalize inputs
+    tar_path = _normalize_path(tar_path)
+    dest_path = _normalize_path(dest_path)
+    
+    # Ensure dest_path directory exists
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Validate dest_path does not escape intended root (itself)
+    # Since we normalized it to absolute, we just ensure we don't do anything outside
+    # The critical check is during member resolution
+    
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members
+            members = tar.getmembers()
+            
+            # First pass: Validate all members before any extraction
+            for member in members:
+                # Resolve the member's name relative to dest_path
+                # We need to resolve the path as it would be written
+                # The member.name is the path within the archive
+                # We resolve it against dest_path
+                
+                # Construct the full path as if extracting
+                # We must handle .. carefully
+                full_path = _resolve_component(member.name, dest_path)
+                
+                # Ensure the resolved path is still within dest_path
+                # Since dest_path is absolute and we used abspath logic in _resolve_component
+                # we just need to check if full_path starts with dest_path + os.sep
+                # or is equal to dest_path (which shouldn't happen for non-root members)
+                
+                if not (full_path.startswith(dest_path + os.sep) or full_path == dest_path):
+                    # Check for hidden .. escape that might bypass the check if not normalized
+                    # Re-check using os.path.commonpath for safety against race conditions or weird paths
+                    try:
+                        common = os.path.commonpath([dest_path, full_path])
+                        if common != dest_path:
+                            return False
+                    except ValueError:
+                        return False
+                
+                # Additional check: ensure no .. in the relative part
+                # Split the member name and check for ..
+                parts = member.name.split(os.sep)
+                for i, part in enumerate(parts):
+                    if part == '..':
+                        return False
+            
+            # Second pass: Extract members
+            for member in members:
+                member_dir = os.path.dirname(member.name)
+                member_file = os.path.basename(member.name)
+                
+                # Create directories if needed
+                if member_dir:
+                    dir_path = os.path.join(dest_path, member_dir)
+                    os.makedirs(dir_path, exist_ok=True)
+                
+                # Extract the member
+                try:
+                    tar.extract(member, path=dest_path)
+                except Exception:
+                    return False
+            
+            return True
+            
+    except Exception:
+        return False

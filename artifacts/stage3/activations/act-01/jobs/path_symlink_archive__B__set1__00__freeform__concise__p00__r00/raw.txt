@@ -1,0 +1,62 @@
+import os
+import tarfile
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully without writing outside dest_path.
+        False if validation fails or extraction is interrupted.
+    """
+    try:
+        # Resolve and normalize the destination path
+        resolved_dest = os.path.realpath(dest_path)
+        
+        # Create the destination directory if it doesn't exist
+        os.makedirs(resolved_dest, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of members
+            members = tar.getmembers()
+            
+            # Validate each member before extraction
+            for member in members:
+                # Calculate the target path for this member
+                if member.isdir():
+                    target_path = os.path.join(resolved_dest, member.name)
+                else:
+                    target_path = os.path.join(resolved_dest, member.name)
+                
+                # Resolve the real path of the target
+                try:
+                    resolved_target = os.path.realpath(target_path)
+                except (OSError, ValueError):
+                    return False
+                
+                # Check if the resolved target escapes the destination root
+                if not resolved_target.startswith(resolved_dest + os.sep) and resolved_target != resolved_dest:
+                    return False
+            
+            # If all members pass validation, proceed with extraction
+            for member in members:
+                if member.isdir():
+                    member.isdir = True
+                else:
+                    member.isdir = False
+                
+                try:
+                    tar.extract(member, path=resolved_dest)
+                except (tarfile.TarError, OSError):
+                    return False
+            
+            return True
+            
+    except (tarfile.TarError, OSError, ValueError):
+        return False

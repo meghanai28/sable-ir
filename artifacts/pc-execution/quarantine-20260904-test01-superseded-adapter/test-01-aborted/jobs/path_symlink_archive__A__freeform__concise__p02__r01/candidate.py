@@ -1,0 +1,109 @@
+import os
+import tarfile
+import shutil
+import tempfile
+import stat
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path by resolving symlinks and removing .. components."""
+    return os.path.normpath(os.path.realpath(path))
+
+def _is_within_root(root: str, candidate: str) -> bool:
+    """Check if candidate is within root directory."""
+    try:
+        candidate_real = os.path.realpath(candidate)
+        root_real = os.path.realpath(root)
+        # Ensure we are comparing directories, not files
+        if not candidate_real.endswith(os.sep):
+            candidate_real += os.sep
+        if not root_real.endswith(os.sep):
+            root_real += os.sep
+        return candidate_real.startswith(root_real)
+    except (ValueError, OSError):
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path with strict security validation.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Resolve and validate dest_path immediately
+        dest_path_real = _normalize_path(dest_path)
+        
+        # Reject absolute paths that escape the root
+        if dest_path_real.startswith(os.sep) or dest_path_real.startswith('.\\'):
+            return False
+            
+        # Validate that dest_path is within itself (trivial but safe)
+        if not _is_within_root(dest_path_real, dest_path_real):
+            return False
+            
+        # Create the destination directory if it doesn't exist
+        try:
+            os.makedirs(dest_path_real, exist_ok=True)
+        except OSError:
+            return False
+            
+        # Open the archive for reading only
+        try:
+            tar = tarfile.open(tar_path, 'r:*')
+        except (OSError, tarfile.TarError):
+            return False
+            
+        # Extract members one by one with strict validation
+        for member in tar.getmembers():
+            # Validate member name doesn't contain null bytes
+            if '\0' in member.name:
+                tar.close()
+                return False
+                
+            # Resolve the target path relative to the destination root
+            member_dir = os.path.dirname(member.name)
+            member_file = member.name
+            
+            # Construct the full path for the member
+            full_member_dir = os.path.join(dest_path_real, member_dir)
+            full_member_file = os.path.join(dest_path_real, member_file)
+            
+            # Normalize the full paths to resolve .. and symlinks
+            full_member_dir_real = _normalize_path(full_member_dir)
+            full_member_file_real = _normalize_path(full_member_file)
+            
+            # Check if the resolved paths escape the destination root
+            if not _is_within_root(dest_path_real, full_member_dir_real):
+                tar.close()
+                return False
+                
+            if not _is_within_root(dest_path_real, full_member_file_real):
+                tar.close()
+                return False
+            
+            # Check for symlinks and hardlinks that point outside the destination
+            if member.issym() or member.islnk():
+                # Resolve the link target
+                link_target = member.linkname
+                link_target_real = _normalize_path(os.path.join(dest_path_real, link_target))
+                
+                if not _is_within_root(dest_path_real, link_target_real):
+                    tar.close()
+                    return False
+                    
+            # Extract the member
+            try:
+                tar.extract(member, path=dest_path_real)
+            except (OSError, tarfile.TarError):
+                tar.close()
+                return False
+                
+        tar.close()
+        return True
+        
+    except Exception:
+        return False

@@ -1,0 +1,134 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract scheme, netloc, and path
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme
+    netloc = parsed.netloc
+    path = parsed.path
+    
+    # Validate scheme: only http or https on default ports are allowed
+    if scheme not in ('http', 'https'):
+        raise ValueError("Disallowed scheme")
+    
+    # Determine the port (default for http is 80, for https is 443)
+    if scheme == 'http':
+        default_port = 80
+    else:
+        default_port = 443
+    
+    # Extract the effective hostname (netloc may contain port, need to handle it)
+    # The plan says resolve_host can resolve the hostname. We need to strip the port if present in netloc
+    # Standard netloc format: hostname:port or just hostname
+    if ':' in netloc:
+        hostname = netloc.rsplit(':', 1)[0]
+    else:
+        hostname = netloc
+    
+    # Resolve the hostname to IP addresses
+    resolved_ips = resolve_host(hostname)
+    
+    # Check if the resolved IPs match the requested destination
+    # The plan implies checking the resolved hostname against the requested destination.
+    # Since we have the original netloc (which includes port info potentially) and the resolved IPs,
+    # we should verify that the connection is going to the intended host.
+    # However, the strict check "against the requested destination" usually means verifying the host matches.
+    # We will proceed to construct the URL with the resolved IP to ensure we connect to the right place.
+    # Note: The plan says "check the resolved hostname against the requested destination only after resolution is complete".
+    # This implies we should ensure the IP we are about to use corresponds to the hostname we resolved.
+    # We will use the first resolved IP to construct the base URL for the request.
+    
+    # Construct the new URL using the resolved IP
+    # We need to handle the port in the new URL. If the original URL used a non-default port, we should preserve it?
+    # The plan says "Accept HTTP or HTTPS on its default port". This implies we should only accept if the scheme matches,
+    # but does it restrict the port? "on its default port" suggests we should default to the standard port if not specified,
+    # or perhaps it implies we only accept requests where the port is the default one?
+    # Re-reading: "Accept HTTP or HTTPS on its default port". This could mean:
+    # 1. Only accept http://host:80 and https://host:443.
+    # 2. Or it means "Accept HTTP/HTTPS, and use the default port if not specified".
+    # Given the phrasing "on its default port", it likely restricts the port.
+    # However, the input URL might not have a port. If it has a non-default port, should we reject it?
+    # The safest interpretation of "Accept ... on its default port" is that the scheme must be http/https AND the port must be the default one.
+    # But often in these constraints, if the port is omitted, it defaults. If explicitly set to non-default, it might be rejected.
+    # Let's look at the constraint: "Accept the scheme only when it is http or https on the default port".
+    # This strongly suggests if the scheme is http/https but the port is not the default, it's a disallowed request.
+    # Let's check the resolved hostname against the requested destination.
+    
+    # Let's assume the port in the URL must be the default if specified, or omitted (which defaults to default).
+    # If the URL has a non-default port, we raise ValueError.
+    # Wait, the plan says "Accept the scheme only when it is http or https on the default port".
+    # This phrasing is slightly ambiguous. It could mean "Accept the scheme [which is] http or https [and the connection is] on its default port".
+    # Let's assume we must use the default port. If the URL specifies a different port, we should probably reject it or use the default?
+    # Given "raise ValueError for a disallowed request", and "Accept ... on its default port", I will enforce that the port must be the default one.
+    # If the URL has a port, it must be the default one. If it doesn't, we use the default one.
+    
+    # Re-evaluating "on its default port":
+    # If the URL is "http://example.com:8080", is this allowed? "Accept ... on its default port".
+    # This likely means the port MUST be the default port.
+    # So if the URL has a port != default, raise ValueError.
+    # If the URL has no port, use the default.
+    
+    # Let's parse the netloc again to be sure about the port.
+    # If the netloc contains a port and it's not the default, reject.
+    # If the netloc contains a port and it is the default, proceed.
+    # If the netloc has no port, proceed with default.
+    
+    # Actually, a simpler interpretation often used in these constraints:
+    # "Accept HTTP or HTTPS" -> scheme check.
+    # "on its default port" -> The port used must be the default port.
+    # So if the URL specifies a non-default port, it's disallowed.
+    
+    # Let's check if the netloc has a port.
+    if ':' in netloc:
+        explicit_port = int(netloc.rsplit(':', 1)[1])
+        if explicit_port != default_port:
+            raise ValueError("Non-default port not allowed")
+    
+    # Now construct the URL for the request using the resolved IP and the default port.
+    # We replace the hostname in the netloc with the resolved IP.
+    # We keep the path and query string if any.
+    
+    # We need to make sure the resolved IP matches the hostname we resolved.
+    # The plan says "check the resolved hostname against the requested destination".
+    # We have the hostname from the URL. We resolved it. We are connecting to the IP.
+    # The check is implicit in the fact that we resolved it. But maybe we need to verify the IP is valid?
+    # The plan says "Resolve the hostname to IP addresses before establishing the connection, and check the resolved hostname against the requested destination only after resolution is complete."
+    # This might mean we should ensure the IP we get corresponds to the hostname.
+    # Since we resolved `hostname` to `resolved_ips`, and we are connecting to `resolved_ips`, the check passes.
+    # However, if the user requested `http://example.com` and `resolve_host` returns `['1.2.3.4']`, we connect to `1.2.3.4`.
+    # Is there a case where we should reject? Maybe if the resolution fails? The plan doesn't specify behavior for failure, but implies we do it.
+    # We assume `resolve_host` returns a list of IPs.
+    
+    # Construct the new URL
+    # We replace the hostname in netloc with the first resolved IP.
+    # We keep the port as default_port (which might be the same as in netloc if it was default, or default if netloc had no port).
+    # We append the path and query.
+    
+    # Note: The original netloc might have had a query string? No, netloc is just host:port.
+    # The path and query are in the path component.
+    
+    # We need to handle the case where the original URL had a port. We decided to enforce default port.
+    # So we construct the URL with the default port.
+    
+    # Create the new URL string
+    # Format: scheme://resolved_ip:port/path?query
+    # We use the default port.
+    
+    new_netloc = f"{resolved_ips[0]}:{default_port}"
+    new_url = f"{scheme}://{new_netloc}{path}"
+    
+    # Now, we must check the status code before opening the TCP connection.
+    # The plan says: "Check the scheme, complete DNS resolution, and the status code before opening the TCP connection."
+    # This implies we should make a request (without opening the TCP connection yet? Or just check the status?)
+    # But to check the status, we need to make a request.
+    # The plan says "raise ValueError for a disallowed request".
+    # The dangerous operation is "opening and reading a network connection".
+    # But to check the status, we must open the connection.
+    # Perhaps the plan means "Check these things (as part of the validation logic) before opening the TCP connection [to the final destination]"?
+    # But checking the status requires opening the connection.
+    # Maybe the plan implies we do the request, check the status, and if 200, return body. If not, raise ValueError.
+    # The phrase "before opening the TCP connection" might be a bit misleading if we need to check status.
+    # Or it means "Ensure these checks are done before we proceed to the final step of returning the body".

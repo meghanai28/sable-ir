@@ -1,0 +1,46 @@
+import socket
+from urllib.parse import urlparse
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Parse the URL to extract the host component for validation
+    parsed = urlparse(url)
+    requested_host = parsed.netloc
+    if not requested_host:
+        raise ValueError("Invalid URL: missing host")
+    
+    # Normalize the requested host (remove port if present, keep lowercase)
+    if ':' in requested_host:
+        requested_host = requested_host.split(':')[0]
+    requested_host = requested_host.lower()
+    
+    # Resolve the hostname to IP address(es)
+    try:
+        ip_addresses = resolve_host(requested_host)
+    except Exception:
+        raise ValueError(f"Failed to resolve hostname: {requested_host}")
+    
+    if not ip_addresses:
+        raise ValueError(f"No IP address found for: {requested_host}")
+    
+    # Security check: Ensure the resolved hostname starts with the same host component
+    # This prevents host redirection attacks where the user requests 'a.com' but the server resolves to 'b.com'
+    for ip in ip_addresses:
+        if not ip.startswith(requested_host):
+            raise ValueError(f"Resolved hostname '{ip}' does not start with requested host '{requested_host}'")
+    
+    # Select the default port based on scheme
+    scheme = parsed.scheme.lower()
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Create the request URL with the resolved IP and default port
+    # We use the resolved IP to ensure we connect to the actual resolved address
+    request_url = f"{scheme}://{ip_addresses[0]}:{default_port}"
+    
+    # Make the HTTP request using the resolved IP
+    status, headers, body = transport(request_url)
+    
+    # Validate status code
+    if status != 200:
+        raise ValueError(f"Invalid HTTP status code: {status}")
+    
+    return body

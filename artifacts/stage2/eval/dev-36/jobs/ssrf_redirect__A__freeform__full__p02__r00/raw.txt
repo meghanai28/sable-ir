@@ -1,0 +1,130 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate scheme
+    parsed_url = urllib.parse.urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Resolve initial hostname
+    initial_hostname = parsed_url.hostname
+    if not initial_hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    try:
+        ips = resolve_host(initial_hostname)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if len(ips) != 1:
+        raise ValueError("Exactly one IP address is required")
+    
+    initial_ip = ips[0]
+    initial_scheme = parsed_url.scheme
+    initial_path = parsed_url.path
+    
+    # Check initial path is absolute and doesn't start with ..
+    if not initial_path.startswith('/'):
+        raise ValueError("Initial path must be absolute")
+    if initial_path.startswith('..'):
+        raise ValueError("Initial path cannot start with ..")
+    
+    current_url = url
+    current_scheme = initial_scheme
+    current_path = initial_path
+    current_ip = initial_ip
+    
+    while True:
+        # Parse current URL
+        try:
+            current_parsed = urllib.parse.urlparse(current_url)
+        except Exception as e:
+            raise ValueError(f"Invalid URL format: {e}")
+        
+        # Check if we have a path
+        if not current_parsed.path:
+            current_path = '/'
+        
+        # Validate path
+        if not current_path.startswith('/'):
+            raise ValueError("Path must be absolute")
+        if current_path.startswith('..'):
+            raise ValueError("Path cannot start with ..")
+        
+        # Determine port
+        port = current_parsed.port
+        if port is None:
+            if current_scheme == 'http':
+                port = 80
+            elif current_scheme == 'https':
+                port = 444
+        else:
+            port = port
+        
+        # Construct the request URL for transport
+        # If no port specified, use default; if specified, use it
+        request_url = current_url
+        
+        # Make the request
+        try:
+            response = transport(request_url)
+        except Exception as e:
+            raise ValueError(f"Transport error: {e}")
+        
+        status, headers, body = response
+        
+        # Check status
+        if status != 200:
+            raise ValueError(f"Expected status 200, got {status}")
+        
+        # Check for redirect
+        location = headers.get('Location')
+        if location:
+            # Parse location
+            try:
+                redirect_parsed = urllib.parse.urlparse(location)
+            except Exception as e:
+                raise ValueError(f"Invalid redirect URL: {e}")
+            
+            # Check if absolute
+            if not redirect_parsed.scheme:
+                raise ValueError("Redirect location must be absolute")
+            
+            # Check for .. in path
+            redirect_path = redirect_parsed.path
+            if redirect_path.startswith('..'):
+                raise ValueError("Redirect path cannot start with ..")
+            
+            # Resolve redirect hostname
+            redirect_hostname = redirect_parsed.hostname
+            if not redirect_hostname:
+                raise ValueError("Redirect URL missing hostname")
+            
+            try:
+                redirect_ips = resolve_host(redirect_hostname)
+            except Exception as e:
+                raise ValueError(f"Failed to resolve redirect hostname: {e}")
+            
+            if len(redirect_ips) != 1:
+                raise ValueError("Exactly one IP address required for redirect")
+            
+            redirect_ip = redirect_ips[0]
+            
+            # Check if redirect IP is the same as initial IP (same origin)
+            # The spec says "outside the resolved initial destination"
+            # We interpret this as: if the IP is different, it's outside
+            if redirect_ip != initial_ip:
+                raise ValueError("Redirect destination must be the same as initial destination")
+            
+            # Update current URL to the redirect location
+            current_url = location
+            current_scheme = redirect_parsed.scheme
+            current_path = redirect_parsed.path
+        else:
+            break
+    
+    return body

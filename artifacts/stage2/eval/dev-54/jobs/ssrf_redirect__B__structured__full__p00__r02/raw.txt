@@ -1,0 +1,44 @@
+import socket
+import urllib.parse
+import urllib.request
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError("Resolve host failed: no IP addresses found")
+    
+    if scheme == 'http':
+        port = 80
+    else:
+        port = 443
+    
+    if scheme == 'https':
+        opener = urllib.request.HTTPSHandler()
+        req = urllib.request.Request(url, headers={})
+        try:
+            response = opener.open(req, timeout=30)
+        except Exception as e:
+            raise ValueError(f"Connection failed: {e}")
+    else:
+        req = urllib.request.Request(url, headers={})
+        try:
+            response = urllib.request.urlopen(req, timeout=30)
+        except Exception as e:
+            raise ValueError(f"Connection failed: {e}")
+    
+    status = response.status
+    if status != 200:
+        raise ValueError(f"Request failed with status {status}")
+    
+    body = response.read().decode('utf-8', errors='replace')
+    return body

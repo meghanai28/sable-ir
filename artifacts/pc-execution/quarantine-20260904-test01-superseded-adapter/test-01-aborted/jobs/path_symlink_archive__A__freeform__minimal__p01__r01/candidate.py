@@ -1,0 +1,51 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to dest_path, rejecting symbolic and hard links.
+    Returns True on complete success, False on any failure or validation error.
+    """
+    # Resolve dest_path and ensure it is relative
+    try:
+        resolved_dest = os.path.realpath(dest_path)
+    except (ValueError, OSError):
+        return False
+    
+    if os.path.isabs(resolved_dest):
+        return False
+    
+    # Create dest_path if it doesn't exist
+    try:
+        os.makedirs(resolved_dest, exist_ok=True)
+    except (OSError, ValueError):
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar.getmembers():
+                # Reject symbolic links and hard links
+                if member.issym() or member.islnk():
+                    continue
+                
+                # Check if the member is outside dest_path
+                member_path = os.path.join(resolved_dest, member.name)
+                try:
+                    resolved_member = os.path.realpath(member_path)
+                except (OSError, ValueError):
+                    continue
+                
+                if not resolved_member.startswith(resolved_dest):
+                    continue
+                
+                # Extract the member
+                try:
+                    tar.extract(member, path=resolved_dest)
+                except (tarfile.TarError, OSError):
+                    return False
+    except (tarfile.TarError, OSError, ValueError):
+        return False
+    
+    return True

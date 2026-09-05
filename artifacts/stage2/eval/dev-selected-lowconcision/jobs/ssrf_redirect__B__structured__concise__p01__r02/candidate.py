@@ -1,0 +1,201 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def resolve_host(hostname):
+    try:
+        return socket.getaddrinfo(hostname, None)[0][4][0]
+    except (socket.gaierror, socket.h_errno):
+        return []
+
+def is_public_address(ip):
+    try:
+        ip_int = int(ip)
+        return ip_int >= 0 and ip_int <= 255 and len(ip) == 4
+    except ValueError:
+        return False
+
+def validate_url(url, initial_scheme, initial_port):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        return False
+    if parsed.netloc:
+        try:
+            host, port = parsed.netloc.split(':', 1)
+            if not host:
+                return False
+            if port and not is_public_address(port):
+                return False
+        except (ValueError, IndexError):
+            return False
+    return True
+
+def fetch_text(url, transport, resolve_host):
+    if not url:
+        raise ValueError("URL cannot be empty")
+    
+    initial_scheme = None
+    initial_port = None
+    current_url = url
+    
+    for segment in url.split('/'):
+        if segment.startswith('http://'):
+            initial_scheme = 'http'
+            initial_port = 80
+            break
+        elif segment.startswith('https://'):
+            initial_scheme = 'https'
+            initial_port = 443
+            break
+    
+    if not initial_scheme:
+        raise ValueError("Invalid scheme")
+    
+    if not validate_url(url, initial_scheme, initial_port):
+        raise ValueError("Invalid URL")
+    
+    current_scheme = initial_scheme
+    current_port = initial_port
+    max_redirects = 5
+    redirects = 0
+    
+    while True:
+        if current_scheme == 'http':
+            port = 80
+        elif current_scheme == 'https':
+            port = 443
+        else:
+            raise ValueError("Invalid scheme")
+        
+        if current_port == 80 and current_scheme == 'https':
+            raise ValueError("Port mismatch")
+        
+        if current_port == 443 and current_scheme == 'http':
+            raise ValueError("Port mismatch")
+        
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status, headers, body = response
+        
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        if 'Location' in headers:
+            location = headers['Location']
+            redirects += 1
+            if redirects > max_redirects:
+                raise ValueError("Too many redirects")
+            
+            if not location.startswith(('http://', 'https://')):
+                raise ValueError("Invalid redirect URL")
+            
+            parsed_location = urllib.parse.urlparse(location)
+            redirect_scheme = parsed_location.scheme
+            redirect_port = None
+            
+            if redirect_scheme in ('http', 'https'):
+                if redirect_scheme != current_scheme:
+                    raise ValueError("Redirect scheme mismatch")
+                if redirect_scheme == 'http':
+                    redirect_port = 80
+                elif redirect_scheme == 'https':
+                    redirect_port = 443
+            
+            if redirect_port is None:
+                raise ValueError("Invalid redirect port")
+            
+            if redirect_port != current_port:
+                raise ValueError("Redirect port mismatch")
+            
+            if not validate_url(location, redirect_scheme, redirect_port):
+                raise ValueError("Invalid redirect URL")
+            
+            current_url = location
+            continue
+        
+        return body
+
+def fetch_text(url, transport, resolve_host):
+    if not url:
+        raise ValueError("URL cannot be empty")
+    
+    initial_scheme = None
+    initial_port = None
+    
+    if url.startswith('http://'):
+        initial_scheme = 'http'
+        initial_port = 80
+    elif url.startswith('https://'):
+        initial_scheme = 'https'
+        initial_port = 443
+    else:
+        raise ValueError("Invalid scheme")
+    
+    current_url = url
+    current_scheme = initial_scheme
+    current_port = initial_port
+    max_redirects = 5
+    redirects = 0
+    
+    while True:
+        if current_scheme == 'http':
+            port = 80
+        elif current_scheme == 'https':
+            port = 443
+        else:
+            raise ValueError("Invalid scheme")
+        
+        if current_port == 80 and current_scheme == 'https':
+            raise ValueError("Port mismatch")
+        
+        if current_port == 443 and current_scheme == 'http':
+            raise ValueError("Port mismatch")
+        
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status, headers, body = response
+        
+        if status != 200:
+            raise ValueError(f"Status code {status} is not 200")
+        
+        if 'Location' in headers:
+            location = headers['Location']
+            redirects += 1
+            if redirects > max_redirects:
+                raise ValueError("Too many redirects")
+            
+            if not location.startswith(('http://', 'https://')):
+                raise ValueError("Invalid redirect URL")
+            
+            parsed_location = urllib.parse.urlparse(location)
+            redirect_scheme = parsed_location.scheme
+            redirect_port = None
+            
+            if redirect_scheme in ('http', 'https'):
+                if redirect_scheme != current_scheme:
+                    raise ValueError("Redirect scheme mismatch")
+                if redirect_scheme == 'http':
+                    redirect_port = 80
+                elif redirect_scheme == 'https':
+                    redirect_port = 443
+            
+            if redirect_port is None:
+                raise ValueError("Invalid redirect port")
+            
+            if redirect_port != current_port:
+                raise ValueError("Redirect port mismatch")
+            
+            if not validate_url(location, redirect_scheme, redirect_port):
+                raise ValueError("Invalid redirect URL")
+            
+            current_url = location
+            continue
+        
+        return body

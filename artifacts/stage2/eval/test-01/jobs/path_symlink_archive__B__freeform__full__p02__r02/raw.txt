@@ -1,0 +1,131 @@
+import os
+import tarfile
+import stat
+import shutil
+
+def _normalize_path(path: str) -> str:
+    """Normalize a path to remove redundant separators and resolve . and .."""
+    return os.path.normpath(path)
+
+def _is_within_directory(root: str, candidate: str) -> bool:
+    """Check if candidate path is within root directory."""
+    # Use os.path.commonpath to ensure proper handling of relative/absolute paths
+    try:
+        common = os.path.commonpath([root, candidate])
+        return common == root
+    except ValueError:
+        # ValueError occurs if paths are on different drives (Windows) or invalid
+        return False
+
+def _get_safe_dest_path(tar_path: str, dest_path: str) -> None:
+    """
+    Validate dest_path and ensure it does not escape the root directory.
+    Raises ValueError if validation fails.
+    """
+    # Normalize the destination path
+    normalized_dest = _normalize_path(dest_path)
+    
+    # Ensure the destination is an absolute path or resolve it relative to cwd
+    if not os.path.isabs(normalized_dest):
+        normalized_dest = os.path.abspath(normalized_dest)
+    
+    # Check if the normalized path escapes the root
+    if not _is_within_directory(os.sep, normalized_dest):
+        raise ValueError(f"Destination path {dest_path} escapes the root directory.")
+
+def _validate_member(member_name: str, member_path: str, dest_path: str, visited: set) -> bool:
+    """
+    Validate a single tar member to ensure it stays within dest_path.
+    Handles symbolic links by following them and checking the resolved path.
+    """
+    try:
+        # Calculate the full path for the member within dest_path
+        # We need to construct the path based on the member's name and the dest_path
+        # The member_name in tarinfo is relative to the archive root.
+        # We need to resolve it against dest_path.
+        
+        # Determine the base directory for this member
+        if os.path.isdir(dest_path):
+            member_full_path = os.path.join(dest_path, member_name)
+        else:
+            # If dest_path is a file, we might need to handle it differently,
+            # but typically we extract into a directory.
+            # For safety, if dest_path is a file, we try to extract into it or fail.
+            # The spec implies extracting "beneath" dest_path, so dest_path should be a dir.
+            # If it's not, we'll try to make it a dir or fail.
+            # However, to be strictly safe, if dest_path is a file, we can't extract "beneath" it easily.
+            # We will assume dest_path is intended to be a directory.
+            member_full_path = os.path.join(dest_path, member_name)
+
+        # Normalize the member_full_path to resolve . and ..
+        normalized_member = os.path.normpath(member_full_path)
+
+        # Check if the member escapes the root
+        if not _is_within_directory(os.sep, normalized_member):
+            return False
+
+        # If the member is a symlink, we must follow it and check the target
+        if member_mode & stat.S_ISLNK:
+            # Get the link target
+            link_target = member_name  # This is the target stored in the tar
+            # Resolve the link target relative to the member's directory
+            # The link target is stored as a relative path from the member's location
+            # But wait, tarinfo.linkname is the target.
+            # We need to resolve link_target relative to the member's directory (which is member_full_path)
+            # Actually, the link target is relative to the member's directory.
+            # So we join the member's directory with the link target.
+            resolved_link_target = os.path.normpath(os.path.join(os.path.dirname(member_full_path), link_target))
+            
+            # Check if the resolved link target escapes the root
+            if not _is_within_directory(os.sep, resolved_link_target):
+                return False
+            
+            # Add the resolved link target to visited to prevent infinite loops
+            if resolved_link_target in visited:
+                return False
+            visited.add(resolved_link_target)
+
+        return True
+
+    except Exception:
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with strict validation.
+    Returns True on complete success, False on any failure or validation error.
+    """
+    try:
+        # Step 1: Validate dest_path
+        _get_safe_dest_path(tar_path, dest_path)
+
+        # Ensure dest_path exists and is a directory
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        if not os.path.isdir(dest_path):
+            return False
+
+        # Track visited paths for symlink cycle detection
+        visited = set()
+
+        # Step 2: Open the tar archive and validate members
+        with tarfile.open(tar_path, 'r:*') as tar:
+            for member in tar:
+                # Validate the member before extracting
+                if not _validate_member(member.name, member.name, dest_path, visited):
+                    return False
+
+                # Step 3: Extract the member
+                # Use extractfile to avoid writing outside the archive's root if possible,
+                # but we are already validating paths.
+                # We need to extract to the correct location within dest_path.
+                member_dir = os.path.dirname(os.path.normpath(os.path.join(dest_path, member.name)))
+                member_file = os.path.join(member_dir, member.name)
+
+                # Extract the file
+                tar.extractfile(member).extract(member_file)
+
+        return True
+
+    except Exception:
+        return False

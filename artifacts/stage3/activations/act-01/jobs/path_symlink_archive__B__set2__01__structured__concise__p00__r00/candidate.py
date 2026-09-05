@@ -1,0 +1,91 @@
+import os
+import tarfile
+import shutil
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive.
+        dest_path: Destination directory where the archive will be extracted.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Resolve the absolute path for the destination
+    try:
+        resolved_dest = os.path.realpath(dest_path)
+    except (OSError, ValueError):
+        return False
+
+    # Validate that the destination directory exists or create it
+    try:
+        if not os.path.exists(resolved_dest):
+            os.makedirs(resolved_dest, exist_ok=True)
+    except (OSError, ValueError):
+        return False
+
+    # Ensure the destination path does not contain .. segments that could escape
+    # Normalize the path to remove any .. or . components
+    normalized_dest = os.path.normpath(resolved_dest)
+
+    # Validate that the tar file exists
+    if not os.path.isfile(tar_path):
+        return False
+
+    # Resolve the absolute path for the tar file
+    try:
+        resolved_tar = os.path.realpath(tar_path)
+    except (OSError, ValueError):
+        return False
+
+    # Check if the tar file is outside the destination directory (security check)
+    # If the tar file is not within the destination directory, we should still proceed with extraction
+    # but ensure that the extraction does not write outside the destination.
+    # However, to be safe, we should ensure that the tar file is not a symlink pointing outside the destination.
+    if os.path.islink(tar_path):
+        link_target = os.path.realpath(tar_path)
+        if not link_target.startswith(normalized_dest):
+            return False
+
+    # Open the tar file and extract members
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get all members of the tar file
+            members = tar.getmembers()
+            
+            # Check each member to ensure it does not escape the destination directory
+            for member in members:
+                # Calculate the absolute path of the member relative to the destination
+                member_dir = os.path.dirname(member.name)
+                member_file = os.path.basename(member.name)
+                
+                # Construct the full path of the member
+                full_member_path = os.path.join(normalized_dest, member_dir, member_file)
+                
+                # Normalize the path to remove any .. segments
+                normalized_member_path = os.path.normpath(full_member_path)
+                
+                # Check if the normalized member path is within the destination directory
+                if not normalized_member_path.startswith(normalized_dest + os.sep) and normalized_member_path != normalized_dest:
+                    return False
+            
+            # Extract the members to the destination directory
+            tar.extractall(path=normalized_dest)
+    except (tarfile.TarError, OSError, ValueError):
+        return False
+
+    # Verify that the extraction did not write any files outside the destination directory
+    # This is a final check to ensure that the extraction was successful and did not escape the destination
+    for root, dirs, files in os.walk(normalized_dest):
+        for d in dirs:
+            full_path = os.path.join(root, d)
+            if not full_path.startswith(normalized_dest):
+                return False
+        for f in files:
+            full_path = os.path.join(root, f)
+            if not full_path.startswith(normalized_dest):
+                return False
+
+    return True

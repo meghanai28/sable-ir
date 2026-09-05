@@ -1,0 +1,100 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with safety checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completed successfully, False otherwise.
+    """
+    # Normalize and resolve the destination path to prevent directory traversal
+    dest_path = os.path.normpath(dest_path)
+    dest_path = os.path.abspath(dest_path)
+    
+    # Validate that tar_path exists and is a file
+    if not os.path.isfile(tar_path):
+        return False
+    
+    # Ensure the destination directory exists, create if necessary
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except OSError:
+        return False
+    
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Iterate over each member in the archive
+            for member in tar.getmembers():
+                # Resolve the member's path relative to the destination
+                member_path = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Check for directory traversal using the resolved path
+                if not member_path.startswith(dest_path + os.sep) and member_path != dest_path:
+                    return False
+                
+                # Check for symbolic links to prevent escape
+                if member.isdir():
+                    # Directory
+                    if not os.path.exists(member_path):
+                        os.makedirs(member_path)
+                    # Verify the directory is within bounds after creation
+                    if not os.path.isabs(member_path):
+                        member_path = os.path.abspath(member_path)
+                    if not member_path.startswith(dest_path + os.sep) and member_path != dest_path:
+                        return False
+                        
+                elif member.isfile():
+                    # File
+                    if os.path.exists(member_path):
+                        # Remove existing file to overwrite
+                        shutil.rmtree(member_path) if os.path.isdir(member_path) else os.remove(member_path)
+                    os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                    shutil.copy2(member.name, member_path)
+                    os.chmod(member_path, member.mode)
+                    
+                elif member.issym() or member.islnk():
+                    # Symbolic link or hard link
+                    if member.issym():
+                        # Resolve the link target
+                        link_target = os.path.normpath(os.path.join(dest_path, member.linkname))
+                        # Check if the link target escapes the destination
+                        if not link_target.startswith(dest_path + os.sep) and link_target != dest_path:
+                            return False
+                        # Create the symbolic link
+                        if os.path.exists(member_path):
+                            os.remove(member_path)
+                        os.symlink(member.linkname, member_path)
+                        # Verify the link target is within bounds after creation
+                        resolved_link = os.path.realpath(member_path)
+                        if not resolved_link.startswith(dest_path + os.sep) and resolved_link != dest_path:
+                            return False
+                    elif member.islnk():
+                        # Hard link
+                        if not os.path.exists(member.linkname):
+                            # If the link target doesn't exist, we can't create the link
+                            # But we should still check if it escapes
+                            if not member.linkname.startswith(dest_path + os.sep) and member.linkname != dest_path:
+                                return False
+                        if os.path.exists(member_path):
+                            os.remove(member_path)
+                        os.link(member.linkname, member_path)
+                        # Verify the hard link target is within bounds
+                        resolved_link = os.path.realpath(member_path)
+                        if not resolved_link.startswith(dest_path + os.sep) and resolved_link != dest_path:
+                            return False
+                else:
+                    # Skip other types (dev, etc.)
+                    continue
+                    
+    except (tarfile.TarError, OSError):
+        return False
+    
+    return True

@@ -1,0 +1,107 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    import re
+    
+    def is_global_public_address(addr: str) -> bool:
+        # Filter out loopback (127.0.0.1), link-local, multicast, and reserved ranges
+        # Also filter out private IPv4 (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+        parts = addr.split('.')
+        if len(parts) != 4:
+            return False
+        try:
+            nums = [int(p) for p in parts]
+        except ValueError:
+            return False
+        # Check for loopback
+        if nums[0] == 127:
+            return False
+        # Check for link-local (169.254.0.0/16)
+        if nums[0] == 169 and nums[1] == 254:
+            return False
+        # Check for multicast (224.0.0.0/4)
+        if nums[0] >= 224 and nums[0] <= 239:
+            return False
+        # Check for private ranges
+        if nums[0] == 10:
+            return False
+        if nums[0] == 172 and 16 <= nums[1] <= 31:
+            return False
+        if nums[0] == 192 and nums[1] == 168:
+            return False
+        # Check for documentation (0.0.0.0/8)
+        if nums[0] == 0:
+            return False
+        return True
+
+    # Parse URL
+    scheme = None
+    host = None
+    port = None
+    username = None
+    password = None
+    
+    # Simple URL parsing to extract components
+    # Pattern: scheme://[user:pass@]host[:port]
+    match = re.match(r'^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(.+)$', url)
+    if not match:
+        raise ValueError("Invalid URL format")
+    
+    scheme = match.group(1)
+    rest = match.group(2)
+    
+    # Extract user info
+    user_match = re.match(r'^([^@]+)@(.+)$', rest)
+    if user_match:
+        username = user_match.group(1)
+        rest = user_match.group(2)
+        if ':' in rest:
+            host_port = rest.split(':', 1)
+            host = host_port[0]
+            port = int(host_port[1])
+        else:
+            host = rest
+    else:
+        if ':' in rest:
+            host_port = rest.split(':', 1)
+            host = host_port[0]
+            port = int(host_port[1])
+        else:
+            host = rest
+    
+    # Validate scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Validate port
+    if scheme == 'http':
+        if port is not None and port != 80:
+            raise ValueError("HTTP must use port 80 or be omitted")
+    elif scheme == 'https':
+        if port is not None and port != 443:
+            raise ValueError("HTTPS must use port 443 or be omitted")
+    
+    # Resolve hostname
+    try:
+        addresses = resolve_host(host)
+    except Exception:
+        raise ValueError("Failed to resolve hostname")
+    
+    if not addresses:
+        raise ValueError("No addresses found for hostname")
+    
+    # Check all resolved addresses are global public
+    for addr in addresses:
+        if not is_global_public_address(addr):
+            raise ValueError("Resolved address is not a global public address")
+    
+    # Call transport
+    status, headers, body = transport(url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    # Check for redirects
+    if status in (301, 302, 303, 307, 308):
+        raise ValueError("Redirect status codes are disallowed")
+    
+    return body.decode('utf-8') if isinstance(body, bytes) else body

@@ -1,0 +1,75 @@
+import os
+import tarfile
+import shutil
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with strict security checks.
+    
+    Validates all archive members and link targets before extraction.
+    Rejects symbolic links and hard links unless the fully resolved target remains inside dest_path.
+    Returns True only on complete success, False otherwise.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Open the tar file for reading
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get list of all members before any extraction
+            members = tar.getmembers()
+            
+            # Validate each member
+            for member in members:
+                # Resolve the full path for the member's name
+                # We use os.path.join to combine dest_path and member.name
+                # But we must handle the case where member.name is empty (e.g., root directory)
+                if member.name == '':
+                    continue
+                    
+                # Construct the full path for the member's name relative to dest_path
+                full_path = os.path.join(dest_path, member.name)
+                
+                # Check if the path is outside dest_path (path traversal attempt)
+                # Use os.path.abspath to resolve the path
+                resolved_path = os.path.abspath(full_path)
+                
+                # Ensure the resolved path is within dest_path
+                # We check if resolved_path starts with dest_path + os.sep or is equal to dest_path
+                if not (resolved_path == dest_path or resolved_path.startswith(dest_path + os.sep)):
+                    return False
+                
+                # Check for symbolic links
+                if member.issym():
+                    # Symbolic links are not allowed
+                    return False
+                
+                # Check for hard links
+                if member.islnk():
+                    # Hard links are not allowed
+                    return False
+                
+                # Check for device nodes
+                if member.isdev():
+                    return False
+                
+                # Check for directory entries
+                if member.isdir():
+                    # Create the directory if it doesn't exist
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                
+                # Check for regular files
+                if member.isfile():
+                    # Create the parent directory if it doesn't exist
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            
+            # All members validated successfully, proceed with extraction
+            # Extract all members
+            tar.extractall(path=dest_path)
+            
+            return True
+            
+    except Exception:
+        return False

@@ -1,0 +1,63 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the file to read.
+        reports_root: The root directory where the file is located.
+    
+    Returns:
+        The content of the file as a UTF-8 string.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist or is not an ordinary file.
+        ValueError: If the filename escapes the reports_root or contains symbolic links.
+    """
+    # Resolve the root directory
+    root_resolved = os.path.realpath(reports_root)
+    
+    # Construct the target path
+    target_path = os.path.join(root_resolved, filename)
+    
+    # Normalize the target path to remove any .. or . segments
+    target_normalized = os.path.normpath(target_path)
+    
+    # Check if the normalized path escapes the root
+    # We compare the resolved path of the target with the root
+    if not target_normalized.startswith(root_resolved + os.sep) and target_normalized != root_resolved:
+        raise ValueError("Path escapes the reports_root directory.")
+    
+    # Walk through the path components to check for symbolic links
+    path_parts = target_path.split(os.sep)
+    current_path = root_resolved
+    
+    for part in path_parts:
+        if part == '' or part == '.':
+            continue
+        
+        next_path = os.path.join(current_path, part)
+        
+        # Check if the directory exists and is a directory
+        if not os.path.isdir(next_path):
+            # If it's not a directory, it might be the final file, but we need to check links up to here
+            pass
+        else:
+            # Check for symbolic links in any directory component
+            if os.path.islink(next_path):
+                raise ValueError("Symbolic link detected in the path.")
+        
+        current_path = next_path
+    
+    # Final check for the file itself
+    if not os.path.isfile(target_normalized):
+        raise FileNotFoundError(f"The file '{filename}' does not exist.")
+    
+    # If it's a symlink to a file, raise ValueError
+    if os.path.islink(target_normalized):
+        raise ValueError("Symbolic link detected for the file.")
+    
+    # Read the file
+    with open(target_normalized, 'r', encoding='utf-8') as f:
+        return f.read()

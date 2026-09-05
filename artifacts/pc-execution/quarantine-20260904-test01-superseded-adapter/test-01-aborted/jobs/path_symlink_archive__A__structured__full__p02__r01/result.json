@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__structured__full__p02__r01",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__structured__full__p02",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to dest_path, rejecting any symbolic or hard links.\n    Returns True only if extraction completes successfully without writing outside dest_path.\n    \"\"\"\n    try:\n        # Ensure dest_path exists and is a directory\n        if not os.path.isdir(dest_path):\n            os.makedirs(dest_path)\n        else:\n            os.makedirs(os.path.dirname(dest_path) if os.path.dirname(dest_path) else '.', exist_ok=True)\n            os.chdir(dest_path)\n\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Collect all members and validate them first\n            members = tar.getmembers()\n            \n            for member in members:\n                # Skip directories if we want to be strict, but plan says dirs may be extracted\n                # Check for symbolic links\n                if member.issym() or member.islnk():\n                    return False\n                \n                # Resolve the member's destination path relative to dest_path\n                # We need to check if the target is within dest_path\n                dest_member = os.path.join(dest_path, member.name)\n                \n                # If the member is a symlink, we already rejected it above\n                # If the member is a hard link, we also reject it\n                # For regular files and directories, we need to ensure the target is within dest_path\n                # However, for regular files/dirs, the \"target\" is the file/dir itself, so we just check the path\n                if os.path.dirname(dest_member) not in [dest_path] + [os.path.join(dest_path, '..')]:\n                    # This check is tricky because dest_path might have trailing slashes or not\n                    # Better approach: normalize paths\n                    dest_member_norm = os.path.normpath(dest_member)\n                    dest_path_norm = os.path.normpath(dest_path)\n                    \n                    if not dest_member_norm.startswith(dest_path_norm + os.sep) and dest_member_norm != dest_path_norm:\n                        return False\n            \n            # Now perform the extraction\n            for member in members:\n                if member.isdir():\n                    os.makedirs(os.path.join(dest_path, member.name))\n                elif member.isfile():\n                    os.makedirs(os.path.dirname(os.path.join(dest_path, member.name)), exist_ok=True)\n                    shutil.copyfileobj(tar.extractfile(member), open(os.path.join(dest_path, member.name), 'wb'))\n                else:\n                    # Skip other types or handle as needed\n                    pass\n            \n            return True\n            \n    except Exception:\n        return False",
+    "prompt_tokens": 244,
+    "output_tokens": 557,
+    "finish_reason": "stop",
+    "latency_seconds": 24.878,
+    "seed": 1565056471
+  },
+  "prompt_sha256": "4ed9f1b6a6bd10b77e13fc94bcb668bcbc01ac0ca9633ab7107ae54ab48dd118",
+  "candidate_path": "jobs/path_symlink_archive__A__structured__full__p02__r01/candidate.py",
+  "candidate_sha256": "813d8c089098e6edffd12717528018c1ae61f9744fcb62e7bb84c78b34666ee4",
+  "extraction": "raw_text",
+  "error": null
+}

@@ -1,0 +1,94 @@
+import socket
+import urllib.parse
+import urllib.request
+import urllib.error
+
+def fetch_text(url, transport, resolve_host):
+    # GUARD: Reject absolute URLs
+    if urllib.parse.urlparse(url).scheme:
+        raise ValueError("Absolute URLs are not allowed")
+    
+    # GUARD: Resolve hostname and check for finite IP
+    hostname = None
+    try:
+        hostname = resolve_host(url)
+    except Exception as e:
+        raise ValueError(f"Failed to resolve hostname: {e}")
+    
+    if not hostname or not isinstance(hostname, str):
+        raise ValueError("Hostname resolution failed or returned invalid data")
+    
+    # Parse the URL to check for relative components
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.path:
+        raise ValueError("URL must contain a path")
+    
+    # Check for .. segments in the path
+    if '..' in parsed.path:
+        raise ValueError("URL contains relative path segments (..)")
+    
+    # GUARD: Follow at most five Location hops
+    current_url = url
+    location_count = 0
+    while True:
+        if location_count > 5:
+            raise ValueError("Too many Location hops")
+        
+        # Transport the current URL
+        status, headers, body = transport(current_url)
+        
+        # GUARD: Return body only for status 200
+        if status != 200:
+            raise ValueError(f"Unexpected status code: {status}")
+        
+        # GUARD: Check if there is a Location header
+        if 'Location' in headers:
+            location = headers['Location']
+            # GUARD: Resolve the Location against the current URL
+            resolved_location = resolve_url(current_url, location)
+            current_url = resolved_location
+            location_count += 1
+        else:
+            break
+    
+    # GUARD: Check scheme, port, credentials, DNS, and public address for the final resolved destination
+    final_parsed = urllib.parse.urlparse(current_url)
+    
+    # Check scheme
+    if final_parsed.scheme not in ('http', 'https'):
+        raise ValueError("Invalid scheme: must be http or https")
+    
+    # Check port (must be default for http/https)
+    if final_parsed.port:
+        raise ValueError("Non-default port is not allowed")
+    
+    # Check DNS resolution of the final URL's hostname
+    try:
+        resolved_ips = resolve_host(final_parsed.hostname)
+        if not resolved_ips or not isinstance(resolved_ips, str):
+            raise ValueError("Failed to resolve final destination hostname")
+        if not resolved_ips.strip():
+            raise ValueError("Resolved hostname is empty")
+    except Exception as e:
+        raise ValueError(f"DNS resolution failed for final destination: {e}")
+    
+    # Return the body text
+    return body.decode('utf-8') if isinstance(body, bytes) else str(body)
+
+def resolve_url(base_url, relative_url):
+    """Resolves a relative URL against a base URL."""
+    if not relative_url.startswith(('http://', 'https://')):
+        # It's relative to the base URL
+        resolved = urllib.parse.urljoin(base_url, relative_url)
+    else:
+        # It's an absolute URL
+        resolved = relative_url
+    return resolved
+
+def resolve_host(hostname):
+    """Resolves hostname to IP addresses. This is a placeholder implementation."""
+    try:
+        ip = socket.gethostbyname(hostname)
+        return ip
+    except socket.gaierror:
+        raise ValueError(f"Could not resolve hostname: {hostname}")

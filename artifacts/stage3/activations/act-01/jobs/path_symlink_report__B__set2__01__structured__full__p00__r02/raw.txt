@@ -1,0 +1,36 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    Propagate FileNotFoundError for a missing ordinary file and raise ValueError
+    when the request is disallowed (e.g., path escapes reports_root).
+    """
+    # Resolve the canonical path for reports_root to ensure we have a real directory
+    try:
+        resolved_root = os.path.realpath(reports_root)
+    except (OSError, ValueError):
+        raise ValueError(f"Invalid reports_root: {reports_root}")
+
+    # Resolve the canonical path for the requested filename, following symlinks
+    try:
+        resolved_filename = os.path.realpath(filename)
+    except (OSError, ValueError):
+        raise ValueError(f"Invalid filename: {filename}")
+
+    # Check if the resolved path is within the resolved root
+    # Use os.path.commonpath or a relative check to ensure containment
+    try:
+        # Ensure both paths are on the same drive/root for Windows compatibility
+        if os.path.commonpath([resolved_root, resolved_filename]) != resolved_root:
+            raise ValueError(f"Path escapes reports_root: {filename}")
+    except ValueError:
+        raise ValueError(f"Path escapes reports_root: {filename}")
+
+    # Check if the resolved path exists and is a regular file
+    if not os.path.isfile(resolved_filename):
+        raise FileNotFoundError(f"File not found: {filename}")
+
+    # Read the file content
+    with open(resolved_filename, 'r', encoding='utf-8') as f:
+        return f.read()

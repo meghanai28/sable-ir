@@ -1,0 +1,149 @@
+import os
+import tarfile
+import stat
+import tempfile
+
+def _is_within_root(path: str, root: str) -> bool:
+    """Check if a path is within the root directory."""
+    try:
+        # Normalize paths to avoid symlinks affecting the check
+        real_root = os.path.realpath(root)
+        real_path = os.path.realpath(path)
+        # Ensure the check happens before resolving symlinks that might point outside
+        # by comparing the normalized string paths, but we must be careful with
+        # absolute paths containing ..
+        # The safest way for "untrusted input" that might contain .. is to
+        # resolve the root first, then check if the target starts with the root + separator.
+        if not real_root.endswith(os.sep):
+            real_root += os.sep
+        return real_path.startswith(real_root)
+    except (ValueError, OSError):
+        return False
+
+def _validate_member(member: tarfile.TarInfo, dest_root: str) -> bool:
+    """
+    Validate a single tar member to ensure its resolved target stays within dest_root.
+    This checks symbolic links and hard links by resolving their targets.
+    """
+    try:
+        if member.type == tarfile.SYMTYPE:
+            # Resolve the symlink target
+            target = member.linkname
+            # We need to resolve the symlink relative to the member's archive location
+            # However, we can't know the archive location easily without reading.
+            # Instead, we simulate the resolution: if the link is absolute, it's dangerous.
+            # If relative, we resolve it relative to the member's location.
+            # But since we can't get the member's location without reading, we rely on the
+            # fact that if the link points outside the dest_root, it's bad.
+            # A safer approach for this constraint: resolve the target as if it were
+            # located at the archive's extraction point, but we don't have that.
+            # Instead, we check if the linkname itself or its resolved form escapes.
+            # Let's assume the member's location is within dest_root (which we enforce).
+            # If the link is absolute, it might point anywhere.
+            if os.path.isabs(target):
+                # Resolve absolute path
+                resolved_target = os.path.normpath(target)
+                if not _is_within_root(resolved_target, dest_root):
+                    return False
+            else:
+                # Resolve relative to the member's location.
+                # We can approximate the member's location by constructing it from dest_root
+                # and the member's name.
+                # member.name is the path within the archive.
+                # We construct the hypothetical file path: dest_root + member.name
+                # Then resolve the link relative to that.
+                member_path = os.path.join(dest_root, member.name)
+                # Normalize the member path to handle .. in member.name
+                member_path = os.path.normpath(member_path)
+                resolved_target = os.path.normpath(os.path.join(member_path, target))
+                if not _is_within_root(resolved_target, dest_root):
+                    return False
+        
+        elif member.type == tarfile.LINKTYPE:
+            # Hard link
+            target = member.linkname
+            # Similar logic: resolve relative to member's location
+            member_path = os.path.join(dest_root, member.name)
+            member_path = os.path.normpath(member_path)
+            resolved_target = os.path.normpath(os.path.join(member_path, target))
+            if not _is_within_root(resolved_target, dest_root):
+                return False
+        
+        return True
+    except Exception:
+        return False
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination path with security checks.
+    Returns True on complete success, False on any failure or security violation.
+    """
+    try:
+        # Normalize the destination path to a real directory to prevent .. escapes
+        # We create a temp directory to act as the safe extraction root
+        safe_root = None
+        
+        # First, validate dest_path is within the filesystem root
+        real_dest = os.path.realpath(dest_path)
+        if not os.path.exists(real_dest):
+            # Create the directory if it doesn't exist, but we need to be careful
+            # about the parent directory.
+            parent = os.path.dirname(real_dest)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            real_dest = os.path.realpath(os.path.dirname(real_dest))
+        
+        # Check if dest_path escapes the root
+        if not _is_within_root(dest_path, real_dest):
+            return False
+        
+        # Create a safe extraction root inside the real_dest to prevent writing outside
+        # We use a subdirectory to ensure we don't write directly to dest_path if it's a file
+        # or to handle race conditions.
+        # Actually, the requirement says "extract beneath dest_path".
+        # We will create a temp directory inside dest_path (if it's a dir) or use dest_path itself.
+        # But to be safe against .. in dest_path, we resolve it and then use a subfolder.
+        # However, if dest_path is a file, we can't extract there.
+        if not os.path.isdir(real_dest):
+            return False
+        
+        # Create a safe extraction root
+        safe_root = os.path.join(real_dest, os.path.basename(real_dest))
+        # Ensure safe_root is within real_dest (it is, by construction)
+        # But we must ensure we don't accidentally write outside.
+        # Let's just use the resolved real_dest as the base, but create a subfolder if needed?
+        # The plan says "extract beneath dest_path".
+        # Let's create a temp directory inside dest_path to act as the root.
+        # Actually, simpler: resolve dest_path, then if it's a dir, use it.
+        # But we must ensure we don't write outside.
+        # Let's create a temp dir inside the resolved dest_path.
+        safe_root = os.path.join(real_dest, '.safe_extract')
+        
+        # Clean up any existing safe_root
+        if os.path.exists(safe_root):
+            import shutil
+            shutil.rmtree(safe_root)
+        
+        os.makedirs(safe_root, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of members
+            members = tar.getnames()
+            
+            # Validate all members first
+            for member in members:
+                if not _validate_member(member, safe_root):
+                    return False
+            
+            # Extract members
+            for member in members:
+                try:
+                    tar.extract(member, safe_root)
+                except Exception:
+                    return False
+        
+        return True
+
+    except Exception:
+        return False

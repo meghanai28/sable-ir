@@ -1,0 +1,90 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Validate scheme
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    scheme = "https" if url.startswith("https://") else "http"
+    netloc = url[len(scheme):].split("/", 1)[0]
+    hostname = netloc.split(":")[0]
+    
+    # Resolve hostname
+    ips = resolve_host(hostname)
+    if not ips:
+        raise ValueError("No IP address found for hostname")
+    
+    current_url = url
+    redirect_count = 0
+    
+    while True:
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Unexpected status code")
+        
+        return body
+        
+        # Handle redirects
+        if "location" in headers.lower():
+            location = headers["location"].strip()
+            redirect_count += 1
+            
+            if redirect_count > 5:
+                raise ValueError("Too many redirects")
+            
+            # Parse current URL components
+            current_scheme = scheme
+            current_netloc = netloc
+            current_port = None
+            current_path = url.split("/", 1)[1] if "/" in url[7:] else ""
+            
+            # Parse redirect URL
+            redirect_scheme = location.split("://")[0]
+            if redirect_scheme not in ("http", "https"):
+                raise ValueError("Invalid redirect scheme")
+            
+            if redirect_scheme != current_scheme:
+                raise ValueError("Scheme changed in redirect")
+            
+            # Check port
+            if ":" in location:
+                redirect_port = location.split(":", 1)[1].split("/", 1)[0]
+                if redirect_port != "80" and redirect_port != "443":
+                    raise ValueError("Port changed in redirect")
+            
+            # Check credentials
+            if "@" in location:
+                raise ValueError("Credentials found in redirect")
+            
+            # Check if redirect is absolute
+            if not location.startswith(scheme + "://"):
+                raise ValueError("Relative redirect not allowed")
+            
+            # Resolve redirect hostname
+            redirect_netloc = location[len(redirect_scheme + "://"):].split("/", 1)[0]
+            redirect_hostname = redirect_netloc.split(":")[0]
+            
+            redirect_ips = resolve_host(redirect_hostname)
+            if not redirect_ips:
+                raise ValueError("No IP found for redirect hostname")
+            
+            # Check for different public address
+            current_ips = set(ips)
+            redirect_ips_set = set(redirect_ips)
+            if current_ips and not current_ips.intersection(redirect_ips_set):
+                raise ValueError("Redirect to different public address")
+            
+            # Extract path
+            if redirect_scheme == "https":
+                redirect_port = 443
+            else:
+                redirect_port = 80
+            
+            # Build new URL
+            if ":" in redirect_netloc:
+                new_url = f"{redirect_scheme}://{redirect_netloc}:{redirect_port}{location.split(':', 1)[1]}"
+            else:
+                new_url = f"{redirect_scheme}://{redirect_netloc}{location.split(':', 1)[1]}"
+            
+            current_url = new_url
+        else:
+            break

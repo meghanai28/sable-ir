@@ -1,0 +1,45 @@
+import urllib.parse
+import socket
+from typing import Tuple, List
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    # Reject absolute URLs
+    if url.startswith(('http://', 'https://')):
+        raise ValueError("Absolute URLs are not allowed")
+    
+    # Parse the URL to extract components
+    parsed = urllib.parse.urlparse(url)
+    
+    # Validate scheme and port
+    if parsed.scheme not in ['http', 'https']:
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    if parsed.scheme == 'http':
+        port = 80
+    else:
+        port = 443
+    
+    # Resolve the hostname
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    ip_addresses = resolve_host(hostname)
+    if not ip_addresses:
+        raise ValueError(f"Could not resolve hostname: {hostname}")
+    
+    # Construct the full URL with the resolved host and port for the transport
+    # The transport is expected to handle the connection to the resolved IP
+    full_url = f"{parsed.scheme}://{hostname}:{port}{parsed.path}"
+    if parsed.params:
+        full_url += f"?{parsed.query}#{parsed.fragment}"
+    
+    # Use the transport to make the request
+    status, headers, body = transport(full_url)
+    
+    # Check status code
+    if status != 200:
+        raise ValueError(f"Request failed with status code: {status}")
+    
+    # Return the body as a string
+    return body.decode('utf-8') if isinstance(body, bytes) else body

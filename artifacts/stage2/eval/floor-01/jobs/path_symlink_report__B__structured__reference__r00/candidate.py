@@ -1,0 +1,44 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Args:
+        filename: The name of the report file to read.
+        reports_root: The root directory where reports are stored.
+    
+    Returns:
+        The UTF-8 text content of the report.
+    
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the path is disallowed (e.g., escapes reports_root or is a symlink outside).
+    """
+    # Normalize the root path to avoid directory traversal via ..
+    reports_root = os.path.normpath(reports_root)
+    
+    # Construct the full path by joining the root and the filename
+    # This allows the caller to specify a relative path, which will be resolved relative to the root
+    full_path = os.path.normpath(os.path.join(reports_root, filename))
+    
+    # Check if the file exists before proceeding; if not, raise FileNotFoundError
+    if not os.path.isfile(full_path):
+        raise FileNotFoundError(f"File not found: {full_path}")
+    
+    # Resolve the full path to check for symbolic links and ensure it stays within reports_root
+    resolved_path = os.path.realpath(full_path)
+    
+    # Ensure the resolved path is within the reports_root directory
+    # We use os.path.commonpath to verify containment, handling potential drive letter issues on Windows
+    try:
+        common = os.path.commonpath([reports_root, resolved_path])
+        if common != reports_root:
+            raise ValueError(f"Access denied: Path {filename} escapes reports_root. Resolved to: {resolved_path}")
+    except ValueError as e:
+        # commonpath can raise ValueError if paths are on different drives (Windows) or invalid
+            raise ValueError(f"Invalid path structure: {e}") from e
+    
+    # Read and return the UTF-8 content
+    with open(full_path, 'r', encoding='utf-8') as f:
+        return f.read()

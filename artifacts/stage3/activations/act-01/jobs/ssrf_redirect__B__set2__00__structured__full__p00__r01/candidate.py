@@ -1,0 +1,91 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    import urllib.parse
+    import socket
+    import re
+    
+    # Parse the URL to get scheme and host
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    port = parsed.port
+    path = parsed.path
+    query = parsed.query
+    fragment = parsed.fragment
+    
+    # GUARD: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Disallowed request: scheme must be http or https")
+    
+    # Determine default port
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Build the full URL with default port if missing
+    if port is None:
+        port = default_port
+    full_url = f"{scheme}://{host}:{port}{path}?{query}"
+    
+    # Check for Location header simulation (though transport returns it, we check the URL itself for .. or other issues)
+    # The plan says "join the Location header to the URL that produced it" - this implies if we follow a redirect, but here we are doing the initial fetch.
+    # We need to check for .. segments in the path.
+    if '..' in path:
+        raise ValueError("Disallowed request: path contains .. segments")
+    
+    # Check for credentials in the URL
+    if '@' in host:
+        raise ValueError("Disallowed request: URL contains credentials")
+    
+    # Check for port 80/443 in the URL (already handled by default, but if explicitly set, check)
+    # Actually, the plan says "does not use port 80/443". This usually means the request shouldn't explicitly use these ports if the scheme implies them, or if they are specified.
+    # Let's assume if port is 80 or 443, it's disallowed? Or just that we shouldn't use them?
+    # Re-reading: "does not use port 80/443". This implies if the URL has port 80 or 443, raise error.
+    if port in (80, 443):
+        raise ValueError("Disallowed request: port 80 or 443")
+    
+    # Resolve host
+    try:
+        ip_addresses = resolve_host(host)
+    except Exception as e:
+        raise ValueError(f"Disallowed request: failed to resolve host: {e}")
+    
+    # GUARD: Check IP address
+    if len(ip_addresses) != 1:
+        raise ValueError("Disallowed request: hostname must resolve to exactly one IP address")
+    
+    ip = ip_addresses[0]
+    octets = ip.split('.')
+    if len(octets) != 4:
+        raise ValueError("Disallowed request: invalid IP address format")
+    
+    try:
+        first_octet = int(octets[0])
+        last_octet = int(octets[3])
+    except ValueError:
+        raise ValueError("Disallowed request: invalid IP address format")
+    
+    if first_octet < 1 or first_octet > 223:
+        raise ValueError("Disallowed request: first octet must be between 1 and 223")
+    if last_octet < 1 or last_octet > 254:
+        raise ValueError("Disallowed request: last octet must be between 1 and 254")
+    
+    # ORDER: Check scheme and port before following a Location (already done above)
+    # Now make the request
+    # Note: We are using the resolved IP to make the request? Or just the host?
+    # The plan says "resolve the hostname to its IP address and raise ValueError unless...".
+    # It doesn't explicitly say to use the IP in the request, but typically we use the host.
+    # However, if we are using the IP, we bypass DNS. Let's assume we use the host for the request but validated the IP.
+    # Wait, the plan says "resolve the hostname to its IP address". This might imply we use the IP.
+    # Let's use the host for the request to be standard, but the validation ensures the IP is safe.
+    # Actually, if we use the IP, we bypass DNS. Let's assume we use the host.
+    # But wait, if we use the host, we might get a different IP. The plan says "unless resolve_host returns exactly one IP...".
+    # This suggests we validate the IP, but we might still use the host.
+    # However, to be safe, let's use the host.
+    
+    # Make the request
+    status, headers, body = transport(full_url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError("Disallowed request: status is not 200")
+    
+    # Return the body
+    return body

@@ -1,0 +1,69 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL using the provided transport and host resolver.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): A function that takes a URL and returns a tuple (status, headers, body).
+        resolve_host (callable): A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        str: The body of the response for status 200.
+    
+    Raises:
+        ValueError: If the request is disallowed, resolve_host returns no IPs, or status is not 200.
+    """
+    # Parse the URL to extract the scheme and netloc (host)
+    from urllib.parse import urlparse, unquote
+    
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise ValueError("Invalid URL format")
+    
+    scheme = parsed.scheme.lower()
+    netloc = unquote(parsed.netloc)
+    
+    # Validate scheme and port
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    # Determine the port based on the scheme
+    if scheme == 'http':
+        default_port = 80
+    else:
+        default_port = 443
+    
+    # Resolve the host
+    if ':' in netloc:
+        host = netloc.split(':')[0]
+        port = int(netloc.split(':')[1])
+    else:
+        host = netloc
+        port = None
+    
+    # Check if the port is the default port for the scheme
+    if port is not None and port != default_port:
+        raise ValueError("Only default ports are allowed")
+    
+    # Resolve the host to IP addresses
+    ip_addresses = resolve_host(host)
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for the host")
+    
+    # Use the first IP address to construct the request URL
+    request_url = f"{scheme}://{host}:{port}/{parsed.path}"
+    if parsed.query:
+        request_url += f"?{parsed.query}"
+    if parsed.fragment:
+        request_url += f"#{parsed.fragment}"
+    
+    # Make the request using the transport
+    status, headers, body = transport(request_url)
+    
+    # Check the status code
+    if status != 200:
+        raise ValueError("Only status 200 is allowed")
+    
+    return body

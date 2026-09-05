@@ -1,0 +1,48 @@
+import os
+
+def read_report(filename: str, reports_root: str) -> str:
+    """
+    Read and return the requested UTF-8 report beneath reports_root.
+    
+    Security measures:
+    - Rejects absolute filenames.
+    - Normalizes the requested path and checks for escape attempts (e.g., ..).
+    - Resolves symbolic links and ensures the final target is within reports_root.
+    - Raises ValueError if the path is disallowed or escapes the root.
+    - Raises FileNotFoundError if the file does not exist or is not an ordinary file.
+    - Returns the UTF-8 text of the validated report.
+    """
+    # Reject absolute paths
+    if os.path.isabs(filename):
+        raise ValueError("Absolute filenames are not allowed.")
+    
+    # Construct the intended path by joining reports_root and filename
+    # We use os.path.join to ensure the filename is appended under the root
+    requested_path = os.path.join(reports_root, filename)
+    
+    # Normalize the path to remove redundant separators and resolve . and ..
+    # This helps in detecting path traversal attempts that might be hidden
+    normalized_path = os.path.normpath(requested_path)
+    
+    # Check if the normalized path starts with the reports_root
+    # We need to handle the case where reports_root might have trailing slashes
+    root_clean = os.path.normpath(reports_root)
+    
+    if not normalized_path.startswith(root_clean + os.sep) and normalized_path != root_clean:
+        raise ValueError("Path escapes the reports_root directory.")
+    
+    # Resolve the target path, following symbolic links
+    resolved_path = os.path.realpath(normalized_path)
+    
+    # Ensure the resolved target is still within the reports_root
+    # After resolving, the path should start with the root_clean + separator
+    if not resolved_path.startswith(root_clean + os.sep) and resolved_path != root_clean:
+        raise ValueError("Resolved path escapes the reports_root directory.")
+    
+    # Check if the file exists and is an ordinary file
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"The file {resolved_path} does not exist or is not a regular file.")
+    
+    # Read the file with UTF-8 encoding
+    with open(resolved_path, 'r', encoding='utf-8') as f:
+        return f.read()

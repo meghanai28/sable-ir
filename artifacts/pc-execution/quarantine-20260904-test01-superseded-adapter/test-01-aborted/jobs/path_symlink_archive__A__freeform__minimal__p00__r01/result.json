@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__freeform__minimal__p00__r01",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__freeform__minimal__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\nimport tempfile\nimport stat\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to a destination directory.\n    \n    Returns True on complete success, False on any failure (including validation or extraction).\n    Raises an exception if the destination path is absolute or attempts to escape the destination.\n    \"\"\"\n    # Resolve and normalize the destination path\n    try:\n        dest_path = os.path.realpath(dest_path)\n    except ValueError:\n        return False\n    \n    # Check if dest_path is absolute\n    if os.path.isabs(dest_path):\n        raise ValueError(\"Destination path must be relative to the current working directory\")\n    \n    # Create the destination directory if it doesn't exist\n    os.makedirs(dest_path, exist_ok=True)\n    \n    # Open the tar file\n    try:\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Get the list of members\n            members = tar.getmembers()\n            \n            # Validate all members before extraction\n            for member in members:\n                # Check for symbolic links\n                if member.issym():\n                    return False\n                \n                # Check for hard links\n                if member.issym() or member.islnk():\n                    return False\n                \n                # Resolve the target path for the member\n                # If it's a symlink, we already checked above, but for safety:\n                if member.isdir() or member.isfile():\n                    # Resolve the member's name relative to the archive root\n                    member_path = os.path.join(dest_path, member.name)\n                    \n                    # Normalize the path to check for .. escapes\n                    normalized_path = os.path.normpath(member_path)\n                    \n                    # Ensure the normalized path is within dest_path\n                    # We use os.path.commonpath to verify containment\n                    common = os.path.commonpath([dest_path, normalized_path])\n                    if common != dest_path:\n                        return False\n            \n            # Extract the archive\n            for member in members:\n                # Skip symlinks and hardlinks as per requirements\n                if member.issym() or member.islnk():\n                    continue\n                \n                # Extract the member\n                tar.extract(member, dest_path)\n            \n            return True\n            \n    except Exception as e:\n        return False",
+    "prompt_tokens": 245,
+    "output_tokens": 500,
+    "finish_reason": "stop",
+    "latency_seconds": 24.014,
+    "seed": 1256781062
+  },
+  "prompt_sha256": "8e33a2200bbe0d4574a0871cfb31fdeb9e47ba37294b1a2628f7ceb68d844814",
+  "candidate_path": "jobs/path_symlink_archive__A__freeform__minimal__p00__r01/candidate.py",
+  "candidate_sha256": "40007dd97a7324ee4018797b3e661ce892f0636a73d90439d5d3b9c7785cd797",
+  "extraction": "raw_text",
+  "error": null
+}

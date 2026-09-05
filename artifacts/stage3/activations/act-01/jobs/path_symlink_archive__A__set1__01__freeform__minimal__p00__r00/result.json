@@ -1,0 +1,19 @@
+{
+  "job_id": "path_symlink_archive__A__set1__01__freeform__minimal__p00__r00",
+  "role": "render",
+  "plan_job_id": "path_symlink_archive__A__set1__01__freeform__minimal__p00",
+  "status": "generated",
+  "generation": {
+    "text": "import os\nimport tarfile\nimport shutil\nfrom pathlib import Path\n\ndef extract_tar_to_path(tar_path: str, dest_path: str) -> bool:\n    \"\"\"\n    Extract a tar archive to a destination directory with strict path validation.\n    \n    Args:\n        tar_path: Path to the tar archive.\n        dest_path: Destination directory for extraction.\n    \n    Returns:\n        True if extraction succeeds completely, False otherwise.\n    \"\"\"\n    try:\n        # Normalize paths to use forward slashes and ensure consistency\n        tar_path = os.path.normpath(tar_path)\n        dest_path = os.path.normpath(dest_path)\n        \n        # Resolve the real path of the destination to check for escapes\n        dest_real = os.path.realpath(dest_path)\n        \n        # Security check: Ensure dest_path does not escape the root\n        if not dest_real.startswith(os.sep) and dest_real != '.':\n            raise ValueError(\"Destination path must be an absolute path starting from root.\")\n        \n        # Create the destination directory if it doesn't exist\n        os.makedirs(dest_path, exist_ok=True)\n        \n        # Open the tar file\n        with tarfile.open(tar_path, 'r:*') as tar:\n            # Get all members before any extraction\n            members = tar.getmembers()\n            \n            # Validate all members before extraction\n            for member in members:\n                # Check for absolute paths in member names\n                if os.path.isabs(member.name):\n                    raise ValueError(f\"Archive contains absolute path: {member.name}\")\n                \n                # Calculate the target path relative to dest_path\n                target_path = os.path.join(dest_path, member.name)\n                \n                # Resolve the real path to detect escapes\n                target_real = os.path.realpath(target_path)\n                \n                # Ensure the resolved path is within dest_path\n                if not target_real.startswith(os.path.dirname(dest_real)) or target_real == dest_real:\n                    raise ValueError(f\"Archive member path escapes destination: {member.name}\")\n                \n                # Additional check: Ensure no directory traversal attempts\n                # by verifying the parent directory is within dest_path\n                if member.name.startswith(os.path.dirname(dest_path)):\n                    raise ValueError(f\"Archive member path starts with destination parent: {member.name}\")\n            \n            # Extract members one by one\n            for member in members:\n                if member.isdir():\n                    os.makedirs(member.name)\n                else:\n                    os.makedirs(os.path.dirname(member.name), exist_ok=True)\n                    shutil.copyfileobj(tar.extractfile(member), f)\n                    \n    except Exception as e:\n        return False\n    \n    return True",
+    "prompt_tokens": 253,
+    "output_tokens": 555,
+    "finish_reason": "stop",
+    "latency_seconds": 23.801,
+    "seed": 1175879756
+  },
+  "prompt_sha256": "8f79bcba4e97c9d0297d96ff817effb19865e6332a5bbacec9903b451b464eca",
+  "candidate_path": "jobs/path_symlink_archive__A__set1__01__freeform__minimal__p00__r00/candidate.py",
+  "candidate_sha256": "9a1a90eb391e8a81f0ac1a25ff07aaca7495639700df55283b4a16d98edc6ff9",
+  "extraction": "raw_text",
+  "error": null
+}

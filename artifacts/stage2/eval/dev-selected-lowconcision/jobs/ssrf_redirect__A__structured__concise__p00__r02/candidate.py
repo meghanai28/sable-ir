@@ -1,0 +1,94 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict validation and no redirect following.
+    
+    Args:
+        url (str): The URL to fetch.
+        transport (callable): Function(url) -> (status, headers, body) tuple.
+        resolve_host (callable): Function(hostname) -> list of IP addresses (strings).
+    
+    Returns:
+        str: The body of the response for status code 200.
+    
+    Raises:
+        ValueError: If scheme is not http/https, if no IP is resolved, or if a redirect is encountered.
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    from urllib.parse import urlparse, parse_qs
+    
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    netloc = parsed.netloc
+    path = parsed.path
+    
+    # GUARD: Check scheme
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Determine the port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # GUARD: Resolve hostname
+    if not netloc:
+        raise ValueError("Invalid URL: missing netloc.")
+    
+    # Handle IPv6 addresses in netloc (e.g., [::1])
+    if netloc.startswith('['):
+        # Extract the IP part before the closing bracket
+        ip_part = netloc.rsplit(']', 1)[0]
+        host_to_resolve = ip_part
+        # Remove the trailing ] for the resolve_host call
+        netloc_for_connection = netloc + ']'
+    else:
+        host_to_resolve = netloc
+        netloc_for_connection = netloc
+    
+    # Remove port from netloc for resolve_host if present (resolve_host expects hostname)
+    if ':' in netloc_for_connection:
+        host_to_resolve = netloc_for_connection.rsplit(':', 1)[0]
+    
+    try:
+        ips = resolve_host(host_to_resolve)
+    except Exception:
+        raise ValueError("Failed to resolve hostname.")
+    
+    if not ips:
+        raise ValueError("No IP address resolved for the requested host.")
+    
+    # Build the full URL for the initial request (no redirect following)
+    # We only use the initial destination, ignoring any redirects.
+    # The transport function is expected to handle the full URL or we construct it.
+    # Based on the plan, we just call transport with the URL.
+    
+    # GUARD: Follow only the initial HTTP destination.
+    # We will call transport with the parsed URL components, ensuring we don't follow redirects.
+    # The transport function likely handles the connection logic.
+    
+    # Construct the full URL for the transport call
+    # If the original URL had a path, we use it. If not, we use '/'.
+    full_url = f"{scheme}://{netloc_for_connection}{path}"
+    
+    # Make the request
+    status, headers, body = transport(full_url)
+    
+    # GUARD: Raise ValueError for every redirect response.
+    # We need to check if the response indicates a redirect.
+    # Common HTTP status codes for redirects: 301, 302, 303, 307, 308
+    redirect_codes = {301, 302, 303, 307, 308}
+    
+    if status in redirect_codes:
+        raise ValueError("Redirect detected; fetching only the initial destination.")
+    
+    # EFFECT: Return the body for status 200
+    if status != 200:
+        raise ValueError(f"Expected status code 200, got {status}.")
+    
+    # Ensure body is a string
+    if body is None:
+        return ""
+    
+    # Convert to string if it's bytes
+    if isinstance(body, bytes):
+        return body.decode('utf-8')
+    
+    return str(body)

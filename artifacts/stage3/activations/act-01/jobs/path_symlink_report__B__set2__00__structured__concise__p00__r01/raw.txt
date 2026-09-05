@@ -1,0 +1,25 @@
+def read_report(filename: str, reports_root: str) -> str:
+    import os
+    
+    # Normalize the root directory to an absolute path
+    resolved_root = os.path.abspath(reports_root)
+    
+    # Resolve the requested filename, following symbolic links
+    # os.path.realpath resolves symlinks and normalizes the path
+    resolved_filename = os.path.realpath(os.path.join(resolved_root, filename))
+    
+    # Check if the resolved path is within the reports_root directory
+    # We must ensure the resolved path starts with the root path plus a separator,
+    # or is exactly the root path (though typically we want a child).
+    # Using os.path.commonpath or checking prefix safely.
+    # A robust check: the resolved path should be equal to the root or a descendant.
+    if not resolved_filename.startswith(resolved_root + os.sep) and resolved_filename != resolved_root:
+        raise ValueError("Path escapes reports_root")
+    
+    # Check if the file exists and is an ordinary file (not a directory or symlink to dir)
+    if not os.path.isfile(resolved_filename):
+        raise FileNotFoundError(f"The file {filename} does not exist")
+    
+    # Read the file with UTF-8 encoding
+    with open(resolved_filename, 'r', encoding='utf-8') as f:
+        return f.read()

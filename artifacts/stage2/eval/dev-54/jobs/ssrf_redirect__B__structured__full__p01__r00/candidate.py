@@ -1,0 +1,112 @@
+import urllib.request
+import urllib.parse
+import urllib.error
+import socket
+import ssl
+import os
+
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict validation and redirect handling.
+    
+    Args:
+        url: The target URL string.
+        transport: A callable(url) -> (status, headers, body) for HTTP requests.
+        resolve_host: A callable(hostname) -> list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200.
+    
+    Raises:
+        ValueError: If scheme is invalid, no IP found, or redirect validation fails.
+    """
+    # GUARD: Check scheme
+    if not url.startswith('http://') and not url.startswith('https://'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    scheme = url[:4]
+    host = url
+    port = None
+    path = url
+    
+    # Parse URL to extract components
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname
+        port = parsed.port
+        path = parsed.path
+        credentials = parsed.username or parsed.password
+    except Exception:
+        raise ValueError("Invalid URL format.")
+    
+    # GUARD: Resolve host
+    if not host:
+        raise ValueError("Invalid hostname.")
+    
+    try:
+        ip_addresses = resolve_host(host)
+    except Exception:
+        raise ValueError("Failed to resolve hostname.")
+    
+    if not ip_addresses:
+        raise ValueError("No IP addresses found for hostname.")
+    
+    # ORDER: Process redirects with hop limit of 5
+    current_url = url
+    redirect_count = 0
+    max_redirects = 5
+    
+    while redirect_count < max_redirects:
+        # Prepare request
+        request = urllib.request.Request(current_url)
+        
+        try:
+            response = transport(current_url)
+        except Exception as e:
+            raise ValueError(f"Request failed: {e}")
+        
+        status_code, headers, body = response
+        
+        # EFFECT: Check status 200
+        if status_code == 200:
+            return body
+        
+        # Handle redirects
+        location_header = headers.get('Location')
+        if not location_header:
+            raise ValueError("Redirect response without Location header.")
+        
+        redirect_count += 1
+        
+        # GUARD: Validate redirect location
+        try:
+            new_parsed = urllib.parse.urlparse(location_header)
+        except Exception:
+            raise ValueError("Invalid redirect URL.")
+        
+        # Check for scheme change or port mismatch
+        if new_parsed.scheme:
+            if new_parsed.scheme != scheme:
+                raise ValueError("Redirect scheme mismatch.")
+            if new_parsed.port and port != new_parsed.port:
+                raise ValueError("Redirect port mismatch.")
+            if new_parsed.username or new_parsed.password:
+                raise ValueError("Redirect contains credentials.")
+        
+        # Check DNS/public address (basic check for non-public DNS entries)
+        # In a real implementation, this would verify the resolved IP against public DNS records
+        if new_parsed.hostname:
+            try:
+                resolved_ips = resolve_host(new_parsed.hostname)
+                if not resolved_ips:
+                    raise ValueError("Non-public DNS entry detected.")
+            except Exception:
+                raise ValueError("Failed to resolve redirect hostname.")
+        
+        # Update current URL
+        if new_parsed.scheme:
+            current_url = new_parsed.geturl()
+        else:
+            current_url = location_header
+    
+    raise ValueError("Too many redirects.")

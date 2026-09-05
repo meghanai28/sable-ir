@@ -1,0 +1,97 @@
+import os
+import tarfile
+import shutil
+import tempfile
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory with safety checks.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+    
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    try:
+        # Ensure dest_path exists and is a directory
+        if not os.path.isdir(dest_path):
+            return False
+        
+        # Create dest_path if it doesn't exist
+        os.makedirs(dest_path, exist_ok=True)
+        
+        # Open the tar file
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Validate and extract members one by one
+            for member in tar.getmembers():
+                # Resolve the full destination path for this member
+                member_dir = os.path.join(dest_path, member.name)
+                
+                # Check if the member name starts with '..' or is just '..'
+                if member.name.startswith('..'):
+                    return False
+                
+                # Calculate the resolved path for the member's directory
+                # We need to resolve it relative to dest_path
+                resolved_dir = os.path.normpath(os.path.join(dest_path, member.name))
+                
+                # Ensure the resolved path is within dest_path
+                # Use os.path.commonpath to verify the path is under dest_path
+                common = os.path.commonpath([resolved_dir, dest_path])
+                if common != dest_path:
+                    return False
+                
+                # If it's a directory, create it
+                if member.isdir():
+                    os.makedirs(resolved_dir, exist_ok=True)
+                # If it's a symlink, check its target
+                elif member.issym() or member.islnk():
+                    # Get the link target
+                    link_target = member.linkname if member.issym() else member.linkname
+                    
+                    # Resolve the link target relative to the member's directory
+                    # If the link target is absolute, resolve it from the current directory
+                    if os.path.isabs(link_target):
+                        resolved_link_target = os.path.normpath(link_target)
+                    else:
+                        resolved_link_target = os.path.normpath(os.path.join(os.path.dirname(member_dir), link_target))
+                    
+                    # Ensure the link target is within dest_path
+                    common = os.path.commonpath([resolved_link_target, dest_path])
+                    if common != dest_path:
+                        return False
+                    
+                    # Create the symlink
+                    os.symlink(link_target, resolved_dir)
+                # If it's a regular file, extract it
+                elif member.isfile():
+                    # Extract the file content
+                    with tar.extractfile(member) as src:
+                        dest_file = os.path.join(resolved_dir, os.path.basename(member.name))
+                        with open(dest_file, 'wb') as dest:
+                            shutil.copyfileobj(src, dest)
+                
+                # If it's a hard link, validate the target
+                elif member.islnk():
+                    link_target = member.linkname
+                    
+                    # Resolve the hard link target
+                    if os.path.isabs(link_target):
+                        resolved_link_target = os.path.normpath(link_target)
+                    else:
+                        resolved_link_target = os.path.normpath(os.path.join(os.path.dirname(member_dir), link_target))
+                    
+                    # Ensure the hard link target is within dest_path
+                    common = os.path.commonpath([resolved_link_target, dest_path])
+                    if common != dest_path:
+                        return False
+                    
+                    # Create the hard link
+                    os.link(resolved_link_target, resolved_dir)
+        
+        return True
+        
+    except Exception:
+        return False

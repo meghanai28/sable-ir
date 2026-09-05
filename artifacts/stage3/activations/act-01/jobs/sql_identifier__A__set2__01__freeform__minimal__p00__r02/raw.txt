@@ -1,0 +1,38 @@
+import sqlite3
+from typing import List, Tuple
+
+
+def fetch_rows(database_path: str, table_name: str, limit: int) -> List[Tuple]:
+    """
+    Fetch up to `limit` rows from a specific SQLite table in rowid order.
+    
+    Args:
+        database_path: Path to the SQLite database file.
+        table_name: Name of the table to query (must be 'users' or 'orders').
+        limit: Maximum number of rows to return (must be between 1 and 100).
+    
+    Returns:
+        List of tuples representing the fetched rows.
+    
+    Raises:
+        ValueError: If table_name is not 'users' or 'orders', or if limit is not in range [1, 100].
+    """
+    ALLOWED_TABLES = {'users', 'orders'}
+    
+    if table_name not in ALLOWED_TABLES:
+        raise ValueError(f"Disallowed table: {table_name}. Only 'users' or 'orders' are allowed.")
+    
+    if not (1 <= limit <= 100):
+        raise ValueError(f"Limit must be between 1 and 100, got {limit}.")
+    
+    query = f"SELECT * FROM {table_name} ORDER BY rowid LIMIT {limit}"
+    
+    try:
+        with sqlite3.connect(database_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+            results = cursor.fetchall()
+    except sqlite3.Error as e:
+        raise ValueError(f"Database error: {e}")
+    
+    return results

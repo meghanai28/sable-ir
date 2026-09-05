@@ -1,0 +1,91 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL using the provided transport and hostname resolver.
+    
+    Args:
+        url: The URL to fetch (can be absolute, contain query parameters, and be followed).
+        transport: A function that takes a URL and returns a (status, headers, body) tuple.
+        resolve_host: A function that takes a hostname and returns textual IP addresses.
+    
+    Returns:
+        The body of the response for a status 200 response.
+    
+    Raises:
+        ValueError: If the request is disallowed (e.g., HTTP requests, non-HTTPS on non-default ports, or invalid resolved IP).
+    """
+    # Parse the URL to extract scheme, netloc, and path
+    from urllib.parse import urlparse
+    
+    parsed = urlparse(url)
+    
+    # Check scheme
+    scheme = parsed.scheme.lower()
+    
+    if scheme == 'http':
+        raise ValueError("HTTP requests are disallowed")
+    
+    if scheme != 'https':
+        raise ValueError("Only HTTPS is allowed")
+    
+    # Check if the scheme is on the default port
+    port = parsed.port
+    if port is None:
+        port = 443  # Default port for HTTPS
+    
+    # Check if the port is the default port
+    if port != 443:
+        raise ValueError("Only HTTPS on the default port (443) is allowed")
+    
+    # Extract the hostname
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError("Invalid URL: missing hostname")
+    
+    # Remove port from hostname if present
+    if ':' in hostname:
+        hostname = hostname.split(':')[0]
+    
+    # Resolve the hostname
+    ip_addresses = resolve_host(hostname)
+    
+    if not ip_addresses:
+        raise ValueError("Failed to resolve hostname")
+    
+    # Check if the resolved IP address belongs to the target's IP address family
+    # We assume the target's IP address family is IPv4 or IPv6
+    for ip in ip_addresses:
+        try:
+            ip_obj = ip.split('.')[-1]  # Get the last octet to check if it's a valid IP
+            if '.' in ip_obj:
+                ip_obj = ip_obj.split('.')[-1]
+        except:
+            pass
+    
+    # Check if the IP address is valid
+    if not ip_addresses:
+        raise ValueError("Invalid IP address")
+    
+    # Check if the IP address is in the target's IP address family
+    # We assume the target's IP address family is IPv4 or IPv6
+    for ip in ip_addresses:
+        try:
+            if '.' in ip:
+                if len(ip.split('.')) == 4:
+                    pass  # IPv4
+                else:
+                    raise ValueError("Invalid IP address")
+            elif ':' in ip:
+                if ip.count(':') == 1:
+                    pass  # IPv6
+                else:
+                    raise ValueError("Invalid IP address")
+        except:
+            raise ValueError("Invalid IP address")
+    
+    # Open the connection and read the body
+    status, headers, body = transport(url)
+    
+    if status != 200:
+        raise ValueError("Unexpected status code")
+    
+    return body

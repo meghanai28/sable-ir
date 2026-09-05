@@ -1,0 +1,138 @@
+def fetch_text(url: str, transport, resolve_host) -> str:
+    """
+    Fetch text from a URL with strict security checks.
+    
+    Args:
+        url: The target URL (absolute or relative).
+        transport: A function(url) -> (status, headers, body) tuple.
+        resolve_host: A function(hostname) -> list of textual IP addresses.
+    
+    Returns:
+        The body text for a 200 status code response.
+    
+    Raises:
+        ValueError: If the URL scheme is not HTTP/HTTPS, port is not default,
+                    hostname cannot be resolved, or URL resolution fails.
+    """
+    import urllib.parse
+    from urllib.parse import urlparse, urljoin
+    
+    # Parse the initial URL
+    parsed_url = urlparse(url)
+    scheme = parsed_url.scheme.lower()
+    port = parsed_url.port
+    hostname = parsed_url.hostname
+    
+    # GUARD: Accept only HTTP or HTTPS on default port
+    if scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed")
+    
+    default_port = {'http': 80, 'https': 443}.get(scheme)
+    if port is not None and port != default_port:
+        raise ValueError("Only default ports are allowed")
+    
+    # GUARD: Resolve hostname
+    if not hostname:
+        raise ValueError("Invalid hostname in URL")
+    
+    try:
+        resolved_ips = resolve_host(hostname)
+    except Exception:
+        raise ValueError("Hostname cannot be resolved")
+    
+    if not resolved_ips:
+        raise ValueError("No IP addresses found for hostname")
+    
+    # ORDER: Check resolved destination before following any Location
+    # We will use the first resolved IP for connection, but we need to track the scheme/port
+    # The plan says "resolve and check components before establishing the connection"
+    # and "check the resolved destination before following any Location"
+    
+    # We'll construct the base URL with the resolved IP to ensure we are connecting to the right place
+    # However, the transport function likely expects the original URL string.
+    # The security constraint is that we validate the resolved hostname/IP against the scheme/port.
+    
+    # We need to follow the URL, resolving relative URLs against the current one,
+    # and limit to 5 Location hops.
+    
+    current_url = url
+    location_count = 0
+    max_hops = 5
+    
+    while True:
+        # Parse current URL
+        current_parsed = urlparse(current_url)
+        
+        # If we are at a relative URL, we need to resolve it against the base
+        # But the plan says "resolve the requested URL against the current URL"
+        # This implies we start with the provided URL, and if it's relative, resolve against something?
+        # Usually, if the caller passes a relative URL, there's no base.
+        # However, the plan says "resolve the requested URL against the current URL".
+        # This might imply that the initial URL is treated as the base if it's absolute,
+        # or we need to resolve relative parts.
+        # Let's assume the initial URL is absolute or we treat it as the base.
+        # If the initial URL is relative, we can't resolve it without a base.
+        # Given the context of "TRUST: untrusted; may be absolute...", we assume it's absolute or we handle relative.
+        # But to be safe, we'll assume the initial URL is absolute. If it's relative, we might need a base.
+        # The plan doesn't specify a base URL for relative resolution.
+        # Let's assume the initial URL is the base.
+        
+        if current_parsed.scheme == '' and current_parsed.netloc == '':
+            # Relative URL, cannot resolve without a base.
+            # This should probably raise an error or we need a base.
+            # The plan says "resolve the requested URL against the current URL".
+            # If current URL is relative, we can't.
+            # Let's assume the initial URL is absolute.
+            raise ValueError("Relative URLs are not supported without a base")
+        
+        # Check if we have a Location header
+        status, headers, body = transport(current_url)
+        
+        if status != 200:
+            raise ValueError("Only status 200 is allowed")
+        
+        # Return the body text
+        return body
+        
+        # Check for Location header
+        location = None
+        for key, value in headers.items():
+            if key.lower() == 'location':
+                location = value
+                break
+        
+        if location:
+            location_count += 1
+            if location_count > max_hops:
+                raise ValueError("Exceeded maximum Location hops")
+            
+            # Resolve the Location against the current URL
+            resolved_location = urljoin(current_url, location)
+            
+            # Check if the resolved location has the same scheme and port
+            resolved_parsed = urlparse(resolved_location)
+            if resolved_parsed.scheme != current_parsed.scheme:
+                raise ValueError("Location must have the same scheme as the initial destination")
+            
+            resolved_port = resolved_parsed.port
+            if resolved_port is not None:
+                if resolved_port != default_port:
+                    raise ValueError("Location must have the default port")
+            
+            # Check if the hostname in the resolved location can be resolved
+            resolved_hostname = resolved_parsed.hostname
+            if not resolved_hostname:
+                raise ValueError("Invalid hostname in resolved Location")
+            
+            try:
+                resolved_ips = resolve_host(resolved_hostname)
+            except Exception:
+                raise ValueError("Hostname in Location cannot be resolved")
+            
+            if not resolved_ips:
+                raise ValueError("No IP addresses found for hostname in Location")
+            
+            # Update current_url to the resolved location
+            current_url = resolved_location
+        else:
+            break

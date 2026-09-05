@@ -1,0 +1,126 @@
+def fetch_text(url, transport, resolve_host):
+    """
+    Fetch text from a URL with strict security controls.
+    
+    Args:
+        url: The URL to fetch (string).
+        transport: A function that takes a URL and returns (status, headers, body).
+        resolve_host: A function that takes a hostname and returns a list of IP addresses.
+    
+    Returns:
+        The response body as a string for status 200 only.
+    
+    Raises:
+        ValueError: If the scheme is not http/https, if the host cannot be resolved,
+                   if the path escapes the host, or if the status is not 200.
+    """
+    # Check scheme
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError("Only HTTP and HTTPS schemes are allowed.")
+    
+    # Parse the URL
+    scheme = url.split('://')[0]
+    rest = url.split('://')[1]
+    
+    # Extract host, port, path, and query
+    # Handle port explicitly if present
+    if ':' in rest:
+        host_port = rest.split(':', 1)
+        host = host_port[0]
+        port = host_port[1]
+    else:
+        host = rest
+        port = ''
+    
+    # Determine default port based on scheme
+    default_port = 80 if scheme == 'http' else 443
+    
+    # Resolve host
+    if not resolve_host(host):
+        raise ValueError("Host resolution failed.")
+    
+    # Extract path and query
+    path_query = rest[len(host) + (':' if ':' in rest else 0):]
+    path = path_query.split('?')[0]
+    query = path_query.split('?')[1] if '?' in path_query else ''
+    
+    # Validate path does not escape the host
+    # Check for absolute paths (starting with /) that might go beyond the host
+    # We need to ensure we don't go above the root of the requested host
+    # The plan says "follow the URL's path beneath the requested host only"
+    # This implies we should not allow paths that try to escape via ../
+    
+    # Simple check: if path starts with /, ensure it doesn't try to escape
+    # A robust check would parse the path and ensure no .. goes above the root
+    # For this implementation, we check if the path contains .. that could escape
+    # However, the strictest interpretation per the plan "follow the URL's path beneath the requested host"
+    # usually means we just take the path relative to the host.
+    # We must ensure we don't construct a URL that resolves to a different host.
+    
+    # Construct the full URL for the request
+    # If no port specified, use default
+    if port:
+        full_url = f"{scheme}://{host}:{port}/{path}"
+    else:
+        full_url = f"{scheme}://{host}/{path}"
+    
+    if query:
+        full_url += f"?{query}"
+    
+    # Check for path escaping (e.g., ../../)
+    # We can check if the path contains '..' that would escape the host
+    # A simple heuristic: if the path starts with / and contains .., it might be risky
+    # But the safest is to ensure the resolved path doesn't go above the root of the host
+    # Since we are constructing the URL, we just need to make sure we don't follow redirects
+    # The plan says "do not follow redirects", so we just use the constructed URL.
+    
+    # Check for absolute URL construction attempts in path (e.g. /foo/../bar)
+    # We will sanitize the path to prevent escape
+    if path.startswith('/'):
+        # Remove leading slash and check for escape
+        # Actually, the safest approach for "beneath the requested host" is to ensure
+        # we don't use paths that resolve outside the host.
+        # We'll assume the path is relative to the host.
+        pass
+    
+    # Check for .. in path that could escape
+    # If the path is absolute (starts with /), we treat it as relative to the host
+    # We need to ensure we don't go above the root
+    # A simple check: if path contains .., we should be careful
+    # However, the most critical check is ensuring we don't follow redirects
+    # The plan explicitly says "do not follow redirects"
+    
+    # Final check on the URL before transport
+    # We must ensure the URL we pass to transport is safe
+    # We have already checked scheme and host resolution
+    # We assume the path is relative to the host (starts with /)
+    # If the path is empty, we just use the host
+    
+    # Re-verify path safety: if path starts with /, it's relative to the host
+    # If it doesn't, it might be relative to the base URL, which could be unsafe
+    # The plan says "follow the URL's path beneath the requested host only"
+    # This implies we should not allow paths that are not relative to the host
+    # So if path does not start with /, we should raise an error or treat it as relative to host
+    # Actually, standard behavior is that path is relative to the host if it starts with /
+    # If it doesn't, it's relative to the base URL, which could be unsafe
+    # We will enforce that the path must be relative to the host (start with /)
+    # OR we can just use the path as is but ensure we don't follow redirects
+    
+    # Let's enforce that the path must be relative to the host
+    # If the path does not start with /, we treat it as relative to the host
+    # This is a bit ambiguous, but the safest is to ensure we don't go above the root
+    
+    # Check for .. in path
+    if '..' in path:
+        # If the path contains .., we need to be careful
+        # We will raise an error if the path contains .. to prevent escape
+        raise ValueError("Path contains escape sequences.")
+    
+    # Make the request
+    status, headers, body = transport(full_url)
+    
+    # Check status
+    if status != 200:
+        raise ValueError("Only status 200 is allowed.")
+    
+    return body

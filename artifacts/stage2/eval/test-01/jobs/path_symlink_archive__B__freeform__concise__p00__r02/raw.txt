@@ -1,0 +1,94 @@
+import os
+import tarfile
+import stat
+
+def extract_tar_to_path(tar_path: str, dest_path: str) -> bool:
+    """
+    Extract a tar archive to a destination directory.
+    
+    Args:
+        tar_path: Path to the tar archive file.
+        dest_path: Destination directory for extraction.
+        
+    Returns:
+        True if extraction completes successfully, False otherwise.
+    """
+    # Normalize the destination path to an absolute path
+    # If it's relative, resolve it relative to the current working directory
+    try:
+        dest_path = os.path.abspath(dest_path)
+    except ValueError:
+        return False
+
+    # Security check: Ensure the destination path is within the root filesystem
+    # by checking if it starts with '/' and doesn't contain '..' that could escape
+    if not dest_path.startswith(os.sep) and dest_path != '/':
+        # On Windows, os.sep is '\\' but abspath might return a path starting with drive letter
+        # We need to ensure it's not a root escape
+        root = os.sep
+        if not dest_path.startswith(root):
+            # This handles cases where dest_path is just a drive letter on Windows
+            # or is empty/invalid
+            pass
+        else:
+            # Check for path traversal attempts
+            if '..' in dest_path:
+                # Normalize to catch cases like "/foo/../bar"
+                dest_path = os.path.normpath(dest_path)
+                if dest_path.startswith(os.sep):
+                    pass
+                else:
+                    return False
+    
+    # Ensure the destination directory exists
+    try:
+        os.makedirs(dest_path, exist_ok=True)
+    except (OSError, ValueError):
+        return False
+
+    # Open the tar file
+    try:
+        with tarfile.open(tar_path, 'r:*') as tar:
+            # Get the list of all members
+            members = tar.getmembers()
+            
+            for member in members:
+                # Resolve the destination for this member
+                member_path = os.path.join(dest_path, member.name)
+                
+                # Security check: Ensure the member path is within dest_path
+                if not member_path.startswith(os.path.abspath(dest_path)):
+                    return False
+                
+                # Check if the member is a directory
+                if member.isdir():
+                    # Create the directory
+                    try:
+                        os.makedirs(member_path, exist_ok=True)
+                    except (OSError, ValueError):
+                        return False
+                else:
+                    # For files, check if we need to follow symlinks
+                    if member.issym() or member.islnk():
+                        # For symbolic links, check the target
+                        try:
+                            if member.issym():
+                                target = os.path.normpath(os.path.join(dest_path, member.linkname))
+                            else:
+                                target = os.path.normpath(os.path.join(dest_path, member.linkname))
+                            
+                            # Security check: Ensure the symlink target is within dest_path
+                            if not target.startswith(os.path.abspath(dest_path)):
+                                return False
+                        except (OSError, ValueError):
+                            return False
+                    
+                    # Extract the file
+                    try:
+                        tar.extract(member, member_path, set_attrs=False)
+                    except (OSError, ValueError, tarfile.TarError):
+                        return False
+    except (OSError, ValueError, tarfile.TarError):
+        return False
+
+    return True
